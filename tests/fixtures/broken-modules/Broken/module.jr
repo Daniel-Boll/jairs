@@ -13,7 +13,7 @@
 // *fixture* module is scenery for other tests and a broken one would make every test that imports it ambiguous.
 // A deliberately broken module needs its own home, and giving it one is cheaper than weakening the invariant.
 uses_an_unimported_name :: (n: s64) -> s64 {
-    p := malloc(n);
-    free(p);
-    return n;
+  p := malloc(n);
+  free(p);
+  return n;
 }

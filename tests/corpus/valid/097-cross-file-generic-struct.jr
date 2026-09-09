@@ -30,38 +30,38 @@
 
 /// Mutates an imported parameterised struct through a pointer — the instance is a real type, layout and all.
 fill :: (b: *Box(s64), v: s64) {
-    b.value = v;
+  b.value = v;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    b: Box(s64);
-    b.value = 7;
-    if b.value == 7 {
-        n = n + 1;
-    }
+  b: Box(s64);
+  b.value = 7;
+  if b.value == 7 {
+    n = n + 1;
+  }
 
-    // A second instantiation of the same imported declaration, with a different field type.
-    c: Box(bool);
-    c.value = true;
-    if c.value {
-        n = n + 2;
-    }
+  // A second instantiation of the same imported declaration, with a different field type.
+  c: Box(bool);
+  c.value = true;
+  if c.value {
+    n = n + 2;
+  }
 
-    // Two arguments.
-    p: Pair(s64, bool);
-    p.first = 5;
-    p.second = false;
-    if p.first == 5 && !p.second {
-        n = n + 4;
-    }
+  // Two arguments.
+  p: Pair(s64, bool);
+  p.first = 5;
+  p.second = false;
+  if p.first == 5 && !p.second {
+    n = n + 4;
+  }
 
-    // Through a pointer, into a procedure: a real type at the ABI level.
-    fill(*b, 11);
-    if b.value == 11 {
-        n = n + 8;
-    }
+  // Through a pointer, into a procedure: a real type at the ABI level.
+  fill(*b, 11);
+  if b.value == 11 {
+    n = n + 8;
+  }
 
-    exit(n);
+  exit(n);
 }

@@ -28,66 +28,66 @@
 #import "Basic";
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // A null pointer, written with the keyword rather than a cast.
-    p: *u8 = null;
-    if p == null {
-        n = n + 1;
-    }
-    // Two null pointers compare equal. `p` is null here (nothing has allocated yet), and a fresh
-    // null literal takes `p`'s type from the comparison — the sentinel equals itself.
-    if p == null {
-        n = n + 2;
-    }
+  // A null pointer, written with the keyword rather than a cast.
+  p: *u8 = null;
+  if p == null {
+    n = n + 1;
+  }
+  // Two null pointers compare equal. `p` is null here (nothing has allocated yet), and a fresh
+  // null literal takes `p`'s type from the comparison — the sentinel equals itself.
+  if p == null {
+    n = n + 2;
+  }
 
-    // Real memory from libc. Its address is undefined, but that it is *not* null is not.
-    p = malloc(16);
-    if p == null {
-        // Allocation failed — nothing more to test, and the assertions below would fault.
-        exit(1);
-    }
-    n = n + 4;
-
-    // A byte written through the pointer reads back: the memory is real and writable. The write is
-    // through `p.*` — indexing a bare pointer is pointer arithmetic, which is still refused
-    // (ADR-0060 §5), so a byte past the first is not reachable without it. One byte is enough to
-    // prove the storage is real.
-    p.* = 42;
-    if p.* == 42 {
-        n = n + 8;
-    }
-    // Overwrite, to prove the location is stable rather than read-once.
-    p.* = 200;
-    if p.* == 200 {
-        n = n + 16;
-    }
-
-    // Release it, then a defined no-op free of a null pointer. The null is a *typed local* rather
-    // than a bare `free(null)`: a `null` argument would take its type from the callee's parameter,
-    // which needs the `#import` resolved — and the sema corpus test checks these files with imports
-    // *unresolved* on purpose, so a context-free `null` there is E0257. A typed local sidesteps
-    // that without weakening the test: `free` still receives a null pointer.
-    free(p);
-    nothing: *u8 = null;
-    free(nothing);
-    n = n + 32;
-
-    // A second allocation, to prove `malloc` works more than once and the first `free` did not
-    // corrupt the allocator.
-    q: *u8 = malloc(1);
-    if q == null {
-        exit(1);
-    }
-    q.* = 9;
-    if q.* == 9 {
-        n = n + 64;
-    }
-    free(q);
-
-    // Every assertion: 127.
-    if n == 127 {
-        exit(0);
-    }
+  // Real memory from libc. Its address is undefined, but that it is *not* null is not.
+  p = malloc(16);
+  if p == null {
+    // Allocation failed — nothing more to test, and the assertions below would fault.
     exit(1);
+  }
+  n = n + 4;
+
+  // A byte written through the pointer reads back: the memory is real and writable. The write is
+  // through `p.*` — indexing a bare pointer is pointer arithmetic, which is still refused
+  // (ADR-0060 §5), so a byte past the first is not reachable without it. One byte is enough to
+  // prove the storage is real.
+  p.* = 42;
+  if p.* == 42 {
+    n = n + 8;
+  }
+  // Overwrite, to prove the location is stable rather than read-once.
+  p.* = 200;
+  if p.* == 200 {
+    n = n + 16;
+  }
+
+  // Release it, then a defined no-op free of a null pointer. The null is a *typed local* rather
+  // than a bare `free(null)`: a `null` argument would take its type from the callee's parameter,
+  // which needs the `#import` resolved — and the sema corpus test checks these files with imports
+  // *unresolved* on purpose, so a context-free `null` there is E0257. A typed local sidesteps
+  // that without weakening the test: `free` still receives a null pointer.
+  free(p);
+  nothing: *u8 = null;
+  free(nothing);
+  n = n + 32;
+
+  // A second allocation, to prove `malloc` works more than once and the first `free` did not
+  // corrupt the allocator.
+  q: *u8 = malloc(1);
+  if q == null {
+    exit(1);
+  }
+  q.* = 9;
+  if q.* == 9 {
+    n = n + 64;
+  }
+  free(q);
+
+  // Every assertion: 127.
+  if n == 127 {
+    exit(0);
+  }
+  exit(1);
 }

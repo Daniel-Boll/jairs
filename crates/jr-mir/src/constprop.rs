@@ -267,7 +267,7 @@ fn fold(pool: &mut Pool, rvalue: &Rvalue, ty: PoolId) -> Option<PoolId> {
     match rvalue {
         Rvalue::Binary { op, lhs, rhs } => fold_binary(pool, *op, *lhs, *rhs, ty),
         Rvalue::Unary { op, operand } => fold_unary(pool, *op, *operand, ty),
-        // A cast of a constant folds, which is what makes `cast(u8, 65)` in `print_int` a
+        // A cast of a constant folds, which is what makes `cast(u8, 65)` in the formatter a
         // literal by the time the back end sees it. `from` is unused here on purpose: the
         // operand constant already carries its own type, and re-deriving the source kind from
         // the rvalue would be a second opinion about the same fact.

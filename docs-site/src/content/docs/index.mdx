@@ -60,23 +60,22 @@ order, or jump straight to whichever matches how you learn.
 Point :: struct { x: s64; y: s64; }
 
 add :: (a: s64, b: s64) -> s64 {
-    return a + b;
+  return a + b;
 }
 
 MESSAGE  :: "hello from Jairs\n";
 COMPUTED :: #run add(2, 3);          // runs at compile time
 
 main :: () {
-    p: Point;
-    p.x = 4;
-    p.y = COMPUTED;
+  p: Point;
+  p.x = 4;
+  p.y = COMPUTED;
 
-    sum := add(p.x, p.y);
-    if sum > 5  print(MESSAGE);
+  sum := add(p.x, p.y);
+  if sum > 5  print(MESSAGE);
 
-    ptr := *sum;                     // prefix * takes an address
-    print_int(ptr.*);                // postfix .* dereferences
-    print("\n");
+  ptr := *sum;                       // prefix * takes an address
+  print("%\n", ptr.*);               // postfix .* dereferences
 }
 ```
 

@@ -2,6 +2,6 @@ describe_array :: ($N: s64, items: [N]s64) {
 }
 
 main :: () {
-    items: [4]s64;
-    describe_array(items);
+  items: [4]s64;
+  describe_array(items);
 }

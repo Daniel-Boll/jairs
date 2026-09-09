@@ -48,8 +48,8 @@ String :: #import "String";
 /// A struct rather than a bare `s64` so that a descriptor cannot be passed where a count is wanted: the two
 /// are both integers and the compiler will not confuse them once one has a name.
 File :: struct {
-    /// The OS descriptor. Negative when the file is not open.
-    fd: s64;
+  /// The OS descriptor. Negative when the file is not open.
+  fd: s64;
 }
 
 /// Open for reading only.
@@ -109,26 +109,26 @@ SEEK_END :: 2;
 /// rather than opening a file with the wrong flag, which is the failure mode to prefer: naming a number
 /// that would let a wrong call succeed is what ADR-0181 §2 refused to do for `clock_gettime`.
 create_flag :: () -> s64 {
-    if os() == Operating_System.MACOS {
-        return 512;
-    }
-    return 64;
+  if os() == Operating_System.MACOS {
+    return 512;
+  }
+  return 64;
 }
 
 /// `O_TRUNC` for the target — 0x400 on macOS, 0x200 on Linux (ADR-0184 §6).
 truncate_flag :: () -> s64 {
-    if os() == Operating_System.MACOS {
-        return 1024;
-    }
-    return 512;
+  if os() == Operating_System.MACOS {
+    return 1024;
+  }
+  return 512;
 }
 
 /// `O_APPEND` for the target — 0x8 on macOS, 0x400 on Linux (ADR-0184 §6).
 append_flag :: () -> s64 {
-    if os() == Operating_System.MACOS {
-        return 8;
-    }
-    return 1024;
+  if os() == Operating_System.MACOS {
+    return 8;
+  }
+  return 1024;
 }
 
 /// libc `open(2)`, called with **only its fixed arguments**.
@@ -176,69 +176,69 @@ unlink_raw :: (path: *u8) -> s64 #foreign libc "unlink";
 /// the call returns, which is exactly what an arena models (ADR-0065) — the same reason `JSON`'s `strtod`
 /// scratch comes from there (ADR-0156 §2).
 open :: (path: string, flags: s64) -> (File, bool) #must {
-    f: File;
-    f.fd = -1;
-    c_path, ok := nul_terminated(path);
-    if !ok {
-        return f, false;
-    }
-    // **Creation is separated out**, because the mode cannot be passed to `open` — see `open_raw`. The
-    // three shapes, in the order they are cheapest:
-    //
-    //   * no `CREATE`            one `open`, nothing to arrange;
-    //   * `CREATE` + `TRUNCATE`  one `creat`, which *is* write+create+truncate — then a reopen only when
-    //                            the caller wanted read access too, since `creat` gives write-only;
-    //   * `CREATE` alone         try `open` first, and only `creat` when the file is missing, so an
-    //                            existing file's contents survive — which is what `APPEND` means.
-    if flags % (CREATE * 2) < CREATE {
-        fd := open_raw(c_path, flags);
-        if fd < 0 {
-            return f, false;
-        }
-        f.fd = fd;
-        return f, true;
-    }
-    without_create := flags - CREATE;
-    if without_create % (TRUNCATE * 2) >= TRUNCATE {
-        made := creat_raw(c_path, CREATE_MODE);
-        if made < 0 {
-            return f, false;
-        }
-        // `creat` is write-only. When the caller asked for read access as well, close it and reopen — the
-        // file exists now, so no create flag is needed and no mode has to travel.
-        if without_create - TRUNCATE == WRITE {
-            f.fd = made;
-            return f, true;
-        }
-        _ = close_raw(made);
-        fd := open_raw(c_path, without_create);
-        if fd < 0 {
-            return f, false;
-        }
-        f.fd = fd;
-        return f, true;
-    }
-    fd := open_raw(c_path, without_create);
+  f: File;
+  f.fd = -1;
+  c_path, ok := nul_terminated(path);
+  if !ok {
+    return f, false;
+  }
+  // **Creation is separated out**, because the mode cannot be passed to `open` — see `open_raw`. The
+  // three shapes, in the order they are cheapest:
+  //
+  //   * no `CREATE`            one `open`, nothing to arrange;
+  //   * `CREATE` + `TRUNCATE`  one `creat`, which *is* write+create+truncate — then a reopen only when
+  //                            the caller wanted read access too, since `creat` gives write-only;
+  //   * `CREATE` alone         try `open` first, and only `creat` when the file is missing, so an
+  //                            existing file's contents survive — which is what `APPEND` means.
+  if flags % (CREATE * 2) < CREATE {
+    fd := open_raw(c_path, flags);
     if fd < 0 {
-        made := creat_raw(c_path, CREATE_MODE);
-        if made < 0 {
-            return f, false;
-        }
-        _ = close_raw(made);
-        fd = open_raw(c_path, without_create);
-        if fd < 0 {
-            return f, false;
-        }
+      return f, false;
     }
     f.fd = fd;
     return f, true;
+  }
+  without_create := flags - CREATE;
+  if without_create % (TRUNCATE * 2) >= TRUNCATE {
+    made := creat_raw(c_path, CREATE_MODE);
+    if made < 0 {
+      return f, false;
+    }
+    // `creat` is write-only. When the caller asked for read access as well, close it and reopen — the
+    // file exists now, so no create flag is needed and no mode has to travel.
+    if without_create - TRUNCATE == WRITE {
+      f.fd = made;
+      return f, true;
+    }
+    _ = close_raw(made);
+    fd := open_raw(c_path, without_create);
+    if fd < 0 {
+      return f, false;
+    }
+    f.fd = fd;
+    return f, true;
+  }
+  fd := open_raw(c_path, without_create);
+  if fd < 0 {
+    made := creat_raw(c_path, CREATE_MODE);
+    if made < 0 {
+      return f, false;
+    }
+    _ = close_raw(made);
+    fd = open_raw(c_path, without_create);
+    if fd < 0 {
+      return f, false;
+    }
+  }
+  f.fd = fd;
+  return f, true;
 }
 
 /// Opens `path` for reading.
 ///
 /// The common case, named so a caller does not have to remember that `READ` is 0.
 open_read :: (path: string) -> (File, bool) #must {
-    return open(path, READ);
+  return open(path, READ);
 }
 
 /// Opens `path` for writing, creating it and truncating it.
@@ -247,12 +247,12 @@ open_read :: (path: string) -> (File, bool) #must {
 /// to keep them wants `open_append` or an explicit `open` with their own flags. Making the common case
 /// explicit here is better than making every caller compose three constants correctly.
 open_write :: (path: string) -> (File, bool) #must {
-    return open(path, WRITE + CREATE + TRUNCATE);
+  return open(path, WRITE + CREATE + TRUNCATE);
 }
 
 /// Opens `path` for appending, creating it if it does not exist.
 open_append :: (path: string) -> (File, bool) #must {
-    return open(path, WRITE + CREATE + APPEND);
+  return open(path, WRITE + CREATE + APPEND);
 }
 
 /// Closes `f` and marks it closed. Returns the OS status.
@@ -260,17 +260,17 @@ open_append :: (path: string) -> (File, bool) #must {
 /// Not `#must` — see the module docs. Safe on an already-closed file, so a caller can close on every path
 /// without tracking whether they already did, which is what makes it usable where a `defer` would go.
 close :: (f: *File) -> s64 {
-    if f.fd < 0 {
-        return 0;
-    }
-    status := close_raw(f.fd);
-    f.fd = -1;
-    return status;
+  if f.fd < 0 {
+    return 0;
+  }
+  status := close_raw(f.fd);
+  f.fd = -1;
+  return status;
 }
 
 /// Whether `f` is open.
 is_open :: (f: *File) -> bool {
-    return f.fd >= 0;
+  return f.fd >= 0;
 }
 
 /// Reads up to `buffer.count` bytes into `buffer`, returning how many and whether the call succeeded.
@@ -280,37 +280,37 @@ is_open :: (f: *File) -> bool {
 /// either way, and a wrapper that looped for them would block where the caller wanted a partial answer.
 /// `read_all` below is the looping version, for the case where a caller does want it.
 read :: (f: *File, buffer: []u8) -> (s64, bool) #must {
-    if f.fd < 0 {
-        return 0, false;
-    }
-    if buffer.count == 0 {
-        return 0, true;
-    }
-    // `*buffer[0]` rather than `buffer.data`, because a view deliberately has **no** `.data` field
-    // (ADR-0044 §4: it would hand out an unbounded pointer). The zero-count case is returned above, so
-    // element 0 exists and the index is in bounds.
-    n := read_raw(f.fd, *buffer[0], buffer.count);
-    if n < 0 {
-        return 0, false;
-    }
-    return n, true;
+  if f.fd < 0 {
+    return 0, false;
+  }
+  if buffer.count == 0 {
+    return 0, true;
+  }
+  // `*buffer[0]` rather than `buffer.data`, because a view deliberately has **no** `.data` field
+  // (ADR-0044 §4: it would hand out an unbounded pointer). The zero-count case is returned above, so
+  // element 0 exists and the index is in bounds.
+  n := read_raw(f.fd, *buffer[0], buffer.count);
+  if n < 0 {
+    return 0, false;
+  }
+  return n, true;
 }
 
 /// Writes `bytes`, returning how many were written and whether the call succeeded.
 ///
 /// A short write is success here too, for the same reason, and `write_all` is the looping version.
 write :: (f: *File, bytes: []u8) -> (s64, bool) #must {
-    if f.fd < 0 {
-        return 0, false;
-    }
-    if bytes.count == 0 {
-        return 0, true;
-    }
-    n := write_raw(f.fd, *bytes[0], bytes.count);
-    if n < 0 {
-        return 0, false;
-    }
-    return n, true;
+  if f.fd < 0 {
+    return 0, false;
+  }
+  if bytes.count == 0 {
+    return 0, true;
+  }
+  n := write_raw(f.fd, *bytes[0], bytes.count);
+  if n < 0 {
+    return 0, false;
+  }
+  return n, true;
 }
 
 /// Writes every byte of `bytes`, looping over short writes.
@@ -319,20 +319,20 @@ write :: (f: *File, bytes: []u8) -> (s64, bool) #must {
 /// regular file is rare enough that a caller who does not loop has a bug that appears under load and never
 /// in a test — which is the argument for offering it rather than leaving everyone to write the loop.
 write_all :: (f: *File, bytes: []u8) -> bool #must {
-    at := 0;
-    while at < bytes.count {
-        n, ok := write(f, view(*bytes[at], bytes.count - at));
-        if !ok {
-            return false;
-        }
-        // A zero-byte write with no error would spin forever. It should not happen on a regular file, and
-        // "should not happen" is exactly what a loop condition must not rely on.
-        if n == 0 {
-            return false;
-        }
-        at = at + n;
+  at := 0;
+  while at < bytes.count {
+    n, ok := write(f, view(*bytes[at], bytes.count - at));
+    if !ok {
+      return false;
     }
-    return true;
+    // A zero-byte write with no error would spin forever. It should not happen on a regular file, and
+    // "should not happen" is exactly what a loop condition must not rely on.
+    if n == 0 {
+      return false;
+    }
+    at = at + n;
+  }
+  return true;
 }
 
 /// Writes a string's bytes.
@@ -340,9 +340,9 @@ write_all :: (f: *File, bytes: []u8) -> bool #must {
 /// A convenience over `write_all`, because a string is the thing a caller usually has and building the view
 /// by hand at every call site is noise.
 write_string :: (f: *File, text: string) -> bool #must {
-    // A `string` *does* have `.data` — it is a distinct type from a view, and its pointer is what makes it
-    // passable to a foreign call at all (ADR-0044 §4 draws the line between the two here).
-    return write_all(f, view(text.data, text.count));
+  // A `string` *does* have `.data` — it is a distinct type from a view, and its pointer is what makes it
+  // passable to a foreign call at all (ADR-0044 §4 draws the line between the two here).
+  return write_all(f, view(text.data, text.count));
 }
 
 /// Fills `buffer` as far as it can, looping over short reads, and returns how many bytes it got.
@@ -350,52 +350,52 @@ write_string :: (f: *File, text: string) -> bool #must {
 /// Stops at end of file, so a return less than `buffer.count` means the file ended — which a caller can
 /// distinguish from a partial read, unlike `read`'s answer.
 read_all :: (f: *File, buffer: []u8) -> (s64, bool) #must {
-    at := 0;
-    while at < buffer.count {
-        n, ok := read(f, view(*buffer[at], buffer.count - at));
-        if !ok {
-            return at, false;
-        }
-        if n == 0 {
-            return at, true;
-        }
-        at = at + n;
+  at := 0;
+  while at < buffer.count {
+    n, ok := read(f, view(*buffer[at], buffer.count - at));
+    if !ok {
+      return at, false;
     }
-    return at, true;
+    if n == 0 {
+      return at, true;
+    }
+    at = at + n;
+  }
+  return at, true;
 }
 
 /// Moves the read/write position and returns the new absolute offset.
 seek :: (f: *File, offset: s64, whence: s64) -> (s64, bool) #must {
-    if f.fd < 0 {
-        return 0, false;
-    }
-    at := lseek_raw(f.fd, offset, whence);
-    if at < 0 {
-        return 0, false;
-    }
-    return at, true;
+  if f.fd < 0 {
+    return 0, false;
+  }
+  at := lseek_raw(f.fd, offset, whence);
+  if at < 0 {
+    return 0, false;
+  }
+  return at, true;
 }
 
 /// The file's size in bytes, leaving the position where it was.
 ///
-/// Two seeks rather than a `stat`, which would need a `struct stat` **by value across the FFI boundary** —
-/// E0286 refuses that today (ADR-0150) and it is W10's hard gate (PLAN §8.1.2). So the size comes from
-/// seeking to the end and back, which works on any seekable file and is the honest shape until an aggregate
-/// can cross. Recorded because `stat` is what a reader would expect.
+/// Two seeks rather than `stat`. The obstacle is not aggregate passing — supported register-class aggregates
+/// cross the FFI now — but that `struct stat` is a platform-specific opaque layout substantially larger than
+/// those supported shapes. Hard-coding one host's fields would turn a portable-looking API into a silent wrong
+/// read. Seeking works on any seekable file and avoids publishing that lie.
 size :: (f: *File) -> (s64, bool) #must {
-    here, here_ok := seek(f, 0, SEEK_CURRENT);
-    if !here_ok {
-        return 0, false;
-    }
-    end, end_ok := seek(f, 0, SEEK_END);
-    if !end_ok {
-        return 0, false;
-    }
-    _, back_ok := seek(f, here, SEEK_SET);
-    if !back_ok {
-        return 0, false;
-    }
-    return end, true;
+  here, here_ok := seek(f, 0, SEEK_CURRENT);
+  if !here_ok {
+    return 0, false;
+  }
+  end, end_ok := seek(f, 0, SEEK_END);
+  if !end_ok {
+    return 0, false;
+  }
+  _, back_ok := seek(f, here, SEEK_SET);
+  if !back_ok {
+    return 0, false;
+  }
+  return end, true;
 }
 
 /// Deletes `path`. Returns whether it went.
@@ -403,11 +403,11 @@ size :: (f: *File) -> (s64, bool) #must {
 /// `#must`, unlike `close`: a caller who deletes a temporary file and ignores the failure leaves it behind,
 /// and the next run sees stale data — a real bug with no local symptom, which is the shape the marker is for.
 remove :: (path: string) -> bool #must {
-    c_path, ok := nul_terminated(path);
-    if !ok {
-        return false;
-    }
-    return unlink_raw(c_path) == 0;
+  c_path, ok := nul_terminated(path);
+  if !ok {
+    return false;
+  }
+  return unlink_raw(c_path) == 0;
 }
 
 /// Whether `path` can be opened for reading.
@@ -418,12 +418,12 @@ remove :: (path: string) -> bool #must {
 ///
 /// Not `#must`: it *is* the answer, so there is no second value to ignore.
 exists :: (path: string) -> bool {
-    f, ok := open_read(path);
-    if !ok {
-        return false;
-    }
-    _ = close(*f);
-    return true;
+  f, ok := open_read(path);
+  if !ok {
+    return false;
+  }
+  _ = close(*f);
+  return true;
 }
 
 /// Reads the whole file at `path`.
@@ -439,64 +439,64 @@ exists :: (path: string) -> bool {
 /// the size query and the read, and a single `read` of `size` bytes can come up short on any file. A short
 /// result is not an error — the string is exactly what was read.
 read_entire_file :: (path: string) -> (string, bool) #must {
-    f, ok := open_read(path);
-    if !ok {
-        return String.adopt(null, 0), false;
-    }
-    n, n_ok := size(*f);
-    if !n_ok {
-        _ = close(*f);
-        return String.adopt(null, 0), false;
-    }
-    data := context.allocator(n + 1);
-    if data == null {
-        _ = close(*f);
-        return String.adopt(null, 0), false;
-    }
-    got, read_ok := read_all(*f, view(data, n));
+  f, ok := open_read(path);
+  if !ok {
+    return String.adopt(null, 0), false;
+  }
+  n, n_ok := size(*f);
+  if !n_ok {
     _ = close(*f);
-    if !read_ok {
-        context.allocator_free(data);
-        return String.adopt(null, 0), false;
-    }
-    // NUL-terminated for the benefit of a caller who passes it to C, even though a Jairs `string` carries its
-    // count. One byte, and it removes a whole class of caller-side copying.
-    bytes := view(data, n + 1);
-    bytes[got] = cast(u8, 0);
-    return String.adopt(data, got), true;
+    return String.adopt(null, 0), false;
+  }
+  data := context.allocator(n + 1);
+  if data == null {
+    _ = close(*f);
+    return String.adopt(null, 0), false;
+  }
+  got, read_ok := read_all(*f, view(data, n));
+  _ = close(*f);
+  if !read_ok {
+    context.allocator_free(data);
+    return String.adopt(null, 0), false;
+  }
+  // NUL-terminated for the benefit of a caller who passes it to C, even though a Jairs `string` carries its
+  // count. One byte, and it removes a whole class of caller-side copying.
+  bytes := view(data, n + 1);
+  bytes[got] = cast(u8, 0);
+  return String.adopt(data, got), true;
 }
 
 /// Writes `contents` to `path`, replacing whatever was there.
 ///
 /// `#must`: a caller who ignores this has silently not saved the user's work.
 write_entire_file :: (path: string, contents: string) -> bool #must {
-    f, ok := open_write(path);
-    if !ok {
-        return false;
-    }
-    wrote := write_string(*f, contents);
-    status := close(*f);
-    if !wrote {
-        return false;
-    }
-    // The close status *is* checked here, unlike `File.close`'s own contract — because this routine's promise
-    // is "the file now holds these bytes", and a failed close is the one way that promise breaks after a
-    // successful write.
-    return status == 0;
+  f, ok := open_write(path);
+  if !ok {
+    return false;
+  }
+  wrote := write_string(*f, contents);
+  status := close(*f);
+  if !wrote {
+    return false;
+  }
+  // The close status *is* checked here, unlike `File.close`'s own contract — because this routine's promise
+  // is "the file now holds these bytes", and a failed close is the one way that promise breaks after a
+  // successful write.
+  return status == 0;
 }
 
 /// Appends `contents` to `path`, creating it if it does not exist.
 append_entire_file :: (path: string, contents: string) -> bool #must {
-    f, ok := open_append(path);
-    if !ok {
-        return false;
-    }
-    wrote := write_string(*f, contents);
-    status := close(*f);
-    if !wrote {
-        return false;
-    }
-    return status == 0;
+  f, ok := open_append(path);
+  if !ok {
+    return false;
+  }
+  wrote := write_string(*f, contents);
+  status := close(*f);
+  if !wrote {
+    return false;
+  }
+  return status == 0;
 }
 
 #scope_module
@@ -506,18 +506,18 @@ append_entire_file :: (path: string, contents: string) -> bool #must {
 /// Module-private because the pointer is only valid until the next `reset_temporary_storage`, which is a
 /// contract that belongs inside this module rather than in its surface.
 nul_terminated :: (path: string) -> (*u8, bool) {
-    scratch := talloc(path.count + 1);
-    if scratch == null {
-        return null, false;
-    }
-    bytes := view(scratch, path.count + 1);
-    i := 0;
-    while i < path.count {
-        bytes[i] = cast(u8, byte_at_raw(path, i));
-        i = i + 1;
-    }
-    bytes[path.count] = cast(u8, 0);
-    return scratch, true;
+  scratch := talloc(path.count + 1);
+  if scratch == null {
+    return null, false;
+  }
+  bytes := view(scratch, path.count + 1);
+  i := 0;
+  while i < path.count {
+    bytes[i] = cast(u8, byte_at_raw(path, i));
+    i = i + 1;
+  }
+  bytes[path.count] = cast(u8, 0);
+  return scratch, true;
 }
 
 /// One byte of a string without allocating.
@@ -525,5 +525,5 @@ nul_terminated :: (path: string) -> (*u8, bool) {
 /// Kept local because the only string operation the descriptor-level routines need is copying a path into
 /// temporary NUL-terminated storage.
 byte_at_raw :: (s: string, index: s64) -> s64 {
-    return cast(s64, (s.data + index).*);
+  return cast(s64, (s.data + index).*);
 }

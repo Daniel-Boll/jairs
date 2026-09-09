@@ -41,43 +41,43 @@ libc :: #system_library "c";
 /// the silent failure the shared classification exists to prevent, and the reason this file checks the two
 /// values separately rather than checking their sum.
 Ldiv_Result :: struct {
-    /// The quotient.
-    quot: s64;
-    /// The remainder.
-    rem: s64;
+  /// The quotient.
+  quot: s64;
+  /// The remainder.
+  rem: s64;
 }
 
 /// libc `ldiv(3)`, which returns its result **by value**.
 ldiv :: (numerator: s64, denominator: s64) -> Ldiv_Result #foreign libc "ldiv";
 
 main :: () {
-    total := 0;
+  total := 0;
 
-    positive := ldiv(17, 5);
-    if positive.quot == 3 {
-        total = total + 1;
-    }
-    if positive.rem == 2 {
-        total = total + 2;
-    }
+  positive := ldiv(17, 5);
+  if positive.quot == 3 {
+    total = total + 1;
+  }
+  if positive.rem == 2 {
+    total = total + 2;
+  }
 
-    // C truncates toward zero, so `-17 / 5` is `-3` and not `-4`. Checked because it is the case where a
-    // wrong *register* and a wrong *rounding rule* would look alike, and only one of them is this
-    // compiler's business.
-    negative := ldiv(-17, 5);
-    if negative.quot == -3 {
-        total = total + 4;
-    }
-    if negative.rem == -2 {
-        total = total + 8;
-    }
+  // C truncates toward zero, so `-17 / 5` is `-3` and not `-4`. Checked because it is the case where a
+  // wrong *register* and a wrong *rounding rule* would look alike, and only one of them is this
+  // compiler's business.
+  negative := ldiv(-17, 5);
+  if negative.quot == -3 {
+    total = total + 4;
+  }
+  if negative.rem == -2 {
+    total = total + 8;
+  }
 
-    exact := ldiv(20, 5);
-    if exact.quot == 4 {
-        if exact.rem == 0 {
-            total = total + 16;
-        }
+  exact := ldiv(20, 5);
+  if exact.quot == 4 {
+    if exact.rem == 0 {
+      total = total + 16;
     }
+  }
 
-    exit(total);
+  exit(total);
 }

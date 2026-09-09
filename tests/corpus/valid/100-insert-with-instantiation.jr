@@ -21,10 +21,10 @@ CODE :: "bonus := 2;";
 
 /// An ordinary template, owing the insert nothing.
 id :: (x: $T) -> T {
-    return x;
+  return x;
 }
 
 main :: () {
-    #insert CODE;
-    exit(id(40) + bonus);
+  #insert CODE;
+  exit(id(40) + bonus);
 }

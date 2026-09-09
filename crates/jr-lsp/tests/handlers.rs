@@ -1831,7 +1831,7 @@ fn a_one_line_switch_gets_a_multiline_utf16_safe_edit() {
         u32::try_from(expected_utf16).expect("small"),
         "the edit must count the astral character as two UTF-16 units"
     );
-    assert_eq!(edit.new_text, "\n    case .GREEN;\n");
+    assert_eq!(edit.new_text, "\n  case .GREEN;\n");
 }
 
 #[test]
@@ -2591,7 +2591,7 @@ fn formatting_returns_one_edit_covering_the_whole_file() {
     assert_eq!(edits.len(), 1, "one whole-document edit, got {edits:?}");
     assert_eq!(
         edits[0].new_text,
-        "main :: () {\n    a := 1;\n    exit(a);\n}\n"
+        "main :: () {\n  a := 1;\n  exit(a);\n}\n"
     );
     assert_eq!(
         edits[0].range.start,
@@ -2617,7 +2617,7 @@ fn formatting_returns_one_edit_covering_the_whole_file() {
 /// `Format on save` on an untouched file does not create a new undo step.
 #[test]
 fn formatting_an_already_formatted_file_produces_no_edits() {
-    let source = "main :: () {\n    a := 1;\n    exit(a);\n}\n";
+    let source = "main :: () {\n  a := 1;\n  exit(a);\n}\n";
     let (db, _search, file) = program(source);
     let edits = jr_lsp::formatting(&db, file).expect("a file that parses must format");
     assert!(

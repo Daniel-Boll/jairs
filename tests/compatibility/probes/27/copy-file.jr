@@ -3,28 +3,28 @@
 #import "String";
 
 main :: () {
-    contents, read_ok := read_entire_file("input.txt");
-    if !read_ok {
-        exit(1);
-    }
+  contents, read_ok := read_entire_file("input.txt");
+  if !read_ok {
+    exit(1);
+  }
 
-    write_ok := write_entire_file("output.txt", contents);
-    free_string(contents);
-    if !write_ok {
-        exit(2);
-    }
+  write_ok := write_entire_file("output.txt", contents);
+  free_string(contents);
+  if !write_ok {
+    exit(2);
+  }
 
-    copied, copied_ok := read_entire_file("output.txt");
-    if !copied_ok {
-        _ = remove("output.txt");
-        exit(3);
-    }
-    matches := equal(copied, "chapter 27 compatibility fixture\n");
-    free_string(copied);
+  copied, copied_ok := read_entire_file("output.txt");
+  if !copied_ok {
+    _ = remove("output.txt");
+    exit(3);
+  }
+  matches := equal(copied, "chapter 27 compatibility fixture\n");
+  free_string(copied);
 
-    removed := remove("output.txt");
-    if !matches || !removed {
-        exit(4);
-    }
-    exit(0);
+  removed := remove("output.txt");
+  if !matches || !removed {
+    exit(4);
+  }
+  exit(0);
 }

@@ -10,18 +10,18 @@
 // Only an enum is checked this way: an `s64` has no finite member set, so a `switch` on one is legal
 // without the check and needs an `else` to be total (see `valid/054`'s `classify`).
 Colour :: enum {
-    RED;
-    GREEN;
-    BLUE;
+  RED;
+  GREEN;
+  BLUE;
 }
 
 pick :: (c: Colour) -> s64 {
-    r := 0;
-    switch c {
-        case .RED;
-            r = 1;
-        case .GREEN;
-            r = 2;
-    }
-    return r;
+  r := 0;
+  switch c {
+    case .RED;
+      r = 1;
+    case .GREEN;
+      r = 2;
+  }
+  return r;
 }

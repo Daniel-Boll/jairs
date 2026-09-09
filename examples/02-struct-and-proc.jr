@@ -5,30 +5,30 @@
 #import "Basic";
 
 Point :: struct {
-    x: s64;
-    y: s64;
+  x: s64;
+  y: s64;
 }
 
 manhattan_distance :: (a: Point, b: Point) -> s64 {
-    dx := a.x - b.x;
-    if dx < 0 {
-        dx = -dx;
-    }
-    dy := a.y - b.y;
-    if dy < 0 {
-        dy = -dy;
-    }
-    return dx + dy;
+  dx := a.x - b.x;
+  if dx < 0 {
+    dx = -dx;
+  }
+  dy := a.y - b.y;
+  if dy < 0 {
+    dy = -dy;
+  }
+  return dx + dy;
 }
 
 main :: () {
-    origin: Point;
-    origin.x = 0;
-    origin.y = 0;
+  origin: Point;
+  origin.x = 0;
+  origin.y = 0;
 
-    p: Point;
-    p.x = 10;
-    p.y = 20;
+  p: Point;
+  p.x = 10;
+  p.y = 20;
 
-    print_line("distance = %", manhattan_distance(origin, p));
+  print("distance = %\n", manhattan_distance(origin, p));
 }

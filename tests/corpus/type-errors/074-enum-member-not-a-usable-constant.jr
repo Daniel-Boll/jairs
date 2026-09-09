@@ -34,11 +34,11 @@ LITERAL :: 4;
 CHAIN :: LITERAL;
 
 E :: enum {
-    // Legal now, and here so the file shows the line rather than only one side of it.
-    OK :: LITERAL;
+  // Legal now, and here so the file shows the line rather than only one side of it.
+  OK :: LITERAL;
 
-    // E0237: the value names a constant, but not one whose own value is already a literal.
-    BAD :: CHAIN;
+  // E0237: the value names a constant, but not one whose own value is already a literal.
+  BAD :: CHAIN;
 }
 
 main :: () {

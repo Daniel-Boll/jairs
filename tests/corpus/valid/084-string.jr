@@ -47,55 +47,55 @@
 #import "String";
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // Each group contributes **one bit**, and the negative cases are folded in with `&&` rather than added
-    // separately — so a wrong answer anywhere clears a bit rather than pushing the total past 255, where an
-    // exit code wraps and could coincide with a passing value.
+  // Each group contributes **one bit**, and the negative cases are folded in with `&&` rather than added
+  // separately — so a wrong answer anywhere clears a bit rather than pushing the total past 255, where an
+  // exit code wraps and could coincide with a passing value.
 
-    // `equal` — the reason this module exists. Identical, differing at a byte, and differing in length.
-    if equal("abc", "abc") && !equal("abc", "abd") && !equal("abc", "ab") {
-        n = n + 1;
+  // `equal` — the reason this module exists. Identical, differing at a byte, and differing in length.
+  if equal("abc", "abc") && !equal("abc", "abd") && !equal("abc", "ab") {
+    n = n + 1;
+  }
+
+  // `compare`'s outcomes, the last being the **prefix** case a length-only comparison gets wrong.
+  if compare("a", "b") < 0 && compare("b", "a") > 0 && compare("abc", "abc") == 0 {
+    if compare("ab", "abc") < 0 && compare("abc", "ab") > 0 {
+      n = n + 2;
     }
+  }
 
-    // `compare`'s outcomes, the last being the **prefix** case a length-only comparison gets wrong.
-    if compare("a", "b") < 0 && compare("b", "a") > 0 && compare("abc", "abc") == 0 {
-        if compare("ab", "abc") < 0 && compare("abc", "ab") > 0 {
-            n = n + 2;
-        }
+  // `starts_with`, including the empty pattern (true) and an over-long one (false).
+  if starts_with("hello", "he") && starts_with("hello", "") && !starts_with("he", "hello") {
+    n = n + 4;
+  }
+
+  // `ends_with`, reading from a different starting offset than `starts_with`.
+  if ends_with("hello", "lo") && ends_with("hello", "") && !ends_with("lo", "hello") {
+    n = n + 8;
+  }
+
+  // `find` at the start, in the middle, and at the end.
+  if find("hello", "he") == 0 && find("hello", "ll") == 2 && find("hello", "lo") == 3 {
+    n = n + 16;
+  }
+
+  // `find` when absent (`-1`) and with an empty needle (0, since every string starts with nothing).
+  if find("hello", "xyz") == -1 && find("hello", "") == 0 {
+    n = n + 32;
+  }
+
+  // `contains` must agree with `find`.
+  if contains("hello", "ell") && !contains("hello", "xyz") {
+    n = n + 64;
+  }
+
+  // `byte_at` in range and out of it — `-1` rather than a trap. `"abc"` is 97, 98, 99. And `is_empty`.
+  if byte_at("abc", 1) == 98 && byte_at("abc", 3) == -1 && byte_at("abc", -1) == -1 {
+    if is_empty("") && !is_empty("x") {
+      n = n + 128;
     }
+  }
 
-    // `starts_with`, including the empty pattern (true) and an over-long one (false).
-    if starts_with("hello", "he") && starts_with("hello", "") && !starts_with("he", "hello") {
-        n = n + 4;
-    }
-
-    // `ends_with`, reading from a different starting offset than `starts_with`.
-    if ends_with("hello", "lo") && ends_with("hello", "") && !ends_with("lo", "hello") {
-        n = n + 8;
-    }
-
-    // `find` at the start, in the middle, and at the end.
-    if find("hello", "he") == 0 && find("hello", "ll") == 2 && find("hello", "lo") == 3 {
-        n = n + 16;
-    }
-
-    // `find` when absent (`-1`) and with an empty needle (0, since every string starts with nothing).
-    if find("hello", "xyz") == -1 && find("hello", "") == 0 {
-        n = n + 32;
-    }
-
-    // `contains` must agree with `find`.
-    if contains("hello", "ell") && !contains("hello", "xyz") {
-        n = n + 64;
-    }
-
-    // `byte_at` in range and out of it — `-1` rather than a trap. `"abc"` is 97, 98, 99. And `is_empty`.
-    if byte_at("abc", 1) == 98 && byte_at("abc", 3) == -1 && byte_at("abc", -1) == -1 {
-        if is_empty("") && !is_empty("x") {
-            n = n + 128;
-        }
-    }
-
-    exit(n);
+  exit(n);
 }

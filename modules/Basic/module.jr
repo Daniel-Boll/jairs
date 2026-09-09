@@ -4,8 +4,8 @@
 //! what forces `#foreign` into the first slice: the bottom of a standard library
 //! is a syscall, and there is no way to express it otherwise.
 //!
-//! Everything here must be writable in the Jairs-0 subset. That constraint is
-//! real and it bites -- see the note on integer printing at the end of this file.
+//! The module began in the Jairs-0 subset and has grown with the language while
+//! keeping the same syscall-level foundation.
 
 libc :: #system_library "c";
 
@@ -55,20 +55,20 @@ TEMP_REGION_SIZE :: 65536;
 ///
 /// It reads the context, so it travels with the call: a callee's `talloc` uses its caller's arena.
 talloc :: (n: s64) -> *u8 {
+  if context.temp_data == null {
+    context.temp_data = malloc(TEMP_REGION_SIZE);
     if context.temp_data == null {
-        context.temp_data = malloc(TEMP_REGION_SIZE);
-        if context.temp_data == null {
-            return null;
-        }
+      return null;
     }
-    if context.temp_mark + n > TEMP_REGION_SIZE {
-        return null;
-    }
-    // `*u8 + s64` is byte arithmetic (element-scaled on a `*u8`, which is what a byte arena wants,
-    // ADR-0064 §2), so this is the address `temp_mark` bytes into the region.
-    p := context.temp_data + context.temp_mark;
-    context.temp_mark = context.temp_mark + n;
-    return p;
+  }
+  if context.temp_mark + n > TEMP_REGION_SIZE {
+    return null;
+  }
+  // `*u8 + s64` is byte arithmetic (element-scaled on a `*u8`, which is what a byte arena wants,
+  // ADR-0064 §2), so this is the address `temp_mark` bytes into the region.
+  p := context.temp_data + context.temp_mark;
+  context.temp_mark = context.temp_mark + n;
+  return p;
 }
 /// Whether `c` is an ASCII letter.
 ///
@@ -83,15 +83,15 @@ talloc :: (n: s64) -> *u8 {
 /// whether a *byte* is a letter has no answer outside ASCII — in UTF-8 the question belongs to a code
 /// point, which is several bytes.
 is_alpha :: (c: u8) -> bool {
-    if c >= 65 && c <= 90 {
-        return true;
-    }
-    return c >= 97 && c <= 122;
+  if c >= 65 && c <= 90 {
+    return true;
+  }
+  return c >= 97 && c <= 122;
 }
 
 /// Whether `c` is an ASCII decimal digit.
 is_digit :: (c: u8) -> bool {
-    return c >= 48 && c <= 57;
+  return c >= 48 && c <= 57;
 }
 
 /// Whether `c` is an ASCII letter, a digit, or an underscore.
@@ -100,25 +100,25 @@ is_digit :: (c: u8) -> bool {
 /// identifier lexer wants, which is what this predicate is for; a caller who means strictly alphanumeric
 /// writes `is_alpha(c) || is_digit(c)`.
 is_alnum :: (c: u8) -> bool {
-    if c == 95 {
-        return true;
-    }
-    return is_alpha(c) || is_digit(c);
+  if c == 95 {
+    return true;
+  }
+  return is_alpha(c) || is_digit(c);
 }
 
 /// Whether `c` is ASCII whitespace: space, tab, newline, carriage return, vertical tab or form feed.
 ///
 /// The same six C's `isspace` names, so a reader who knows one knows this.
 is_space :: (c: u8) -> bool {
-    if c == 32 {
-        return true;
-    }
-    return c >= 9 && c <= 13;
+  if c == 32 {
+    return true;
+  }
+  return c >= 9 && c <= 13;
 }
 
 /// Whether `c` is a printable ASCII character, space included.
 is_print :: (c: u8) -> bool {
-    return c >= 32 && c <= 126;
+  return c >= 32 && c <= 126;
 }
 
 /// Whether `c` is an ASCII uppercase letter.
@@ -127,12 +127,12 @@ is_print :: (c: u8) -> bool {
 /// is a wart rather than a decision: a caller who can ask "is this a letter" and "make it upper" but not
 /// "is it already upper" ends up writing the range check by hand, which is what the predicate is for.
 is_upper :: (c: u8) -> bool {
-    return c >= 65 && c <= 90;
+  return c >= 65 && c <= 90;
 }
 
 /// Whether `c` is an ASCII lowercase letter.
 is_lower :: (c: u8) -> bool {
-    return c >= 97 && c <= 122;
+  return c >= 97 && c <= 122;
 }
 
 /// `c` raised to uppercase if it is an ASCII lowercase letter, unchanged otherwise.
@@ -140,18 +140,18 @@ is_lower :: (c: u8) -> bool {
 /// Takes and returns a **byte**, like Jai's. The whole-string versions are `String.to_upper_copy` and
 /// `String.to_upper_in_place`.
 to_upper :: (c: u8) -> u8 {
-    if is_lower(c) {
-        return c - 32;
-    }
-    return c;
+  if is_lower(c) {
+    return c - 32;
+  }
+  return c;
 }
 
 /// `c` lowered if it is an ASCII uppercase letter, unchanged otherwise.
 to_lower :: (c: u8) -> u8 {
-    if is_upper(c) {
-        return c + 32;
-    }
-    return c;
+  if is_upper(c) {
+    return c + 32;
+  }
+  return c;
 }
 
 /// Rewinds the temporary-storage cursor, freeing everything [`talloc`] handed out at once (ADR-0065).
@@ -161,7 +161,7 @@ to_lower :: (c: u8) -> u8 {
 /// from the start again. A pointer from before the reset is dangling afterwards, exactly as it would
 /// be after a `free` — the arena's contract is "valid until the next reset".
 reset_temporary_storage :: () {
-    context.temp_mark = 0;
+  context.temp_mark = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,27 +193,27 @@ reset_temporary_storage :: () {
 /// `#run`-only shapes such as the type of a type never reach here, because `type_info` refuses a type
 /// with no runtime layout (E0266).
 Type_Info_Kind :: enum {
-    VOID;
-    BOOL;
-    INTEGER;
-    FLOAT;
-    STRING;
-    POINTER;
-    ARRAY;
-    VIEW;
-    STRUCT;
-    UNION;
-    VARIANT;
-    ENUM;
-    PROCEDURE;
-    /// A `[..]T` dynamic array (ADR-0136, member added ADR-0140). Distinct from `VIEW`: a dynamic
-    /// array owns its heap storage and carries a `capacity`, so a program reflecting on one must be
-    /// able to tell the two apart — before this member `type_info([..]T)` was a hard const-eval
-    /// error, because the compiler names the shape and found no member to bind. **Appended** rather
-    /// than placed beside `VIEW` so no existing member's value moves: the compiler reads this member
-    /// by name (`jr-db`'s `type_info_kind_name`), but a snapshot or a caller comparing raw ordinals
-    /// would see every later shape renumber if it were inserted mid-list.
-    DYNAMIC_ARRAY;
+  VOID;
+  BOOL;
+  INTEGER;
+  FLOAT;
+  STRING;
+  POINTER;
+  ARRAY;
+  VIEW;
+  STRUCT;
+  UNION;
+  VARIANT;
+  ENUM;
+  PROCEDURE;
+  /// A `[..]T` dynamic array (ADR-0136, member added ADR-0140). Distinct from `VIEW`: a dynamic
+  /// array owns its heap storage and carries a `capacity`, so a program reflecting on one must be
+  /// able to tell the two apart — before this member `type_info([..]T)` was a hard const-eval
+  /// error, because the compiler names the shape and found no member to bind. **Appended** rather
+  /// than placed beside `VIEW` so no existing member's value moves: the compiler reads this member
+  /// by name (`jr-db`'s `type_info_kind_name`), but a snapshot or a caller comparing raw ordinals
+  /// would see every later shape renumber if it were inserted mid-list.
+  DYNAMIC_ARRAY;
 }
 
 /// Which operating system the program is being compiled for (ADR-0180 §1).
@@ -231,9 +231,9 @@ Type_Info_Kind :: enum {
 /// the member it wants **by name**, the way it resolves a `Type_Info_Kind`, so a member added in the
 /// middle would renumber the others harmlessly.
 Operating_System :: enum {
-    MACOS;
-    LINUX;
-    WINDOWS;
+  MACOS;
+  LINUX;
+  WINDOWS;
 }
 
 /// What the compiler knows about a type at run time (ADR-0075 §3, ADR-0077).
@@ -254,13 +254,13 @@ Operating_System :: enum {
 /// guessed. ADR-0100 §2 stated that limit honestly and named what it was waiting for — a compiler-emitted
 /// table — which ADR-0152 then built.
 Declaration :: struct {
-    /// The declared name, as written.
-    name: string;
-    /// The note's value — `@requires "x"` gives `"x"` — or `""` for a bare note like `@deprecated`.
-    ///
-    /// `""` rather than an absent marker, because a bare note genuinely has no value and a script that
-    /// wants to know whether one was written can compare against `""` without a second field.
-    note_value: string;
+  /// The declared name, as written.
+  name: string;
+  /// The note's value — `@requires "x"` gives `"x"` — or `""` for a bare note like `@deprecated`.
+  ///
+  /// `""` rather than an absent marker, because a bare note genuinely has no value and a script that
+  /// wants to know whether one was written can compare against `""` without a second field.
+  note_value: string;
 }
 
 /// One field of a struct, union or variant, as reflection reports it (ADR-0152 §3).
@@ -276,93 +276,93 @@ Declaration :: struct {
 /// *value* of its own, so a shared struct would leave one member meaningless in each use and a reader
 /// could not tell which. Two small structs cost one declaration and no ambiguity.
 Type_Info_Member :: struct {
-    /// The member's source name — the `BLUE` of `Colour.BLUE`.
-    name: string;
+  /// The member's source name — the `BLUE` of `Colour.BLUE`.
+  name: string;
 
-    /// The member's value, widened to `s64`.
-    ///
-    /// Every member of every enum shares one backing type (ADR-0041 §3), so a single width holds them
-    /// all and reflection needs no per-member type.
-    value: s64;
+  /// The member's value, widened to `s64`.
+  ///
+  /// Every member of every enum shares one backing type (ADR-0041 §3), so a single width holds them
+  /// all and reflection needs no per-member type.
+  value: s64;
 }
 
 Type_Info_Field :: struct {
-    /// The field's source name.
-    name: string;
-    /// The field's type, as a type id — the same kind of id `Type_Info.id` carries, so a program
-    /// compares it against another type's `id`.
-    ///
-    /// An id rather than a `*Type_Info`, for the reason `element` is one: a pointer to the field's own
-    /// info would need that info built and stored somewhere, and an id needs nothing built.
-    ty: s64;
-    /// The field's byte offset from the start of the aggregate, in the target's layout.
-    offset: s64;
+  /// The field's source name.
+  name: string;
+  /// The field's type, as a type id — the same kind of id `Type_Info.id` carries, so a program
+  /// compares it against another type's `id`.
+  ///
+  /// An id rather than a `*Type_Info`, for the reason `element` is one: a pointer to the field's own
+  /// info would need that info built and stored somewhere, and an id needs nothing built.
+  ty: s64;
+  /// The field's byte offset from the start of the aggregate, in the target's layout.
+  offset: s64;
 }
 
 Type_Info :: struct {
-    /// The type's canonical identity — its pool id, widened to `s64` (ADR-0077).
-    ///
-    /// An opaque token, not a number to do arithmetic on: two `type_info(T)` calls carry the same `id`
-    /// while two distinct types never do, which is what lets `any_as` check a value's type without
-    /// comparing pointers (two `type_info(T)` calls live in different slots, so their addresses differ).
-    id: s64;
-    /// Which shape this type is.
-    kind: Type_Info_Kind;
-    /// The type's source name, or a builtin's spelling (`"s64"`).
-    name: string;
-    /// The type's runtime size in bytes.
-    size: s64;
-    /// The type's runtime alignment in bytes.
-    alignment: s64;
-    /// A struct's field count, or an array's length; 0 for a kind that has neither (ADR-0078 §1).
-    ///
-    /// One field for both because both answer "how many"; which it means is read from `kind`, exactly as
-    /// `element` is. 0 is a real answer — a scalar has no count — not a sentinel for "unknown".
-    count: s64;
-    /// An array's element or a pointer's pointee, as a type id; 0 for a kind with no element (ADR-0078 §1).
-    ///
-    /// The same kind of id as [`Type_Info.id`], so a program compares it against another type's `id` to
-    /// ask "is this a `[]s64`?". It is an id rather than a `*Type_Info` because a pointer to the element's
-    /// info would need that info built and stored somewhere — deferred; an id needs nothing built.
-    element: s64;
-    /// Every field of a struct, union or variant, in declaration order (ADR-0152 §3).
-    ///
-    /// Empty for every other kind — a scalar has no fields, and that is a real answer rather than a
-    /// sentinel. The view points into a **read-only table the compiler emitted**, so it is valid for the
-    /// life of the program and must not be written through.
-    fields: []Type_Info_Field;
-    /// Whether an integer type is signed (ADR-0189 §3).
-    ///
-    /// Meaningful only where `kind` is `INTEGER`, and `false` for every other kind — which is a real
-    /// answer rather than a sentinel, since nothing else has a sign.
-    ///
-    /// **This is what makes printing an integer correct.** Width comes from `size`, and without this a
-    /// caller had to read the first byte of `name` and hope it was `s` or `u`. That works today by
-    /// accident: a builtin cannot be aliased at file scope, so an integer's name is always one of
-    /// `s8`..`u64`. Relying on it is how a `u64` above 2^63 comes to print as negative the day aliasing
-    /// starts working.
-    ///
-    /// Appended last, so no existing member's offset moves — the discipline `Type_Info_Kind`'s
-    /// `DYNAMIC_ARRAY` member records at length.
-    signed: bool;
+  /// The type's canonical identity — its pool id, widened to `s64` (ADR-0077).
+  ///
+  /// An opaque token, not a number to do arithmetic on: two `type_info(T)` calls carry the same `id`
+  /// while two distinct types never do, which is what lets `any_as` check a value's type without
+  /// comparing pointers (two `type_info(T)` calls live in different slots, so their addresses differ).
+  id: s64;
+  /// Which shape this type is.
+  kind: Type_Info_Kind;
+  /// The type's source name, or a builtin's spelling (`"s64"`).
+  name: string;
+  /// The type's runtime size in bytes.
+  size: s64;
+  /// The type's runtime alignment in bytes.
+  alignment: s64;
+  /// A struct's field count, or an array's length; 0 for a kind that has neither (ADR-0078 §1).
+  ///
+  /// One field for both because both answer "how many"; which it means is read from `kind`, exactly as
+  /// `element` is. 0 is a real answer — a scalar has no count — not a sentinel for "unknown".
+  count: s64;
+  /// An array's element or a pointer's pointee, as a type id; 0 for a kind with no element (ADR-0078 §1).
+  ///
+  /// The same kind of id as [`Type_Info.id`], so a program compares it against another type's `id` to
+  /// ask "is this a `[]s64`?". It is an id rather than a `*Type_Info` because a pointer to the element's
+  /// info would need that info built and stored somewhere — deferred; an id needs nothing built.
+  element: s64;
+  /// Every field of a struct, union or variant, in declaration order (ADR-0152 §3).
+  ///
+  /// Empty for every other kind — a scalar has no fields, and that is a real answer rather than a
+  /// sentinel. The view points into a **read-only table the compiler emitted**, so it is valid for the
+  /// life of the program and must not be written through.
+  fields: []Type_Info_Field;
+  /// Whether an integer type is signed (ADR-0189 §3).
+  ///
+  /// Meaningful only where `kind` is `INTEGER`, and `false` for every other kind — which is a real
+  /// answer rather than a sentinel, since nothing else has a sign.
+  ///
+  /// **This is what makes printing an integer correct.** Width comes from `size`, and without this a
+  /// caller had to read the first byte of `name` and hope it was `s` or `u`. That works today by
+  /// accident: a builtin cannot be aliased at file scope, so an integer's name is always one of
+  /// `s8`..`u64`. Relying on it is how a `u64` above 2^63 comes to print as negative the day aliasing
+  /// starts working.
+  ///
+  /// Appended last, so no existing member's offset moves — the discipline `Type_Info_Kind`'s
+  /// `DYNAMIC_ARRAY` member records at length.
+  signed: bool;
 
-    /// The members of an **enum**, in declaration order (ADR-0193 §1).
-    ///
-    /// Empty for every other kind — an enum is the only shape whose values have *names*. The view points
-    /// into a read-only table the compiler emitted, exactly as `fields` does, so it is valid for the life
-    /// of the program and must not be written through.
-    ///
-    /// This is what lets `print` show `Colour.BLUE` instead of `2`. Before it there was no member table
-    /// anywhere in the language, so an enum's ordinal was the most anything could say.
-    members: []Type_Info_Member;
+  /// The members of an **enum**, in declaration order (ADR-0193 §1).
+  ///
+  /// Empty for every other kind — an enum is the only shape whose values have *names*. The view points
+  /// into a read-only table the compiler emitted, exactly as `fields` does, so it is valid for the life
+  /// of the program and must not be written through.
+  ///
+  /// This is what lets `print` show `Colour.BLUE` instead of `2`. Before it there was no member table
+  /// anywhere in the language, so an enum's ordinal was the most anything could say.
+  members: []Type_Info_Member;
 
-    /// The size of one element of an array, view or dynamic array (ADR-0193 §2).
-    ///
-    /// Zero for every other kind. Needed because `element` is a type **id** and ADR-0077 §1 makes an id
-    /// opaque — so nothing could compute a *stride*, and a view's elements were unreachable even though
-    /// its header holds `data` and `count`. A fixed array escaped that only by arithmetic (`size / count`),
-    /// which a view cannot do because its `size` is the header's.
-    element_size: s64;
+  /// The size of one element of an array, view or dynamic array (ADR-0193 §2).
+  ///
+  /// Zero for every other kind. Needed because `element` is a type **id** and ADR-0077 §1 makes an id
+  /// opaque — so nothing could compute a *stride*, and a view's elements were unreachable even though
+  /// its header holds `data` and `count`. A fixed array escaped that only by arithmetic (`size / count`),
+  /// which a view cannot do because its `size` is the header's.
+  element_size: s64;
 }
 
 /// A value whose type is carried alongside it (ADR-0076 §3).
@@ -382,10 +382,10 @@ Type_Info :: struct {
 /// type system only. That is why the conversion is allowed *here* and a general pointer cast is not
 /// (ADR-0076 §1): a general one would make a wrong pointee type a silent wrong read.
 Any :: struct {
-    /// What `data` points at.
-    type: *Type_Info;
-    /// The value itself, erased. Read it back with `any_as` rather than by casting.
-    data: *u8;
+  /// What `data` points at.
+  type: *Type_Info;
+  /// The value itself, erased. Read it back with `any_as` rather than by casting.
+  data: *u8;
 }
 
 /// A growable byte destination made from allocator-owned buffers (ADR-0217).
@@ -399,22 +399,22 @@ Any :: struct {
 /// copies through the allocator active at conversion time. [`free_buffers`] therefore never invalidates
 /// a string already returned to the caller.
 String_Builder :: struct {
-    /// The first private buffer header, or null while empty.
-    first_buffer: *u8;
-    /// The last private buffer header, or null while empty.
-    last_buffer: *u8;
-    /// Total appended bytes across every buffer.
-    byte_count: s64;
-    /// Capacity to request for the next ordinary buffer.
-    next_buffer_capacity: s64;
-    /// The allocator captured on explicit or lazy initialization.
-    allocator: (s64) -> *u8;
-    /// The matching release procedure.
-    allocator_free: (*u8);
-    /// Mutable allocator state, copied into and back out of a pushed context for every call.
-    allocator_data: s64;
-    /// Whether the allocator triple has been captured.
-    initialized: bool;
+  /// The first private buffer header, or null while empty.
+  first_buffer: *u8;
+  /// The last private buffer header, or null while empty.
+  last_buffer: *u8;
+  /// Total appended bytes across every buffer.
+  byte_count: s64;
+  /// Capacity to request for the next ordinary buffer.
+  next_buffer_capacity: s64;
+  /// The allocator captured on explicit or lazy initialization.
+  allocator: (s64) -> *u8;
+  /// The matching release procedure.
+  allocator_free: (*u8);
+  /// Mutable allocator state, copied into and back out of a pushed context for every call.
+  allocator_data: s64;
+  /// Whether the allocator triple has been captured.
+  initialized: bool;
 }
 
 /// Explicitly initializes a builder from the active context allocator.
@@ -423,17 +423,17 @@ String_Builder :: struct {
 /// allocator triple is captured only after that cleanup, so changing context and reinitializing is an
 /// explicit ownership hand-off rather than a mismatched free.
 init_string_builder :: (builder: *String_Builder) {
-    if builder.initialized {
-        free_buffers(builder);
-    }
-    builder.first_buffer = null;
-    builder.last_buffer = null;
-    builder.byte_count = 0;
-    builder.next_buffer_capacity = STRING_BUILDER_FIRST_CAPACITY;
-    builder.allocator = context.allocator;
-    builder.allocator_free = context.allocator_free;
-    builder.allocator_data = context.allocator_data;
-    builder.initialized = true;
+  if builder.initialized {
+    free_buffers(builder);
+  }
+  builder.first_buffer = null;
+  builder.last_buffer = null;
+  builder.byte_count = 0;
+  builder.next_buffer_capacity = STRING_BUILDER_FIRST_CAPACITY;
+  builder.allocator = context.allocator;
+  builder.allocator_free = context.allocator_free;
+  builder.allocator_data = context.allocator_data;
+  builder.initialized = true;
 }
 
 /// Appends every byte of `text`.
@@ -441,7 +441,7 @@ init_string_builder :: (builder: *String_Builder) {
 /// Returns false only when another buffer was required and its allocation failed. Bytes already
 /// appended before a later allocation failure remain in the builder.
 append :: (builder: *String_Builder, text: string) -> bool {
-    return append_bytes(builder, text.data, text.count);
+  return append_bytes(builder, text.data, text.count);
 }
 
 /// Appends `count` bytes beginning at `data`.
@@ -449,51 +449,51 @@ append :: (builder: *String_Builder, text: string) -> bool {
 /// This is the explicit pointer-length spelling of Jai's overloaded `append`; general procedure
 /// overloading is not yet available in Jairs.
 append_bytes :: (builder: *String_Builder, data: *u8, count: s64) -> bool {
-    if count <= 0 {
-        return count == 0;
+  if count <= 0 {
+    return count == 0;
+  }
+
+  copied := 0;
+  while copied < count {
+    if builder.last_buffer == null {
+      if !string_builder_add_buffer(builder, count - copied) {
+        return false;
+      }
     }
 
-    copied := 0;
-    while copied < count {
-        if builder.last_buffer == null {
-            if !string_builder_add_buffer(builder, count - copied) {
-                return false;
-            }
-        }
-
-        last := typed(String_Builder_Buffer, builder.last_buffer);
-        available := last.capacity - last.used;
-        if available == 0 {
-            if !string_builder_add_buffer(builder, count - copied) {
-                return false;
-            }
-            last = typed(String_Builder_Buffer, builder.last_buffer);
-            available = last.capacity - last.used;
-        }
-
-        take := count - copied;
-        if take > available {
-            take = available;
-        }
-        destination := builder.last_buffer + size_of(String_Builder_Buffer) + last.used;
-        i := 0;
-        while i < take {
-            (destination + i).* = (data + copied + i).*;
-            i = i + 1;
-        }
-        last.used = last.used + take;
-        builder.byte_count = builder.byte_count + take;
-        copied = copied + take;
+    last := typed(String_Builder_Buffer, builder.last_buffer);
+    available := last.capacity - last.used;
+    if available == 0 {
+      if !string_builder_add_buffer(builder, count - copied) {
+        return false;
+      }
+      last = typed(String_Builder_Buffer, builder.last_buffer);
+      available = last.capacity - last.used;
     }
-    return true;
+
+    take := count - copied;
+    if take > available {
+      take = available;
+    }
+    destination := builder.last_buffer + size_of(String_Builder_Buffer) + last.used;
+    i := 0;
+    while i < take {
+      (destination + i).* = (data + copied + i).*;
+      i = i + 1;
+    }
+    last.used = last.used + take;
+    builder.byte_count = builder.byte_count + take;
+    copied = copied + take;
+  }
+  return true;
 }
 
 /// Appends one byte.
 ///
 /// A separate name is required until Jairs has general procedure overloading.
 append_byte :: (builder: *String_Builder, byte: u8) -> bool {
-    local := byte;
-    return append_bytes(builder, *local, 1);
+  local := byte;
+  return append_bytes(builder, *local, 1);
 }
 
 /// Formats directly into a builder through the same formatter used by [`print`] and [`format`].
@@ -501,17 +501,17 @@ append_byte :: (builder: *String_Builder, byte: u8) -> bool {
 /// Unlike `format`, this destination is unbounded except by allocation failure: it never stages the
 /// result through the formatter's 4096-byte array. Returns false if growing the builder failed.
 print_to_builder :: (builder: *String_Builder, format_string: string, args: ..Any) -> bool {
-    out_reset_builder(builder);
-    format_into_out(format_string, args);
-    ok := out_ok;
-    out_builder = null;
-    out_count = 0;
-    return ok;
+  out_reset_builder(builder);
+  format_into_out(format_string, args);
+  ok := out_ok;
+  out_builder = null;
+  out_count = 0;
+  return ok;
 }
 
 /// The number of bytes currently held by a builder.
 builder_string_length :: (builder: *String_Builder) -> s64 {
-    return builder.byte_count;
+  return builder.byte_count;
 }
 
 /// Copies the builder's bytes into one string allocated through the active context.
@@ -519,33 +519,33 @@ builder_string_length :: (builder: *String_Builder) -> s64 {
 /// The builder is unchanged. The returned storage is independent and remains valid after
 /// [`free_buffers`]; release it through the same context allocator used by other owned strings.
 builder_to_string :: (builder: *String_Builder) -> string {
-    result: string;
-    result.data = null;
-    result.count = 0;
-    if builder.byte_count == 0 {
-        return result;
-    }
-
-    result.data = context.allocator(builder.byte_count);
-    if result.data == null {
-        return result;
-    }
-    result.count = builder.byte_count;
-
-    written := 0;
-    raw := builder.first_buffer;
-    while raw != null {
-        buffer := typed(String_Builder_Buffer, raw);
-        source := raw + size_of(String_Builder_Buffer);
-        i := 0;
-        while i < buffer.used {
-            (result.data + written + i).* = (source + i).*;
-            i = i + 1;
-        }
-        written = written + buffer.used;
-        raw = buffer.next;
-    }
+  result: string;
+  result.data = null;
+  result.count = 0;
+  if builder.byte_count == 0 {
     return result;
+  }
+
+  result.data = context.allocator(builder.byte_count);
+  if result.data == null {
+    return result;
+  }
+  result.count = builder.byte_count;
+
+  written := 0;
+  raw := builder.first_buffer;
+  while raw != null {
+    buffer := typed(String_Builder_Buffer, raw);
+    source := raw + size_of(String_Builder_Buffer);
+    i := 0;
+    while i < buffer.used {
+      (result.data + written + i).* = (source + i).*;
+      i = i + 1;
+    }
+    written = written + buffer.used;
+    raw = buffer.next;
+  }
+  return result;
 }
 
 /// Releases every private buffer and empties the builder.
@@ -553,21 +553,21 @@ builder_to_string :: (builder: *String_Builder) -> string {
 /// Idempotent. The captured allocator triple is retained, so a later append reuses the same ownership
 /// policy even when the caller's active context has changed.
 free_buffers :: (builder: *String_Builder) {
-    if !builder.initialized {
-        return;
-    }
+  if !builder.initialized {
+    return;
+  }
 
-    raw := builder.first_buffer;
-    while raw != null {
-        buffer := typed(String_Builder_Buffer, raw);
-        next := buffer.next;
-        string_builder_release(builder, raw);
-        raw = next;
-    }
-    builder.first_buffer = null;
-    builder.last_buffer = null;
-    builder.byte_count = 0;
-    builder.next_buffer_capacity = STRING_BUILDER_FIRST_CAPACITY;
+  raw := builder.first_buffer;
+  while raw != null {
+    buffer := typed(String_Builder_Buffer, raw);
+    next := buffer.next;
+    string_builder_release(builder, raw);
+    raw = next;
+  }
+  builder.first_buffer = null;
+  builder.last_buffer = null;
+  builder.byte_count = 0;
+  builder.next_buffer_capacity = STRING_BUILDER_FIRST_CAPACITY;
 }
 
 /// The standard output file descriptor.
@@ -609,7 +609,8 @@ STDERR :: 2;
 /// # Buffering, and the one caveat
 ///
 /// Output goes through a module-level buffer and reaches `write` once per call rather than once per
-/// byte — the old `print_int` cost one syscall *per digit*. The buffer is a file-scope global, which is
+/// byte — the former standalone integer path cost one syscall *per digit*. The buffer is a file-scope
+/// global, which is
 /// where Jai keeps its equivalent and which ADR-0186 made possible.
 ///
 /// **It is therefore not thread-safe**, and that is stated rather than hidden: two threads printing at
@@ -617,9 +618,9 @@ STDERR :: 2;
 /// per-thread; matching that needs `#add_context`, which ADR-0186 records as owed. Until then, a
 /// threaded program prints from one thread.
 print :: (fmt: string, args: ..Any) -> s64 {
-    out_reset(STDOUT);
-    format_into_out(fmt, args);
-    return out_flush();
+  out_reset(STDOUT);
+  format_into_out(fmt, args);
+  return out_flush();
 }
 
 /// `print`, to standard error.
@@ -629,21 +630,20 @@ print :: (fmt: string, args: ..Any) -> s64 {
 /// trailing argument is packed into the variadic (ADR-0139 §1). So the choice is a second name or a
 /// parameter before the format string, and a second name reads better at every call site.
 print_error :: (fmt: string, args: ..Any) -> s64 {
-    out_reset(STDERR);
-    format_into_out(fmt, args);
-    return out_flush();
+  out_reset(STDERR);
+  format_into_out(fmt, args);
+  return out_flush();
 }
 
 /// `print`, with a newline appended.
 ///
-/// Takes a format string and arguments like `print` does, so `print_line("x = %", x)` works. It used to
-/// take a bare `string`; every existing call still compiles, because a call with no trailing arguments
-/// packs an empty variadic and a format string with no `%` is copied through.
+/// A compatibility convenience for older callers. New code should put `\n` in the format string and
+/// call [`print`] directly, keeping one formatting vocabulary in examples and tests.
 print_line :: (fmt: string, args: ..Any) -> s64 {
-    out_reset(STDOUT);
-    format_into_out(fmt, args);
-    out_byte(cast(u8, NEWLINE));
-    return out_flush();
+  out_reset(STDOUT);
+  format_into_out(fmt, args);
+  out_byte(cast(u8, NEWLINE));
+  return out_flush();
 }
 
 /// Formats into a caller's buffer instead of writing, returning the bytes used (ADR-0189 §4).
@@ -657,19 +657,19 @@ print_line :: (fmt: string, args: ..Any) -> s64 {
 /// that must handle an error for a debug line will ignore it, and growing the buffer needs an allocator
 /// this procedure deliberately does not take.
 format :: (buffer: []u8, fmt: string, args: ..Any) -> s64 {
-    out_reset(NO_FD);
-    format_into_out(fmt, args);
-    n := out_count;
-    if n > buffer.count {
-        n = buffer.count;
-    }
-    i := 0;
-    while i < n {
-        buffer[i] = out_bytes[i];
-        i = i + 1;
-    }
-    out_count = 0;
-    return n;
+  out_reset(NO_FD);
+  format_into_out(fmt, args);
+  n := out_count;
+  if n > buffer.count {
+    n = buffer.count;
+  }
+  i := 0;
+  while i < n {
+    buffer[i] = out_bytes[i];
+    i = i + 1;
+  }
+  out_count = 0;
+  return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -695,9 +695,9 @@ STRING_BUILDER_FIRST_CAPACITY :: 256;
 
 /// A private builder allocation header. Its bytes begin immediately after this value.
 String_Builder_Buffer :: struct {
-    next: *u8;
-    used: s64;
-    capacity: s64;
+  next: *u8;
+  used: s64;
+  capacity: s64;
 }
 
 /// The output buffer.
@@ -737,135 +737,135 @@ LOWER_A :: 97;
 
 /// Starts a fresh formatting run at `fd`.
 out_reset :: (fd: s64) {
-    out_count = 0;
-    out_fd = fd;
-    out_written = 0;
-    out_builder = null;
-    out_ok = true;
+  out_count = 0;
+  out_fd = fd;
+  out_written = 0;
+  out_builder = null;
+  out_ok = true;
 }
 
 /// Starts a formatting run whose destination is a string builder.
 out_reset_builder :: (builder: *String_Builder) {
-    out_count = 0;
-    out_fd = NO_FD;
-    out_written = 0;
-    out_builder = builder;
-    out_ok = true;
+  out_count = 0;
+  out_fd = NO_FD;
+  out_written = 0;
+  out_builder = builder;
+  out_ok = true;
 }
 
 /// Writes the buffer out and returns the total bytes this run produced.
 out_flush :: () -> s64 {
-    if out_count > 0 && out_fd != NO_FD {
-        write(out_fd, *out_bytes[0], out_count);
-        out_count = 0;
-    }
-    return out_written;
+  if out_count > 0 && out_fd != NO_FD {
+    write(out_fd, *out_bytes[0], out_count);
+    out_count = 0;
+  }
+  return out_written;
 }
 
 /// Appends one byte, flushing first when the buffer is full.
 out_byte :: (b: u8) {
-    if out_builder != null {
-        if out_ok {
-            out_ok = append_byte(out_builder, b);
-            if out_ok {
-                out_written = out_written + 1;
-            }
-        }
-        return;
+  if out_builder != null {
+    if out_ok {
+      out_ok = append_byte(out_builder, b);
+      if out_ok {
+        out_written = out_written + 1;
+      }
     }
-    if out_count >= OUT_CAPACITY {
-        if out_fd == NO_FD {
-            // Nowhere to flush to, so a `format` longer than the buffer stops here. The caller learns
-            // this from a return value equal to their buffer's size, which is the documented contract.
-            return;
-        }
-        write(out_fd, *out_bytes[0], out_count);
-        out_count = 0;
+    return;
+  }
+  if out_count >= OUT_CAPACITY {
+    if out_fd == NO_FD {
+      // Nowhere to flush to, so a `format` longer than the buffer stops here. The caller learns
+      // this from a return value equal to their buffer's size, which is the documented contract.
+      return;
     }
-    out_bytes[out_count] = b;
-    out_count = out_count + 1;
-    out_written = out_written + 1;
+    write(out_fd, *out_bytes[0], out_count);
+    out_count = 0;
+  }
+  out_bytes[out_count] = b;
+  out_count = out_count + 1;
+  out_written = out_written + 1;
 }
 
 /// Captures the active allocator for a zero-value builder.
 string_builder_ensure_initialized :: (builder: *String_Builder) {
-    if builder.initialized {
-        return;
-    }
-    builder.first_buffer = null;
-    builder.last_buffer = null;
-    builder.byte_count = 0;
-    builder.next_buffer_capacity = STRING_BUILDER_FIRST_CAPACITY;
-    builder.allocator = context.allocator;
-    builder.allocator_free = context.allocator_free;
-    builder.allocator_data = context.allocator_data;
-    builder.initialized = true;
+  if builder.initialized {
+    return;
+  }
+  builder.first_buffer = null;
+  builder.last_buffer = null;
+  builder.byte_count = 0;
+  builder.next_buffer_capacity = STRING_BUILDER_FIRST_CAPACITY;
+  builder.allocator = context.allocator;
+  builder.allocator_free = context.allocator_free;
+  builder.allocator_data = context.allocator_data;
+  builder.initialized = true;
 }
 
 /// Allocates through the builder's captured allocator and preserves its mutated state word.
 string_builder_allocate :: (builder: *String_Builder, size: s64) -> *u8 {
-    string_builder_ensure_initialized(builder);
-    result: *u8 = null;
-    updated_data := builder.allocator_data;
-    push_context {
-        context.allocator = builder.allocator;
-        context.allocator_free = builder.allocator_free;
-        context.allocator_data = builder.allocator_data;
-        result = context.allocator(size);
-        updated_data = context.allocator_data;
-    }
-    builder.allocator_data = updated_data;
-    return result;
+  string_builder_ensure_initialized(builder);
+  result: *u8 = null;
+  updated_data := builder.allocator_data;
+  push_context {
+    context.allocator = builder.allocator;
+    context.allocator_free = builder.allocator_free;
+    context.allocator_data = builder.allocator_data;
+    result = context.allocator(size);
+    updated_data = context.allocator_data;
+  }
+  builder.allocator_data = updated_data;
+  return result;
 }
 
 /// Releases through the builder's captured allocator and preserves its mutated state word.
 string_builder_release :: (builder: *String_Builder, allocation: *u8) {
-    updated_data := builder.allocator_data;
-    push_context {
-        context.allocator = builder.allocator;
-        context.allocator_free = builder.allocator_free;
-        context.allocator_data = builder.allocator_data;
-        context.allocator_free(allocation);
-        updated_data = context.allocator_data;
-    }
-    builder.allocator_data = updated_data;
+  updated_data := builder.allocator_data;
+  push_context {
+    context.allocator = builder.allocator;
+    context.allocator_free = builder.allocator_free;
+    context.allocator_data = builder.allocator_data;
+    context.allocator_free(allocation);
+    updated_data = context.allocator_data;
+  }
+  builder.allocator_data = updated_data;
 }
 
 /// Adds one private buffer, large enough for `minimum_capacity`.
 string_builder_add_buffer :: (builder: *String_Builder, minimum_capacity: s64) -> bool {
-    string_builder_ensure_initialized(builder);
-    capacity := builder.next_buffer_capacity;
-    if capacity < minimum_capacity {
-        capacity = minimum_capacity;
-    }
-    raw := string_builder_allocate(builder, size_of(String_Builder_Buffer) + capacity);
-    if raw == null {
-        return false;
-    }
+  string_builder_ensure_initialized(builder);
+  capacity := builder.next_buffer_capacity;
+  if capacity < minimum_capacity {
+    capacity = minimum_capacity;
+  }
+  raw := string_builder_allocate(builder, size_of(String_Builder_Buffer) + capacity);
+  if raw == null {
+    return false;
+  }
 
-    buffer := typed(String_Builder_Buffer, raw);
-    buffer.next = null;
-    buffer.used = 0;
-    buffer.capacity = capacity;
+  buffer := typed(String_Builder_Buffer, raw);
+  buffer.next = null;
+  buffer.used = 0;
+  buffer.capacity = capacity;
 
-    if builder.last_buffer == null {
-        builder.first_buffer = raw;
-    } else {
-        last := typed(String_Builder_Buffer, builder.last_buffer);
-        last.next = raw;
-    }
-    builder.last_buffer = raw;
-    builder.next_buffer_capacity = capacity * 2;
-    return true;
+  if builder.last_buffer == null {
+    builder.first_buffer = raw;
+  } else {
+    last := typed(String_Builder_Buffer, builder.last_buffer);
+    last.next = raw;
+  }
+  builder.last_buffer = raw;
+  builder.next_buffer_capacity = capacity * 2;
+  return true;
 }
 
 /// Appends every byte of a string.
 out_str :: (s: string) {
-    i := 0;
-    while i < s.count {
-        out_byte((s.data + i).*);
-        i = i + 1;
-    }
+  i := 0;
+  while i < s.count {
+    out_byte((s.data + i).*);
+    i = i + 1;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -879,65 +879,63 @@ out_str :: (s: string) {
 /// recursed instead, one frame per digit, because arrays did not exist when it was written — the note at
 /// the bottom of this file records that arc.
 out_u64 :: (v: u64) {
-    if v == 0 {
-        out_byte(cast(u8, ZERO_DIGIT));
-        return;
-    }
-    scratch: [20]u8 = ---;
-    n := 0;
-    x := v;
-    while x > 0 {
-        scratch[n] = cast(u8, cast(s64, x % 10) + ZERO_DIGIT);
-        x = x / 10;
-        n = n + 1;
-    }
-    while n > 0 {
-        n = n - 1;
-        out_byte(scratch[n]);
-    }
+  if v == 0 {
+    out_byte(cast(u8, ZERO_DIGIT));
+    return;
+  }
+  scratch: [20]u8 = ---;
+  n := 0;
+  x := v;
+  while x > 0 {
+    scratch[n] = cast(u8, cast(s64, x % 10) + ZERO_DIGIT);
+    x = x / 10;
+    n = n + 1;
+  }
+  while n > 0 {
+    n = n - 1;
+    out_byte(scratch[n]);
+  }
 }
 
 /// Appends a signed integer in decimal, **including the most negative one**.
 ///
-/// `print_int` traps on `S64_MIN`, because it negates and ADR-0002 makes overflow a trap. Its own docs
-/// admitted that and said the fix "needs either an unsigned path or `-%`". It needs both, and this is
-/// them: the value is *reinterpreted* as a `u64` and then wrapping-negated, which yields the magnitude
-/// for every negative input — `S64_MIN` reinterprets to 2^63 and negates to 2^63, which is exactly its
-/// magnitude. No value is out of range, because a `u64` holds every `s64`'s magnitude.
+/// The old standalone integer path trapped on `S64_MIN`, because it negated and ADR-0002 makes overflow
+/// a trap. The formatter reinterprets the value as `u64` and wrapping-negates it, yielding the magnitude
+/// for every negative input. No value is out of range because a `u64` holds every `s64` magnitude.
 out_s64 :: (v: s64) {
-    if v < 0 {
-        out_byte(cast(u8, MINUS));
-        zero: u64 = 0;
-        out_u64(zero -% cast(u64, v));
-        return;
-    }
-    out_u64(cast(u64, v));
+  if v < 0 {
+    out_byte(cast(u8, MINUS));
+    zero: u64 = 0;
+    out_u64(zero -% cast(u64, v));
+    return;
+  }
+  out_u64(cast(u64, v));
 }
 
 /// Appends `0x` and the value in lower-case hexadecimal, with no leading zeros.
 out_hex :: (v: u64) {
-    out_str("0x");
-    if v == 0 {
-        out_byte(cast(u8, ZERO_DIGIT));
-        return;
+  out_str("0x");
+  if v == 0 {
+    out_byte(cast(u8, ZERO_DIGIT));
+    return;
+  }
+  scratch: [16]u8 = ---;
+  n := 0;
+  x := v;
+  while x > 0 {
+    digit := cast(s64, x % 16);
+    if digit < 10 {
+      scratch[n] = cast(u8, digit + ZERO_DIGIT);
+    } else {
+      scratch[n] = cast(u8, digit - 10 + LOWER_A);
     }
-    scratch: [16]u8 = ---;
-    n := 0;
-    x := v;
-    while x > 0 {
-        digit := cast(s64, x % 16);
-        if digit < 10 {
-            scratch[n] = cast(u8, digit + ZERO_DIGIT);
-        } else {
-            scratch[n] = cast(u8, digit - 10 + LOWER_A);
-        }
-        x = x / 16;
-        n = n + 1;
-    }
-    while n > 0 {
-        n = n - 1;
-        out_byte(scratch[n]);
-    }
+    x = x / 16;
+    n = n + 1;
+  }
+  while n > 0 {
+    n = n - 1;
+    out_byte(scratch[n]);
+  }
 }
 
 /// How many fraction digits a float is rendered with.
@@ -972,67 +970,67 @@ SCIENTIFIC_ABOVE :: 1.0e17;
 /// The integer part is exact for every `|x| < 1e17`, because it is taken through `u64`. Above that, and
 /// for a subnormal, the value goes to scientific notation, where the mantissa gets the same treatment.
 out_float :: (x: float64) {
-    // NaN first, because it fails every comparison below — including `x < 0.0` — so any other order
-    // would print it as a number. `x != x` is the only test that identifies it without a library.
-    if x != x {
-        out_str("NaN");
-        return;
-    }
-    v := x;
-    if v < 0.0 {
-        out_byte(cast(u8, MINUS));
-        v = 0.0 - v;
-    }
-    if v > 1.0e308 {
-        out_str("Infinity");
-        return;
-    }
-    if v >= SCIENTIFIC_ABOVE {
-        out_scientific(v);
-        return;
-    }
-    // The integer part, exact: `v < 1e17` fits a `u64` with room to spare, and a float-to-int cast
-    // truncates toward zero.
-    whole := cast(u64, v);
-    out_u64(whole);
-    fraction := v - cast(float64, whole);
-    // One multiply and one rounding, then the digits are read out of an integer — so the digits emitted
-    // are exactly those of the rounded scaled value, with no per-digit error accumulation.
-    scaled := cast(u64, fraction * cast(float64, FRACTION_SCALE) + 0.5);
-    if scaled >= cast(u64, FRACTION_SCALE) {
-        // The rounding carried into the integer part. Re-emit is not possible — the whole part is
-        // already written — so the carry is dropped and the fraction clamps to all nines. This is the
-        // one place the renderer is knowingly off by one in the last digit, and it needs the exact
-        // algorithm to fix rather than a bigger hammer.
-        scaled = cast(u64, FRACTION_SCALE) - 1;
-    }
-    if scaled == 0 {
-        return;
-    }
-    out_byte(cast(u8, DOT));
-    out_fraction(scaled);
+  // NaN first, because it fails every comparison below — including `x < 0.0` — so any other order
+  // would print it as a number. `x != x` is the only test that identifies it without a library.
+  if x != x {
+    out_str("NaN");
+    return;
+  }
+  v := x;
+  if v < 0.0 {
+    out_byte(cast(u8, MINUS));
+    v = 0.0 - v;
+  }
+  if v > 1.0e308 {
+    out_str("Infinity");
+    return;
+  }
+  if v >= SCIENTIFIC_ABOVE {
+    out_scientific(v);
+    return;
+  }
+  // The integer part, exact: `v < 1e17` fits a `u64` with room to spare, and a float-to-int cast
+  // truncates toward zero.
+  whole := cast(u64, v);
+  out_u64(whole);
+  fraction := v - cast(float64, whole);
+  // One multiply and one rounding, then the digits are read out of an integer — so the digits emitted
+  // are exactly those of the rounded scaled value, with no per-digit error accumulation.
+  scaled := cast(u64, fraction * cast(float64, FRACTION_SCALE) + 0.5);
+  if scaled >= cast(u64, FRACTION_SCALE) {
+    // The rounding carried into the integer part. Re-emit is not possible — the whole part is
+    // already written — so the carry is dropped and the fraction clamps to all nines. This is the
+    // one place the renderer is knowingly off by one in the last digit, and it needs the exact
+    // algorithm to fix rather than a bigger hammer.
+    scaled = cast(u64, FRACTION_SCALE) - 1;
+  }
+  if scaled == 0 {
+    return;
+  }
+  out_byte(cast(u8, DOT));
+  out_fraction(scaled);
 }
 
 /// Appends `scaled` as [`FRACTION_DIGITS`] digits with leading zeros kept and trailing zeros trimmed.
 out_fraction :: (scaled: u64) {
-    digits: [FRACTION_DIGITS]u8 = ---;
-    x := scaled;
-    i := FRACTION_DIGITS;
-    while i > 0 {
-        i = i - 1;
-        digits[i] = cast(u8, cast(s64, x % 10) + ZERO_DIGIT);
-        x = x / 10;
-    }
-    // Trailing zeros carry no information about the value, and `1.5` reads better than `1.500000000`.
-    last := FRACTION_DIGITS;
-    while last > 1 && digits[last - 1] == cast(u8, ZERO_DIGIT) {
-        last = last - 1;
-    }
-    i = 0;
-    while i < last {
-        out_byte(digits[i]);
-        i = i + 1;
-    }
+  digits: [FRACTION_DIGITS]u8 = ---;
+  x := scaled;
+  i := FRACTION_DIGITS;
+  while i > 0 {
+    i = i - 1;
+    digits[i] = cast(u8, cast(s64, x % 10) + ZERO_DIGIT);
+    x = x / 10;
+  }
+  // Trailing zeros carry no information about the value, and `1.5` reads better than `1.500000000`.
+  last := FRACTION_DIGITS;
+  while last > 1 && digits[last - 1] == cast(u8, ZERO_DIGIT) {
+    last = last - 1;
+  }
+  i = 0;
+  while i < last {
+    out_byte(digits[i]);
+    i = i + 1;
+  }
 }
 
 /// Appends a large positive float as `d.dddddddddde+NN`.
@@ -1041,22 +1039,22 @@ out_fraction :: (scaled: u64) {
 /// brought into `[1, 10)` by repeated division, which costs one rounding per step — so this is the least
 /// exact path in the renderer and is documented as such above.
 out_scientific :: (v: float64) {
-    mantissa := v;
-    exponent := 0;
-    while mantissa >= 10.0 {
-        mantissa = mantissa / 10.0;
-        exponent = exponent + 1;
-    }
-    whole := cast(u64, mantissa);
-    out_u64(whole);
-    fraction := mantissa - cast(float64, whole);
-    scaled := cast(u64, fraction * cast(float64, FRACTION_SCALE) + 0.5);
-    if scaled > 0 && scaled < cast(u64, FRACTION_SCALE) {
-        out_byte(cast(u8, DOT));
-        out_fraction(scaled);
-    }
-    out_str("e+");
-    out_u64(cast(u64, exponent));
+  mantissa := v;
+  exponent := 0;
+  while mantissa >= 10.0 {
+    mantissa = mantissa / 10.0;
+    exponent = exponent + 1;
+  }
+  whole := cast(u64, mantissa);
+  out_u64(whole);
+  fraction := mantissa - cast(float64, whole);
+  scaled := cast(u64, fraction * cast(float64, FRACTION_SCALE) + 0.5);
+  if scaled > 0 && scaled < cast(u64, FRACTION_SCALE) {
+    out_byte(cast(u8, DOT));
+    out_fraction(scaled);
+  }
+  out_str("e+");
+  out_u64(cast(u64, exponent));
 }
 
 // ---------------------------------------------------------------------------
@@ -1068,30 +1066,30 @@ out_scientific :: (v: float64) {
 /// A width switch rather than a memcpy, because a narrow signed value must be **sign-extended** and only
 /// a load at its own type does that: reading an `s8` of -1 as a byte gives 255.
 read_signed :: (p: *u8, size: s64) -> s64 {
-    if size == 1 {
-        return cast(s64, typed(s8, p).*);
-    }
-    if size == 2 {
-        return cast(s64, typed(s16, p).*);
-    }
-    if size == 4 {
-        return cast(s64, typed(s32, p).*);
-    }
-    return typed(s64, p).*;
+  if size == 1 {
+    return cast(s64, typed(s8, p).*);
+  }
+  if size == 2 {
+    return cast(s64, typed(s16, p).*);
+  }
+  if size == 4 {
+    return cast(s64, typed(s32, p).*);
+  }
+  return typed(s64, p).*;
 }
 
 /// Reads an unsigned integer of `size` bytes, zero-extended to `u64`.
 read_unsigned :: (p: *u8, size: s64) -> u64 {
-    if size == 1 {
-        return cast(u64, p.*);
-    }
-    if size == 2 {
-        return cast(u64, typed(u16, p).*);
-    }
-    if size == 4 {
-        return cast(u64, typed(u32, p).*);
-    }
-    return typed(u64, p).*;
+  if size == 1 {
+    return cast(u64, p.*);
+  }
+  if size == 2 {
+    return cast(u64, typed(u16, p).*);
+  }
+  if size == 4 {
+    return cast(u64, typed(u32, p).*);
+  }
+  return typed(u64, p).*;
 }
 
 // ---------------------------------------------------------------------------
@@ -1105,63 +1103,63 @@ read_unsigned :: (p: *u8, size: s64) -> u64 {
 /// procedure treats identically would need its own arm, and the *default* below is the honest answer for
 /// several of them at once.
 format_any :: (a: Any) {
-    kind := a.type.kind;
-    if kind == Type_Info_Kind.INTEGER {
-        if a.type.signed {
-            out_s64(read_signed(a.data, a.type.size));
-        } else {
-            out_u64(read_unsigned(a.data, a.type.size));
-        }
-        return;
+  kind := a.type.kind;
+  if kind == Type_Info_Kind.INTEGER {
+    if a.type.signed {
+      out_s64(read_signed(a.data, a.type.size));
+    } else {
+      out_u64(read_unsigned(a.data, a.type.size));
     }
-    if kind == Type_Info_Kind.BOOL {
-        if a.data.* != 0 {
-            out_str("true");
-        } else {
-            out_str("false");
-        }
-        return;
+    return;
+  }
+  if kind == Type_Info_Kind.BOOL {
+    if a.data.* != 0 {
+      out_str("true");
+    } else {
+      out_str("false");
     }
-    if kind == Type_Info_Kind.STRING {
-        out_str(typed(string, a.data).*);
-        return;
+    return;
+  }
+  if kind == Type_Info_Kind.STRING {
+    out_str(typed(string, a.data).*);
+    return;
+  }
+  if kind == Type_Info_Kind.FLOAT {
+    // `float32` is widened rather than rendered separately: the digits come from a `float64`
+    // computation either way, and a separate path would be a second renderer to keep in step.
+    if a.type.size == 4 {
+      out_float(cast(float64, typed(float32, a.data).*));
+    } else {
+      out_float(typed(float64, a.data).*);
     }
-    if kind == Type_Info_Kind.FLOAT {
-        // `float32` is widened rather than rendered separately: the digits come from a `float64`
-        // computation either way, and a separate path would be a second renderer to keep in step.
-        if a.type.size == 4 {
-            out_float(cast(float64, typed(float32, a.data).*));
-        } else {
-            out_float(typed(float64, a.data).*);
-        }
-        return;
-    }
-    if kind == Type_Info_Kind.POINTER {
-        out_hex(read_unsigned(a.data, a.type.size));
-        return;
-    }
-    if kind == Type_Info_Kind.ENUM {
-        format_enum(a);
-        return;
-    }
-    if kind == Type_Info_Kind.STRUCT || kind == Type_Info_Kind.UNION || kind == Type_Info_Kind.VARIANT {
-        format_aggregate(a);
-        return;
-    }
-    if kind == Type_Info_Kind.ARRAY {
-        format_array(a);
-        return;
-    }
-    if kind == Type_Info_Kind.VIEW || kind == Type_Info_Kind.DYNAMIC_ARRAY {
-        format_sequence(a);
-        return;
-    }
-    // Everything left — a procedure, `void`, a vector. Its type name is the most a caller can be told, and
-    // for a structural type that name is the lowercased *kind* rather than a spelling (`<procedure>`),
-    // because the compiler records no name for one.
-    out_byte(cast(u8, 60));
-    out_str(a.type.name);
-    out_byte(cast(u8, 62));
+    return;
+  }
+  if kind == Type_Info_Kind.POINTER {
+    out_hex(read_unsigned(a.data, a.type.size));
+    return;
+  }
+  if kind == Type_Info_Kind.ENUM {
+    format_enum(a);
+    return;
+  }
+  if kind == Type_Info_Kind.STRUCT || kind == Type_Info_Kind.UNION || kind == Type_Info_Kind.VARIANT {
+    format_aggregate(a);
+    return;
+  }
+  if kind == Type_Info_Kind.ARRAY {
+    format_array(a);
+    return;
+  }
+  if kind == Type_Info_Kind.VIEW || kind == Type_Info_Kind.DYNAMIC_ARRAY {
+    format_sequence(a);
+    return;
+  }
+  // Everything left — a procedure, `void`, a vector. Its type name is the most a caller can be told, and
+  // for a structural type that name is the lowercased *kind* rather than a spelling (`<procedure>`),
+  // because the compiler records no name for one.
+  out_byte(cast(u8, 60));
+  out_str(a.type.name);
+  out_byte(cast(u8, 62));
 }
 
 /// Appends an enum as its **member name**, or as its number when no member has that value.
@@ -1174,17 +1172,17 @@ format_any :: (a: Any) {
 /// A value with no matching member prints as a number rather than as `<invalid>`: an enum's storage can
 /// hold one (a cast, or a flags enum's combination), and the number is the only true thing to say about it.
 format_enum :: (a: Any) {
-    value := read_signed(a.data, a.type.size);
-    members := a.type.members;
-    i := 0;
-    while i < members.count {
-        if members[i].value == value {
-            out_str(members[i].name);
-            return;
-        }
-        i = i + 1;
+  value := read_signed(a.data, a.type.size);
+  members := a.type.members;
+  i := 0;
+  while i < members.count {
+    if members[i].value == value {
+      out_str(members[i].name);
+      return;
     }
-    out_s64(value);
+    i = i + 1;
+  }
+  out_s64(value);
 }
 
 /// Appends a view or dynamic array as `[a, b, c]`.
@@ -1198,31 +1196,31 @@ format_enum :: (a: Any) {
 /// an id yields no size, so nothing could compute where the second element starts. A fixed array escaped
 /// that only by arithmetic its own `size` allows and a view's does not.
 format_sequence :: (a: Any) {
-    // The header's first word **as a pointer**, not as a number: `typed(*u8, a.data)` is a `**u8` and
-    // dereferencing it yields the `*u8` stored there. Reading it with `read_unsigned` gives the same bits
-    // and the wrong *type* — there is no conversion from an integer back to a pointer (ADR-0106 §1 allows
-    // retyping a pointer, deliberately not inventing one), so element addresses have to come from pointer
-    // arithmetic on this, exactly as `format_array` does on `a.data`.
-    data := typed(*u8, a.data).*;
-    count := read_signed(a.data + 8, 8);
-    stride := a.type.element_size;
-    out_byte(cast(u8, 91));
-    // A stride of zero would loop forever printing the first element, so it is refused rather than
-    // trusted. It can only happen if the compiler emitted no size for a kind that has elements, which is
-    // this compiler's bug — and printing `[?]` says so without hanging the program that asked.
-    if stride == 0 {
-        out_byte(cast(u8, 63));
-    } else {
-        i := 0;
-        while i < count {
-            if i > 0 {
-                out_str(", ");
-            }
-            format_field(data + i * stride, a.type.element);
-            i = i + 1;
-        }
+  // The header's first word **as a pointer**, not as a number: `typed(*u8, a.data)` is a `**u8` and
+  // dereferencing it yields the `*u8` stored there. Reading it with `read_unsigned` gives the same bits
+  // and the wrong *type* — there is no conversion from an integer back to a pointer (ADR-0106 §1 allows
+  // retyping a pointer, deliberately not inventing one), so element addresses have to come from pointer
+  // arithmetic on this, exactly as `format_array` does on `a.data`.
+  data := typed(*u8, a.data).*;
+  count := read_signed(a.data + 8, 8);
+  stride := a.type.element_size;
+  out_byte(cast(u8, 91));
+  // A stride of zero would loop forever printing the first element, so it is refused rather than
+  // trusted. It can only happen if the compiler emitted no size for a kind that has elements, which is
+  // this compiler's bug — and printing `[?]` says so without hanging the program that asked.
+  if stride == 0 {
+    out_byte(cast(u8, 63));
+  } else {
+    i := 0;
+    while i < count {
+      if i > 0 {
+        out_str(", ");
+      }
+      format_field(data + i * stride, a.type.element);
+      i = i + 1;
     }
-    out_byte(cast(u8, 93));
+  }
+  out_byte(cast(u8, 93));
 }
 
 /// Appends a fixed-size array as `[a, b, c]`.
@@ -1235,20 +1233,20 @@ format_sequence :: (a: Any) {
 /// of any builtin prints its values and an array of anything else prints `…` per element. One ladder for
 /// both, rather than a second copy that could disagree about what a `u16` looks like.
 format_array :: (a: Any) {
-    out_byte(cast(u8, 91));
-    count := a.type.count;
-    if count > 0 {
-        stride := a.type.size / count;
-        i := 0;
-        while i < count {
-            if i > 0 {
-                out_str(", ");
-            }
-            format_field(a.data + i * stride, a.type.element);
-            i = i + 1;
-        }
+  out_byte(cast(u8, 91));
+  count := a.type.count;
+  if count > 0 {
+    stride := a.type.size / count;
+    i := 0;
+    while i < count {
+      if i > 0 {
+        out_str(", ");
+      }
+      format_field(a.data + i * stride, a.type.element);
+      i = i + 1;
     }
-    out_byte(cast(u8, 93));
+  }
+  out_byte(cast(u8, 93));
 }
 
 /// Appends a struct, union or variant as `{name = value, …}`.
@@ -1258,19 +1256,19 @@ format_array :: (a: Any) {
 /// caller already holds. So every scalar field is matched against the builtin ids below, and a field of
 /// any other type prints as `…`. ADR-0189 §6 records what would lift this.
 format_aggregate :: (a: Any) {
-    out_byte(cast(u8, 123));
-    fields := a.type.fields;
-    i := 0;
-    while i < fields.count {
-        if i > 0 {
-            out_str(", ");
-        }
-        out_str(fields[i].name);
-        out_str(" = ");
-        format_field(a.data + fields[i].offset, fields[i].ty);
-        i = i + 1;
+  out_byte(cast(u8, 123));
+  fields := a.type.fields;
+  i := 0;
+  while i < fields.count {
+    if i > 0 {
+      out_str(", ");
     }
-    out_byte(cast(u8, 125));
+    out_str(fields[i].name);
+    out_str(" = ");
+    format_field(a.data + fields[i].offset, fields[i].ty);
+    i = i + 1;
+  }
+  out_byte(cast(u8, 125));
 }
 
 /// Appends one field, identified by comparing its type id against every builtin's.
@@ -1279,60 +1277,60 @@ format_aggregate :: (a: Any) {
 /// come from `type_info(T)`, which the compiler folds to a constant, so each comparison is against a
 /// constant and none of this costs a call.
 format_field :: (p: *u8, ty: s64) {
-    if ty == type_info(s64).id {
-        out_s64(typed(s64, p).*);
-        return;
+  if ty == type_info(s64).id {
+    out_s64(typed(s64, p).*);
+    return;
+  }
+  if ty == type_info(s32).id {
+    out_s64(cast(s64, typed(s32, p).*));
+    return;
+  }
+  if ty == type_info(s16).id {
+    out_s64(cast(s64, typed(s16, p).*));
+    return;
+  }
+  if ty == type_info(s8).id {
+    out_s64(cast(s64, typed(s8, p).*));
+    return;
+  }
+  if ty == type_info(u64).id {
+    out_u64(typed(u64, p).*);
+    return;
+  }
+  if ty == type_info(u32).id {
+    out_u64(cast(u64, typed(u32, p).*));
+    return;
+  }
+  if ty == type_info(u16).id {
+    out_u64(cast(u64, typed(u16, p).*));
+    return;
+  }
+  if ty == type_info(u8).id {
+    out_u64(cast(u64, p.*));
+    return;
+  }
+  if ty == type_info(float64).id {
+    out_float(typed(float64, p).*);
+    return;
+  }
+  if ty == type_info(float32).id {
+    out_float(cast(float64, typed(float32, p).*));
+    return;
+  }
+  if ty == type_info(bool).id {
+    if p.* != 0 {
+      out_str("true");
+    } else {
+      out_str("false");
     }
-    if ty == type_info(s32).id {
-        out_s64(cast(s64, typed(s32, p).*));
-        return;
-    }
-    if ty == type_info(s16).id {
-        out_s64(cast(s64, typed(s16, p).*));
-        return;
-    }
-    if ty == type_info(s8).id {
-        out_s64(cast(s64, typed(s8, p).*));
-        return;
-    }
-    if ty == type_info(u64).id {
-        out_u64(typed(u64, p).*);
-        return;
-    }
-    if ty == type_info(u32).id {
-        out_u64(cast(u64, typed(u32, p).*));
-        return;
-    }
-    if ty == type_info(u16).id {
-        out_u64(cast(u64, typed(u16, p).*));
-        return;
-    }
-    if ty == type_info(u8).id {
-        out_u64(cast(u64, p.*));
-        return;
-    }
-    if ty == type_info(float64).id {
-        out_float(typed(float64, p).*);
-        return;
-    }
-    if ty == type_info(float32).id {
-        out_float(cast(float64, typed(float32, p).*));
-        return;
-    }
-    if ty == type_info(bool).id {
-        if p.* != 0 {
-            out_str("true");
-        } else {
-            out_str("false");
-        }
-        return;
-    }
-    if ty == type_info(string).id {
-        out_str(typed(string, p).*);
-        return;
-    }
-    // A nested aggregate, a pointer, an array. Not describable without a `*Type_Info` for `ty`.
-    out_str("..");
+    return;
+  }
+  if ty == type_info(string).id {
+    out_str(typed(string, p).*);
+    return;
+  }
+  // A nested aggregate, a pointer, an array. Not describable without a `*Type_Info` for `ty`.
+  out_str("..");
 }
 
 /// Parses a one-based decimal argument index beginning at `start`.
@@ -1340,129 +1338,129 @@ format_field :: (p: *u8, ty: s64) {
 /// `found` distinguishes `%1` from a sequential `%` followed by a non-digit. An index too large for
 /// `s64` is returned as -1 after all its digits are consumed, so hostile format text cannot overflow.
 parse_format_index :: (fmt: string, start: s64) -> (s64, s64, bool) {
-    at := start;
-    value := 0;
-    found := false;
-    overflowed := false;
-    while at < fmt.count {
-        byte := (fmt.data + at).*;
-        if byte < 48 || byte > 57 {
-            break;
-        }
-        found = true;
-        digit := cast(s64, byte - 48);
-        if !overflowed {
-            if value > 922337203685477580 {
-                overflowed = true;
-                value = -1;
-            } else {
-                if value == 922337203685477580 && digit > 7 {
-                    overflowed = true;
-                    value = -1;
-                } else {
-                    value = value * 10 + digit;
-                }
-            }
-        }
-        at = at + 1;
+  at := start;
+  value := 0;
+  found := false;
+  overflowed := false;
+  while at < fmt.count {
+    byte := (fmt.data + at).*;
+    if byte < 48 || byte > 57 {
+      break;
     }
-    return value, at, found;
+    found = true;
+    digit := cast(s64, byte - 48);
+    if !overflowed {
+      if value > 922337203685477580 {
+        overflowed = true;
+        value = -1;
+      } else {
+        if value == 922337203685477580 && digit > 7 {
+          overflowed = true;
+          value = -1;
+        } else {
+          value = value * 10 + digit;
+        }
+      }
+    }
+    at = at + 1;
+  }
+  return value, at, found;
 }
 
 /// Whether argument `index` was consumed by a sequential or indexed placeholder.
 format_argument_was_used :: (fmt: string, index: s64, sequential_count: s64) -> bool {
-    if index < sequential_count {
+  if index < sequential_count {
+    return true;
+  }
+  i := 0;
+  while i < fmt.count {
+    if (fmt.data + i).* != cast(u8, PERCENT) {
+      i = i + 1;
+      continue;
+    }
+    if i + 1 < fmt.count && (fmt.data + i + 1).* == cast(u8, PERCENT) {
+      i = i + 2;
+      continue;
+    }
+    selected, after, indexed := parse_format_index(fmt, i + 1);
+    if indexed {
+      if selected == index + 1 {
         return true;
+      }
+      i = after;
+    } else {
+      i = i + 1;
     }
-    i := 0;
-    while i < fmt.count {
-        if (fmt.data + i).* != cast(u8, PERCENT) {
-            i = i + 1;
-            continue;
-        }
-        if i + 1 < fmt.count && (fmt.data + i + 1).* == cast(u8, PERCENT) {
-            i = i + 2;
-            continue;
-        }
-        selected, after, indexed := parse_format_index(fmt, i + 1);
-        if indexed {
-            if selected == index + 1 {
-                return true;
-            }
-            i = after;
-        } else {
-            i = i + 1;
-        }
-    }
-    return false;
+  }
+  return false;
 }
 
 /// Walks `fmt`, emitting literal bytes and substituting sequential `%` or one-based `%1`, `%2`, ….
 format_into_out :: (fmt: string, args: []Any) {
-    i := 0;
-    next := 0;
-    while i < fmt.count {
-        c := (fmt.data + i).*;
-        if c != cast(u8, PERCENT) {
-            out_byte(c);
-            i = i + 1;
-            continue;
-        }
-        // `%%` is a literal `%`, and it is checked before the argument path so a doubled percent never
-        // consumes one.
-        if i + 1 < fmt.count && (fmt.data + i + 1).* == cast(u8, PERCENT) {
-            out_byte(cast(u8, PERCENT));
-            i = i + 2;
-            continue;
-        }
-        selected, after, indexed := parse_format_index(fmt, i + 1);
-        if indexed {
-            if selected > 0 && selected <= args.count {
-                format_any(args[selected - 1]);
-            } else {
-                out_str("%!(MISSING)");
-            }
-            i = after;
-            continue;
-        }
-        if next < args.count {
-            format_any(args[next]);
-            next = next + 1;
-        } else {
-            out_str("%!(MISSING)");
-        }
-        i = i + 1;
+  i := 0;
+  next := 0;
+  while i < fmt.count {
+    c := (fmt.data + i).*;
+    if c != cast(u8, PERCENT) {
+      out_byte(c);
+      i = i + 1;
+      continue;
     }
-    // Extra arguments are reported in the output rather than dropped. A dropped argument is a bug that
-    // leaves no trace, and this is a procedure with nowhere to return an error to.
-    argument := 0;
-    extras_started := false;
-    while argument < args.count {
-        if !format_argument_was_used(fmt, argument, next) {
-            if !extras_started {
-                out_str("%!(EXTRA ");
-                extras_started = true;
-            } else {
-                out_str(", ");
-            }
-            format_any(args[argument]);
-        }
-        argument = argument + 1;
+    // `%%` is a literal `%`, and it is checked before the argument path so a doubled percent never
+    // consumes one.
+    if i + 1 < fmt.count && (fmt.data + i + 1).* == cast(u8, PERCENT) {
+      out_byte(cast(u8, PERCENT));
+      i = i + 2;
+      continue;
     }
-    if extras_started {
-        out_byte(cast(u8, 41));
+    selected, after, indexed := parse_format_index(fmt, i + 1);
+    if indexed {
+      if selected > 0 && selected <= args.count {
+        format_any(args[selected - 1]);
+      } else {
+        out_str("%!(MISSING)");
+      }
+      i = after;
+      continue;
     }
+    if next < args.count {
+      format_any(args[next]);
+      next = next + 1;
+    } else {
+      out_str("%!(MISSING)");
+    }
+    i = i + 1;
+  }
+  // Extra arguments are reported in the output rather than dropped. A dropped argument is a bug that
+  // leaves no trace, and this is a procedure with nowhere to return an error to.
+  argument := 0;
+  extras_started := false;
+  while argument < args.count {
+    if !format_argument_was_used(fmt, argument, next) {
+      if !extras_started {
+        out_str("%!(EXTRA ");
+        extras_started = true;
+      } else {
+        out_str(", ");
+      }
+      format_any(args[argument]);
+    }
+    argument = argument + 1;
+  }
+  if extras_started {
+    out_byte(cast(u8, 41));
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Module-private helpers (ADR-0054 §1)
 // ---------------------------------------------------------------------------
 //
-// This section held the two helpers `print_int` needed before it had a buffer: `put_byte`, which wrote one
+// This section held the two helpers integer printing needed before it had a buffer: `put_byte`, which wrote one
 // byte through the address of a local because `write` wants a `*u8` and a count, and `print_digits`, the
 // recursion that emitted digits high-to-low without anywhere to put them. **Both are gone** (ADR-0189 §4).
 //
-// They are deleted rather than left unused, and that is the interesting part. `print_int` now delegates to
+// They are deleted rather than left unused, and that is the interesting part. Integer output now uses
 // the formatter, so keeping them would leave a second route to decimal digits beside the real one — and a
 // second route is a second chance to disagree, which these two demonstrably did: they trapped on `S64_MIN`
 // while the formatter renders it, because they negated and it does not.
@@ -1471,45 +1469,7 @@ format_into_out :: (fmt: string, args: []Any) {
 // standard library's internals are still the first thing hidden by `#scope_module`.
 #scope_export
 
-/// Writes a number in decimal.
-///
-/// # What this used to be, and why it is one line now
-///
-/// It handled the sign itself and drove a recursion, one syscall per digit, and it **trapped on
-/// `S64_MIN`**: `-(-9223372036854775808)` overflows and ADR-0002 makes that a trap rather than a wrap, so
-/// the one integer this library could not print was the one a reader is most likely to reach for when
-/// testing an integer printer. Its own docs said so and named "an unsigned path or `-%`" as the fix.
-///
-/// Both arrived with the formatter (ADR-0189 §4), which renders through an unsigned magnitude and so has
-/// no negation to overflow. Delegating rather than keeping a second renderer is the point: two paths to
-/// decimal digits are two chances to disagree about `S64_MIN`, and this one was the wrong one.
-///
-/// Kept as a name because programs and the corpus call it, and because `print("%", n)` needs a format
-/// string where this needs nothing.
+/// Compatibility alias for older callers. New code uses `print("%", n)`.
 print_int :: (n: s64) {
-    print("%", n);
+  print("%", n);
 }
-
-// ---------------------------------------------------------------------------
-// Integer printing: what it took, and what it owed
-// ---------------------------------------------------------------------------
-//
-// Kept because the arc is the useful part, and both entries are now closed.
-//
-// This section first said `print_int` was **not implementable** — PLAN §1.2 discovered that while the
-// slice was being built, and it was right: turning a digit into a byte for `write` needs an `s64` to `u8`
-// conversion, and `cast` (ADR-0037) was a wave away.
-//
-// It then listed two things still owed, and named them precisely enough to be checked:
-//
-//   * **A buffer.** `print_digits` recursed one frame per digit, because emitting digits high-end-first
-//     needs either a buffer or a stack and only one existed. Closed by ADR-0189: the formatter writes into
-//     a file-scope `[..]u8` (ADR-0186 made a file-scope variable possible) and reaches `write` once per
-//     call instead of once per digit.
-//   * **The most negative `s64`.** `print_int` negated a negative, and negating -9223372036854775808
-//     overflows, which ADR-0002 makes a trap. Closed by the same wave, by the route this note guessed:
-//     the formatter renders through an unsigned magnitude, so there is no negation to overflow.
-//
-// Neither was faked while it was owed, and that is why both could be closed cleanly rather than found to
-// have been quietly wrong: a wrong digit would have been worse than a missing feature, and a trap that
-// says so is checkable where a wrong digit is not.

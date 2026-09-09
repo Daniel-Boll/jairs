@@ -95,34 +95,34 @@
 /// The comparison is called `O(n²)` times in the worst case. That is a property of insertion sort, chosen for
 /// stability and for needing no storage rather than for speed — see the module docs.
 sort :: (xs: []$T, less: (T, T) -> bool, comparisons: *s64) {
-    // Insertion sort. `i` walks the boundary between the sorted prefix and the rest; each iteration takes one
-    // element and moves it left past everything that should follow it.
-    i := 1;
-    while i < xs.count {
-        current := xs[i];
-        j := i;
-        // Shift elements right while they belong after `current`. `j > 0` is checked first so the read at
-        // `j - 1` is always in range — the bound is the loop's, not the array's, which is why no
-        // `bounds_check` diagnostic is involved.
-        keep_going := true;
-        while keep_going {
-            if j == 0 {
-                keep_going = false;
-            } else {
-                comparisons.* = comparisons.* + 1;
-                if less(current, xs[j - 1]) {
-                    xs[j] = xs[j - 1];
-                    j = j - 1;
-                } else {
-                    // Not strictly less, so `current` belongs here. Stopping on the *first* such element is
-                    // what makes the sort stable: an equal element is never passed.
-                    keep_going = false;
-                }
-            }
+  // Insertion sort. `i` walks the boundary between the sorted prefix and the rest; each iteration takes one
+  // element and moves it left past everything that should follow it.
+  i := 1;
+  while i < xs.count {
+    current := xs[i];
+    j := i;
+    // Shift elements right while they belong after `current`. `j > 0` is checked first so the read at
+    // `j - 1` is always in range — the bound is the loop's, not the array's, which is why no
+    // `bounds_check` diagnostic is involved.
+    keep_going := true;
+    while keep_going {
+      if j == 0 {
+        keep_going = false;
+      } else {
+        comparisons.* = comparisons.* + 1;
+        if less(current, xs[j - 1]) {
+          xs[j] = xs[j - 1];
+          j = j - 1;
+        } else {
+          // Not strictly less, so `current` belongs here. Stopping on the *first* such element is
+          // what makes the sort stable: an equal element is never passed.
+          keep_going = false;
         }
-        xs[j] = current;
-        i = i + 1;
+      }
     }
+    xs[j] = current;
+    i = i + 1;
+  }
 }
 
 /// Sorts a view of `s64` ascending.
@@ -131,8 +131,8 @@ sort :: (xs: []$T, less: (T, T) -> bool, comparisons: *s64) {
 /// use `<` itself — see the module docs — and a caller writing `sort(xs, less_int)` for every integer sort
 /// would be paying for a language limitation in every call.
 sort_ints :: (xs: []s64) {
-    n := 0;
-    sort(xs, less_int, *n);
+  n := 0;
+  sort(xs, less_int, *n);
 }
 
 /// Sorts a view of `s64` ascending and reports how many comparisons it took.
@@ -141,7 +141,7 @@ sort_ints :: (xs: []s64) {
 /// `sort`, so a caller who wants the count can only get it from a wrapper this module instantiated. It is the
 /// counted form of `sort_ints` and nothing else.
 sort_ints_counting :: (xs: []s64, comparisons: *s64) {
-    sort(xs, less_int, comparisons);
+  sort(xs, less_int, comparisons);
 }
 
 /// Sorts `xs` in place by `less`, in `O(n log n)` comparisons, **unstably**.
@@ -156,77 +156,77 @@ sort_ints_counting :: (xs: []s64, comparisons: *s64) {
 /// `comparisons` is incremented once per call to `less`, which is what `valid/117` compares against
 /// insertion sort's count (ADR-0146 §4).
 heap_sort :: (xs: []$T, less: (T, T) -> bool, comparisons: *s64) {
-    // **One loop, and one sift site, deliberately.** The textbook form is two phases — heapify, then
-    // repeatedly extract — each calling a `sift_down` helper. That helper cannot exist here: a `$T`
-    // template calling another `$T` template does not infer, even with the variable already bound
-    // (`sift_down(xs, ...)` where `xs: []T` is E0268), which is a language limitation this module found
-    // and PLAN §7 records. Writing the sift twice was the alternative and it is the duplication this
-    // project keeps recording as a source of silent divergence, so the two phases are merged instead.
-    //
-    // `start` counts the heapify phase down from the last parent; once it reaches 0 the heap is built and
-    // `end` counts the extraction phase down instead. Both phases then sift one root within `[0, end)`,
-    // which is why there is one sift and not two.
-    start := xs.count / 2;
-    end := xs.count;
-    while end > 1 {
-        root := 0;
-        if start > 0 {
-            // Heapify: sift the next parent up the array, over the whole heap.
-            start = start - 1;
-            root = start;
-        } else {
-            // Extract: the root is the maximum, so swap it to the end and shrink the heap. The element
-            // at `end` is then final and must not be touched again — which is what makes `end` the sift's
-            // bound rather than `xs.count`.
-            end = end - 1;
-            top := xs[0];
-            xs[0] = xs[end];
-            xs[end] = top;
-        }
-
-        // Sift `root` down until both its children are no greater than it.
-        parent := root;
-        sifting := true;
-        while sifting {
-            child := parent * 2 + 1;
-            if child >= end {
-                // No children inside the heap, so the property holds here.
-                sifting = false;
-            } else {
-                // The larger of the two children, so the parent ends up above both.
-                largest := child;
-                right := child + 1;
-                if right < end {
-                    comparisons.* = comparisons.* + 1;
-                    if less(xs[largest], xs[right]) {
-                        largest = right;
-                    }
-                }
-                comparisons.* = comparisons.* + 1;
-                if less(xs[parent], xs[largest]) {
-                    held := xs[parent];
-                    xs[parent] = xs[largest];
-                    xs[largest] = held;
-                    parent = largest;
-                } else {
-                    sifting = false;
-                }
-            }
-        }
+  // **One loop, and one sift site, deliberately.** The textbook form is two phases — heapify, then
+  // repeatedly extract — each calling a `sift_down` helper. That helper cannot exist here: a `$T`
+  // template calling another `$T` template does not infer, even with the variable already bound
+  // (`sift_down(xs, ...)` where `xs: []T` is E0268), which is a language limitation this module found
+  // and PLAN §7 records. Writing the sift twice was the alternative and it is the duplication this
+  // project keeps recording as a source of silent divergence, so the two phases are merged instead.
+  //
+  // `start` counts the heapify phase down from the last parent; once it reaches 0 the heap is built and
+  // `end` counts the extraction phase down instead. Both phases then sift one root within `[0, end)`,
+  // which is why there is one sift and not two.
+  start := xs.count / 2;
+  end := xs.count;
+  while end > 1 {
+    root := 0;
+    if start > 0 {
+      // Heapify: sift the next parent up the array, over the whole heap.
+      start = start - 1;
+      root = start;
+    } else {
+      // Extract: the root is the maximum, so swap it to the end and shrink the heap. The element
+      // at `end` is then final and must not be touched again — which is what makes `end` the sift's
+      // bound rather than `xs.count`.
+      end = end - 1;
+      top := xs[0];
+      xs[0] = xs[end];
+      xs[end] = top;
     }
+
+    // Sift `root` down until both its children are no greater than it.
+    parent := root;
+    sifting := true;
+    while sifting {
+      child := parent * 2 + 1;
+      if child >= end {
+        // No children inside the heap, so the property holds here.
+        sifting = false;
+      } else {
+        // The larger of the two children, so the parent ends up above both.
+        largest := child;
+        right := child + 1;
+        if right < end {
+          comparisons.* = comparisons.* + 1;
+          if less(xs[largest], xs[right]) {
+            largest = right;
+          }
+        }
+        comparisons.* = comparisons.* + 1;
+        if less(xs[parent], xs[largest]) {
+          held := xs[parent];
+          xs[parent] = xs[largest];
+          xs[largest] = held;
+          parent = largest;
+        } else {
+          sifting = false;
+        }
+      }
+    }
+  }
 }
 
 /// Sorts a view of `s64` ascending with `heap_sort`.
 ///
 /// The wrapper exists for `sort_ints`' reason, unchanged (ADR-0104 §5).
 heap_sort_ints :: (xs: []s64) {
-    n := 0;
-    heap_sort(xs, less_int, *n);
+  n := 0;
+  heap_sort(xs, less_int, *n);
 }
 
 /// Sorts a view of `s64` ascending with `heap_sort`, reporting the comparison count.
 heap_sort_ints_counting :: (xs: []s64, comparisons: *s64) {
-    heap_sort(xs, less_int, comparisons);
+  heap_sort(xs, less_int, comparisons);
 }
 
 /// Whether a view of `s64` is ordered ascending.
@@ -237,7 +237,7 @@ heap_sort_ints_counting :: (xs: []s64, comparisons: *s64) {
 /// real limitation of the language today rather than a stylistic choice, and naming it here is better than
 /// letting a caller discover it as a diagnostic.
 ints_sorted :: (xs: []s64) -> bool {
-    return is_sorted(xs, less_int);
+  return is_sorted(xs, less_int);
 }
 
 /// Whether `xs` is ordered by `less`.
@@ -248,17 +248,17 @@ ints_sorted :: (xs: []s64) -> bool {
 ///
 /// An empty or single-element view is ordered, which follows from there being no adjacent pair to violate.
 is_sorted :: (xs: []$T, less: (T, T) -> bool) -> bool {
-    i := 1;
-    while i < xs.count {
-        // Ordered means "no element comes strictly before its predecessor". Written this way round rather than
-        // as `less(xs[i - 1], xs[i])` because the latter is *false* for equal neighbours, which would call a
-        // correctly sorted view with duplicates unsorted.
-        if less(xs[i], xs[i - 1]) {
-            return false;
-        }
-        i = i + 1;
+  i := 1;
+  while i < xs.count {
+    // Ordered means "no element comes strictly before its predecessor". Written this way round rather than
+    // as `less(xs[i - 1], xs[i])` because the latter is *false* for equal neighbours, which would call a
+    // correctly sorted view with duplicates unsorted.
+    if less(xs[i], xs[i - 1]) {
+      return false;
     }
-    return true;
+    i = i + 1;
+  }
+  return true;
 }
 
 /// Ascending order for `s64`.
@@ -267,7 +267,7 @@ is_sorted :: (xs: []$T, less: (T, T) -> bool) -> bool {
 /// passing it to `is_sorted` to check a postcondition — needs to name it. Hiding it would make `sort_ints` the
 /// only way to use the ordering, which is a narrower module for no benefit.
 less_int :: (a: s64, b: s64) -> bool {
-    return a < b;
+  return a < b;
 }
 
 // ---------------------------------------------------------------------------
@@ -320,77 +320,77 @@ less_int :: (a: s64, b: s64) -> bool {
 /// `comparisons` counts calls to `less`, as the other two sorts do, so the three are measurable against
 /// each other on one input (ADR-0146 §3).
 stable_sort :: (xs: []$T, less: (T, T) -> bool, comparisons: *s64) {
-    if xs.count < 2 {
-        return;
-    }
-    scratch := typed(T, talloc(xs.count * size_of(T)));
-    if scratch == null {
-        sort(xs, less, comparisons);
-        return;
-    }
-    buffer := view(scratch, xs.count);
+  if xs.count < 2 {
+    return;
+  }
+  scratch := typed(T, talloc(xs.count * size_of(T)));
+  if scratch == null {
+    sort(xs, less, comparisons);
+    return;
+  }
+  buffer := view(scratch, xs.count);
 
-    // Widths 1, 2, 4, … Each pass merges every adjacent pair of sorted runs of `width` into runs of
-    // `2 * width`, so after `ceil(log2(count))` passes the whole view is one run.
-    width := 1;
-    while width < xs.count {
-        start := 0;
-        while start < xs.count {
-            middle := start + width;
-            if middle > xs.count {
-                middle = xs.count;
-            }
-            end := start + width * 2;
-            if end > xs.count {
-                end = xs.count;
-            }
+  // Widths 1, 2, 4, … Each pass merges every adjacent pair of sorted runs of `width` into runs of
+  // `2 * width`, so after `ceil(log2(count))` passes the whole view is one run.
+  width := 1;
+  while width < xs.count {
+    start := 0;
+    while start < xs.count {
+      middle := start + width;
+      if middle > xs.count {
+        middle = xs.count;
+      }
+      end := start + width * 2;
+      if end > xs.count {
+        end = xs.count;
+      }
 
-            // **The comparison is `less(right, left)`, not `less(left, right)`** — and that single choice is
-            // what makes the sort stable. Taking the left element unless the right is *strictly* less means
-            // an equal pair keeps the left one first, which is the left run, which is the earlier position.
-            // Written the other way round it is a correct sort that is not stable, and no test of
-            // *sortedness* can tell the difference: only a test that checks where equal elements ended up
-            // can, which is why the corpus file sorts by one key and inspects another.
-            left := start;
-            right := middle;
-            at := start;
-            while left < middle {
-                if right >= end {
-                    buffer[at] = xs[left];
-                    left = left + 1;
-                    at = at + 1;
-                } else {
-                    comparisons.* = comparisons.* + 1;
-                    if less(xs[right], xs[left]) {
-                        buffer[at] = xs[right];
-                        right = right + 1;
-                    } else {
-                        buffer[at] = xs[left];
-                        left = left + 1;
-                    }
-                    at = at + 1;
-                }
-            }
-            while right < end {
-                buffer[at] = xs[right];
-                right = right + 1;
-                at = at + 1;
-            }
-
-            // Copied back per merged pair rather than per pass, because the runs a pass has not reached yet
-            // must still be read from `xs`. A version that swapped the roles of `xs` and `buffer` per pass
-            // avoids this copy and has to track which of the two holds the answer — getting that wrong
-            // sorts into the scratch and returns the input untouched.
-            k := start;
-            while k < end {
-                xs[k] = buffer[k];
-                k = k + 1;
-            }
-
-            start = start + width * 2;
+      // **The comparison is `less(right, left)`, not `less(left, right)`** — and that single choice is
+      // what makes the sort stable. Taking the left element unless the right is *strictly* less means
+      // an equal pair keeps the left one first, which is the left run, which is the earlier position.
+      // Written the other way round it is a correct sort that is not stable, and no test of
+      // *sortedness* can tell the difference: only a test that checks where equal elements ended up
+      // can, which is why the corpus file sorts by one key and inspects another.
+      left := start;
+      right := middle;
+      at := start;
+      while left < middle {
+        if right >= end {
+          buffer[at] = xs[left];
+          left = left + 1;
+          at = at + 1;
+        } else {
+          comparisons.* = comparisons.* + 1;
+          if less(xs[right], xs[left]) {
+            buffer[at] = xs[right];
+            right = right + 1;
+          } else {
+            buffer[at] = xs[left];
+            left = left + 1;
+          }
+          at = at + 1;
         }
-        width = width * 2;
+      }
+      while right < end {
+        buffer[at] = xs[right];
+        right = right + 1;
+        at = at + 1;
+      }
+
+      // Copied back per merged pair rather than per pass, because the runs a pass has not reached yet
+      // must still be read from `xs`. A version that swapped the roles of `xs` and `buffer` per pass
+      // avoids this copy and has to track which of the two holds the answer — getting that wrong
+      // sorts into the scratch and returns the input untouched.
+      k := start;
+      while k < end {
+        xs[k] = buffer[k];
+        k = k + 1;
+      }
+
+      start = start + width * 2;
     }
+    width = width * 2;
+  }
 }
 
 /// `stable_sort` at `s64` with `less`, for a caller in another module.
@@ -400,7 +400,7 @@ stable_sort :: (xs: []$T, less: (T, T) -> bool, comparisons: *s64) {
 /// `sort_ints` and `heap_sort_ints` do. `less` is a parameter here, unlike theirs, because a stable sort is
 /// almost always sorting by *one key of several*, and a fixed ascending comparison would defeat the point.
 stable_sort_ints :: (xs: []s64, less: (s64, s64) -> bool, comparisons: *s64) {
-    stable_sort(xs, less, comparisons);
+  stable_sort(xs, less, comparisons);
 }
 
 /// Whether `xs` is in non-decreasing order by `less`, for a caller in another module.
@@ -408,5 +408,5 @@ stable_sort_ints :: (xs: []s64, less: (s64, s64) -> bool, comparisons: *s64) {
 /// `ints_sorted` exists and hard-codes ascending; this takes the comparison, because a caller who needed a
 /// stable sort by one key almost always wants to check that key too.
 ints_sorted_by :: (xs: []s64, less: (s64, s64) -> bool) -> bool {
-    return is_sorted(xs, less);
+  return is_sorted(xs, less);
 }

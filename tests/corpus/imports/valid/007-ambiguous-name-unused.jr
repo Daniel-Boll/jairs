@@ -4,6 +4,6 @@
 #import "Palette";
 
 main :: () {
-    x := BLACK;
-    y := PALETTE_SIZE;
+  x := BLACK;
+  y := PALETTE_SIZE;
 }

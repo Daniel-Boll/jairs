@@ -17,5 +17,5 @@
 // size is considered, so a null dereference traps (`Memory::range`).
 
 names_void_in_a_declaration :: () {
-    x: void;
+  x: void;
 }

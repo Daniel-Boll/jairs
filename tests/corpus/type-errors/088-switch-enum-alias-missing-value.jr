@@ -3,16 +3,16 @@
 // `ALSO_OK` covers the same runtime value as `OK`, so neither alias is missing. Only the distinct
 // value represented by `MISSING` remains uncovered.
 Status :: enum {
-    OK :: 200;
-    ALSO_OK :: 200;
-    MISSING :: 404;
+  OK :: 200;
+  ALSO_OK :: 200;
+  MISSING :: 404;
 }
 
 partial :: (status: Status) -> s64 {
-    result := 0;
-    switch status {
-        case .ALSO_OK;
-            result = 1;
-    }
-    return result;
+  result := 0;
+  switch status {
+    case .ALSO_OK;
+      result = 1;
+  }
+  return result;
 }

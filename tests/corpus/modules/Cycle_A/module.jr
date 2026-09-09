@@ -3,5 +3,5 @@
 A_VALUE :: 1;
 
 a_calls_b :: () -> s64 {
-    return b_value();
+  return b_value();
 }

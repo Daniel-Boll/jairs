@@ -21,54 +21,54 @@
 #import "Bucket_Array";
 
 main :: () {
-    total := 0;
+  total := 0;
 
-    b := make();
+  b := make();
 
-    // A fresh array allocates nothing, so a struct field of this type costs its owner nothing.
-    if bucket_count(*b) == 0 {
-        total = total + 16;
+  // A fresh array allocates nothing, so a struct field of this type costs its owner nothing.
+  if bucket_count(*b) == 0 {
+    total = total + 16;
+  }
+
+  // **Take a pointer to the first element**, then grow far past its bucket. Fifty elements is four
+  // buckets, so three more are allocated after this pointer was handed out — and it must still be valid.
+  first := push(*b, 100);
+
+  i := 1;
+  while i < 50 {
+    _ = push(*b, i);
+    i = i + 1;
+  }
+
+  // Read through the *old* pointer. In a `List` this would be reading freed memory.
+  total = total + first.*;
+
+  // Every value, through `value_at`, which proves the bucket arithmetic maps indices to slots correctly:
+  // an off-by-one in `index / BUCKET_SIZE` or `index % BUCKET_SIZE` changes this sum.
+  sum := 0;
+  j := 1;
+  while j < 50 {
+    sum = sum + value_at(*b, j);
+    j = j + 1;
+  }
+  total = total + sum;
+
+  // 50 elements in buckets of 16 is 4 buckets — the overhead a caller pays for stability.
+  total = total + bucket_count(*b);
+
+  // Out of range is `null`: a lookup that failed rather than a memory error, which is the right shape for
+  // a length that is data rather than part of the type.
+  if get(*b, 50) == null {
+    if get(*b, -1) == null {
+      total = total + 8;
     }
+  }
 
-    // **Take a pointer to the first element**, then grow far past its bucket. Fifty elements is four
-    // buckets, so three more are allocated after this pointer was handed out — and it must still be valid.
-    first := push(*b, 100);
+  free_all(*b);
 
-    i := 1;
-    while i < 50 {
-        _ = push(*b, i);
-        i = i + 1;
-    }
-
-    // Read through the *old* pointer. In a `List` this would be reading freed memory.
-    total = total + first.*;
-
-    // Every value, through `value_at`, which proves the bucket arithmetic maps indices to slots correctly:
-    // an off-by-one in `index / BUCKET_SIZE` or `index % BUCKET_SIZE` changes this sum.
-    sum := 0;
-    j := 1;
-    while j < 50 {
-        sum = sum + value_at(*b, j);
-        j = j + 1;
-    }
-    total = total + sum;
-
-    // 50 elements in buckets of 16 is 4 buckets — the overhead a caller pays for stability.
-    total = total + bucket_count(*b);
-
-    // Out of range is `null`: a lookup that failed rather than a memory error, which is the right shape for
-    // a length that is data rather than part of the type.
-    if get(*b, 50) == null {
-        if get(*b, -1) == null {
-            total = total + 8;
-        }
-    }
-
-    free_all(*b);
-
-    // Freeing leaves it usable, which is what makes `free_all` safe in a `defer` beside the `make`.
-    if bucket_count(*b) == 0 {
-        exit(total);
-    }
-    exit(1);
+  // Freeing leaves it usable, which is what makes `free_all` safe in a `defer` beside the `make`.
+  if bucket_count(*b) == 0 {
+    exit(total);
+  }
+  exit(1);
 }

@@ -17,34 +17,34 @@
 #import "Basic";
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // The values `Basic` declares: `STDOUT :: 1` and `STDERR :: 2`.
-    if STDOUT == 1 {
-        n = n + 1;
-    }
-    if STDERR == 2 {
-        n = n + 2;
-    }
-    // Arithmetic on them, so a wrong value is a wrong answer rather than a plausible one.
-    if STDOUT + STDERR == 3 {
-        n = n + 4;
-    }
-    if STDERR - STDOUT == 1 {
-        n = n + 8;
-    }
-    // An imported constant as a **call argument**, which is the use that motivated the fix: writing
-    // to a chosen stream from outside `Basic` was not expressible before this wave. Zero bytes, so
-    // the program produces no output and the differential harness compares exit statuses rather than
-    // a stream this file did not intend to write to.
-    empty := "";
-    if write(STDOUT, empty.data, 0) == 0 {
-        n = n + 16;
-    }
+  // The values `Basic` declares: `STDOUT :: 1` and `STDERR :: 2`.
+  if STDOUT == 1 {
+    n = n + 1;
+  }
+  if STDERR == 2 {
+    n = n + 2;
+  }
+  // Arithmetic on them, so a wrong value is a wrong answer rather than a plausible one.
+  if STDOUT + STDERR == 3 {
+    n = n + 4;
+  }
+  if STDERR - STDOUT == 1 {
+    n = n + 8;
+  }
+  // An imported constant as a **call argument**, which is the use that motivated the fix: writing
+  // to a chosen stream from outside `Basic` was not expressible before this wave. Zero bytes, so
+  // the program produces no output and the differential harness compares exit statuses rather than
+  // a stream this file did not intend to write to.
+  empty := "";
+  if write(STDOUT, empty.data, 0) == 0 {
+    n = n + 16;
+  }
 
-    // Every assertion: 31.
-    if n == 31 {
-        exit(0);
-    }
-    exit(1);
+  // Every assertion: 31.
+  if n == 31 {
+    exit(0);
+  }
+  exit(1);
 }

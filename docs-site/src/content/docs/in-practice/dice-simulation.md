@@ -37,10 +37,7 @@ main :: () {
     // Print the tally. A total of 7 has the most ways to occur, so it should win.
     s := 2;
     while s <= 12 {
-        print_int(s);
-        print(": ");
-        print_int(hist[s]);
-        print("\n");
+        print("%: %\n", s, hist[s]);
         s = s + 1;
     }
 }

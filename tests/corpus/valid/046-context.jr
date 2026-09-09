@@ -33,69 +33,69 @@
 
 /// Reads the context's one field. Receives the context because it is an ordinary Jairs procedure.
 read_allocator :: () -> s64 {
-    return context.allocator_data;
+  return context.allocator_data;
 }
 
 /// A declared argument *and* the context, so the leading hidden parameter (ADR-0057 §4) does not push
 /// `n` to the wrong position — if it did, this would add the context pointer to `n` rather than 100.
 add_ctx :: (n: s64) -> s64 {
-    return n + 100;
+  return n + 100;
 }
 
 /// Sets the field and calls a reader, which must see the new value (ADR-0057 §2). The write is on
 /// this procedure's own context, handed down by pointer to `read_allocator`.
 bumped :: (v: s64) -> s64 {
-    context.allocator_data = v;
-    return read_allocator();
+  context.allocator_data = v;
+  return read_allocator();
 }
 
 /// A `#c_call` procedure: no context at all (ADR-0057 §3). It runs, which is what proves the opt-out
 /// works rather than merely parsing.
 raw :: (n: s64) -> s64 #c_call {
-    return n * 2;
+  return n * 2;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // `main`'s context is zeroed, so its callees read 0 until something writes.
-    if read_allocator() == 0 {
-        n = n + 1;
-    }
-    if context.allocator_data == 0 {
-        n = n + 2;
-    }
+  // `main`'s context is zeroed, so its callees read 0 until something writes.
+  if read_allocator() == 0 {
+    n = n + 1;
+  }
+  if context.allocator_data == 0 {
+    n = n + 2;
+  }
 
-    // A write here is visible to a callee, because the context is one object reached by pointer.
-    context.allocator_data = 5;
-    if read_allocator() == 5 {
-        n = n + 4;
-    }
+  // A write here is visible to a callee, because the context is one object reached by pointer.
+  context.allocator_data = 5;
+  if read_allocator() == 5 {
+    n = n + 4;
+  }
 
-    // `bumped` sets the field on the context it was handed and its callee sees it.
-    if bumped(9) == 9 {
-        n = n + 8;
-    }
-    // ...and `bumped`'s write is not visible back here: it modified the pointer it was passed, which
-    // is the same one, so this actually reads 9 now — the by-pointer semantics, observed from the
-    // caller's side. (A `push_context` form that isolated the callee is a later wave, ADR-0057 §6.)
-    if context.allocator_data == 9 {
-        n = n + 16;
-    }
+  // `bumped` sets the field on the context it was handed and its callee sees it.
+  if bumped(9) == 9 {
+    n = n + 8;
+  }
+  // ...and `bumped`'s write is not visible back here: it modified the pointer it was passed, which
+  // is the same one, so this actually reads 9 now — the by-pointer semantics, observed from the
+  // caller's side. (A `push_context` form that isolated the callee is a later wave, ADR-0057 §6.)
+  if context.allocator_data == 9 {
+    n = n + 16;
+  }
 
-    // The leading hidden parameter does not disturb a declared argument.
-    if add_ctx(23) == 123 {
-        n = n + 32;
-    }
+  // The leading hidden parameter does not disturb a declared argument.
+  if add_ctx(23) == 123 {
+    n = n + 32;
+  }
 
-    // A `#c_call` procedure runs with no context.
-    if raw(21) == 42 {
-        n = n + 64;
-    }
+  // A `#c_call` procedure runs with no context.
+  if raw(21) == 42 {
+    n = n + 64;
+  }
 
-    // Every assertion: 127.
-    if n == 127 {
-        exit(0);
-    }
-    exit(1);
+  // Every assertion: 127.
+  if n == 127 {
+    exit(0);
+  }
+  exit(1);
 }

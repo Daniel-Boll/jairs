@@ -33,21 +33,21 @@
 #import "Generic_Structs";
 
 main :: () {
-    b: Box(s64);
-    b.value = 7;
+  b: Box(s64);
+  b.value = 7;
 
-    p: Pair(s64, bool);
-    p.first = 5;
-    p.second = true;
+  p: Pair(s64, bool);
+  p.first = 5;
+  p.second = true;
 
-    // A second instantiation of the same imported declaration: a distinct type with a distinct field type.
-    c: Box(bool);
-    c.value = true;
+  // A second instantiation of the same imported declaration: a distinct type with a distinct field type.
+  c: Box(bool);
+  c.value = true;
 
-    // The field naming the declaring module's own type.
-    w: Wrapper(s64);
-    w.item = 9;
-    w.helper.n = 3;
+  // The field naming the declaring module's own type.
+  w: Wrapper(s64);
+  w.item = 9;
+  w.helper.n = 3;
 
-    total := b.value + p.first + w.item + w.helper.n;
+  total := b.value + p.first + w.item + w.helper.n;
 }

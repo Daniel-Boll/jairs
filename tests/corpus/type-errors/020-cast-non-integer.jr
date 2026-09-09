@@ -4,6 +4,6 @@
 // deliberately not an integer kind either, so casting one is refused here rather
 // than becoming pointer arithmetic by the back door.
 main :: () {
-    s := "hi";
-    n := cast(u8, s);
+  s := "hi";
+  n := cast(u8, s);
 }

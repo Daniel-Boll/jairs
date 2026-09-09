@@ -38,65 +38,65 @@ FLAG_C :: 4;
 THREE :: 3;
 
 Status :: enum {
-    OK :: 200;
-    MISSING :: NOT_FOUND;
-    /// No explicit value: ADR-0041 §3 makes this **one past `MISSING`**, so it is 405. A named value
-    /// that did not feed the auto-numbering would make this 2 and nothing would complain.
-    NEXT;
-    BAD :: NEG_ONE;
-    /// The same constant that gives an array length below, so the two callers meet in one file.
-    TRIPLE :: THREE;
+  OK :: 200;
+  MISSING :: NOT_FOUND;
+  /// No explicit value: ADR-0041 §3 makes this **one past `MISSING`**, so it is 405. A named value
+  /// that did not feed the auto-numbering would make this 2 and nothing would complain.
+  NEXT;
+  BAD :: NEG_ONE;
+  /// The same constant that gives an array length below, so the two callers meet in one file.
+  TRIPLE :: THREE;
 }
 
 Perm :: enum_flags {
-    READ;
-    WRITE;
-    EXEC :: FLAG_C;
-    /// One past a power of two doubles, so a named flag still drives the sequence (ADR-0043 §2).
-    SPECIAL;
+  READ;
+  WRITE;
+  EXEC :: FLAG_C;
+  /// One past a power of two doubles, so a named flag still drives the sequence (ADR-0043 §2).
+  SPECIAL;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // The member is the constant's value.
-    if cast(s64, Status.MISSING) == 404 {
-        n = n + 1;
-    }
+  // The member is the constant's value.
+  if cast(s64, Status.MISSING) == 404 {
+    n = n + 1;
+  }
 
-    // An explicit literal member is unaffected by the new path.
-    if cast(s64, Status.OK) == 200 {
-        n = n + 2;
-    }
+  // An explicit literal member is unaffected by the new path.
+  if cast(s64, Status.OK) == 200 {
+    n = n + 2;
+  }
 
-    // **Auto-numbering continued from the named value.** 405, not 2.
-    if cast(s64, Status.NEXT) == 405 {
-        n = n + 4;
-    }
+  // **Auto-numbering continued from the named value.** 405, not 2.
+  if cast(s64, Status.NEXT) == 405 {
+    n = n + 4;
+  }
 
-    // A negative named constant keeps its sign.
-    if cast(s64, Status.BAD) == -1 {
-        n = n + 8;
-    }
+  // A negative named constant keeps its sign.
+  if cast(s64, Status.BAD) == -1 {
+    n = n + 8;
+  }
 
-    // The flags enum: named member, then the power of two above it.
-    if cast(s64, Perm.EXEC) == 4 {
-        n = n + 16;
-    }
-    if cast(s64, Perm.SPECIAL) == 8 {
-        n = n + 32;
-    }
+  // The flags enum: named member, then the power of two above it.
+  if cast(s64, Perm.EXEC) == 4 {
+    n = n + 16;
+  }
+  if cast(s64, Perm.SPECIAL) == 8 {
+    n = n + 32;
+  }
 
-    // The same constant as an **array length** and as a member value, so one file exercises both
-    // callers of the shared helper. A regression that broke either would change this arithmetic.
-    small: [THREE]s64;
-    if small.count == 3 && cast(s64, Status.TRIPLE) == 3 {
-        n = n + 64;
-    }
+  // The same constant as an **array length** and as a member value, so one file exercises both
+  // callers of the shared helper. A regression that broke either would change this arithmetic.
+  small: [THREE]s64;
+  if small.count == 3 && cast(s64, Status.TRIPLE) == 3 {
+    n = n + 64;
+  }
 
-    // Every assertion: 127.
-    if n == 127 {
-        exit(0);
-    }
-    exit(1);
+  // Every assertion: 127.
+  if n == 127 {
+    exit(0);
+  }
+  exit(1);
 }

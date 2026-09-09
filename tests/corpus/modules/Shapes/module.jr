@@ -2,12 +2,12 @@
 // this form before `Shapes.jr` so a module can grow from one file to many
 // without its importers changing.
 Rect :: struct {
-    w: s64;
-    h: s64;
+  w: s64;
+  h: s64;
 }
 
 area :: (r: Rect) -> s64 {
-    return r.w * r.h;
+  return r.w * r.h;
 }
 
 SHAPES_VERSION :: 1;

@@ -8,25 +8,25 @@
 #import "Basic";
 
 main :: () {
-    // Narrowing a runtime value truncates: 300 & 0xFF is 44.
-    big: s64 = 300;
-    small := cast(u8, big);
+  // Narrowing a runtime value truncates: 300 & 0xFF is 44.
+  big: s64 = 300;
+  small := cast(u8, big);
 
-    // Widening is exact, and sign extension follows the *source* type: a
-    // negative `s8` widens to a negative `s64`, not to 255.
-    neg: s8 = -1;
-    widened := cast(s64, neg);
+  // Widening is exact, and sign extension follows the *source* type: a
+  // negative `s8` widens to a negative `s64`, not to 255.
+  neg: s8 = -1;
+  widened := cast(s64, neg);
 
-    // A same-width cast changes signedness only. Cranelift refuses `ireduce`
-    // and `uextend` on equal widths, so this is the pass-through case.
-    same := cast(u64, big);
+  // A same-width cast changes signedness only. Cranelift refuses `ireduce`
+  // and `uextend` on equal widths, so this is the pass-through case.
+  same := cast(u64, big);
 
-    if small == 44 {
-        if widened == -1 {
-            if same == 300 {
-                exit(0);
-            }
-        }
+  if small == 44 {
+    if widened == -1 {
+      if same == 300 {
+        exit(0);
+      }
     }
-    exit(1);
+  }
+  exit(1);
 }

@@ -33,89 +33,89 @@
 
 /// Two fields, so a transposed read would put a value in the wrong place rather than merely working.
 Point :: struct {
-    x: s64;
-    y: s64;
+  x: s64;
+  y: s64;
 }
 
 /// A different struct with the *same shape* (two `s64`s, size 16, align 8), which is what makes the
 /// identity check earn its keep: `size`/`alignment`/`kind` cannot tell it from `Point`, only `id` can.
 Pair :: struct {
-    a: s64;
-    b: s64;
+  a: s64;
+  b: s64;
 }
 
 /// Reads an `Any` it is told holds a `Point`, and sums it — the type-erased-argument use case.
 sum_point :: (a: Any) -> s64 {
-    p := any_as(a, Point);
-    return p.x + p.y;
+  p := any_as(a, Point);
+  return p.x + p.y;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // Round-trip a struct through `Any` and back.
-    p: Point;
-    p.x = 3;
-    p.y = 4;
-    a := any_of(*p);
-    q := any_as(a, Point);
-    if q.x == 3 {
-        n = n + 1;
-    }
-    if q.y == 4 {
-        n = n + 2;
-    }
+  // Round-trip a struct through `Any` and back.
+  p: Point;
+  p.x = 3;
+  p.y = 4;
+  a := any_of(*p);
+  q := any_as(a, Point);
+  if q.x == 3 {
+    n = n + 1;
+  }
+  if q.y == 4 {
+    n = n + 2;
+  }
 
-    // Through a procedure that took the `Any` without knowing its type — passing an already-built `Any`.
-    if sum_point(a) == 7 {
-        n = n + 4;
-    }
+  // Through a procedure that took the `Any` without knowing its type — passing an already-built `Any`.
+  if sum_point(a) == 7 {
+    n = n + 4;
+  }
 
-    // The **implicit coercion**, and it takes the value now (ADR-0189 §1). `sum_point` wants an `Any`, so
-    // `p` — a `Point`, not a pointer — is described and materialised at the call. `takes(any_of(*x))` and
-    // `takes(x)` are the same call, which is the ergonomic half ADR-0076 §1 promised, finally in the form
-    // it promised it.
-    //
-    // **This line used to read `sum_point(*p)`**, because ADR-0076 §4 could not materialise a value's
-    // address, so a caller passed a pointer and the coercion erased the pointee. That is withdrawn: the
-    // implicit coercion describes the argument's own type, so `sum_point(*p)` would now pass an `Any`
-    // describing a `*Point` and `any_as(a, Point)` inside would trap. Passing the value is what the file
-    // wanted to write all along.
-    if sum_point(p) == 7 {
-        n = n + 512;
-    }
+  // The **implicit coercion**, and it takes the value now (ADR-0189 §1). `sum_point` wants an `Any`, so
+  // `p` — a `Point`, not a pointer — is described and materialised at the call. `takes(any_of(*x))` and
+  // `takes(x)` are the same call, which is the ergonomic half ADR-0076 §1 promised, finally in the form
+  // it promised it.
+  //
+  // **This line used to read `sum_point(*p)`**, because ADR-0076 §4 could not materialise a value's
+  // address, so a caller passed a pointer and the coercion erased the pointee. That is withdrawn: the
+  // implicit coercion describes the argument's own type, so `sum_point(*p)` would now pass an `Any`
+  // describing a `*Point` and `any_as(a, Point)` inside would trap. Passing the value is what the file
+  // wanted to write all along.
+  if sum_point(p) == 7 {
+    n = n + 512;
+  }
 
-    // The `type` field is a real `*Type_Info`, readable through the `Any`.
-    if a.type.size == 16 {
-        n = n + 8;
-    }
-    if a.type.kind == Type_Info_Kind.STRUCT {
-        n = n + 16;
-    }
+  // The `type` field is a real `*Type_Info`, readable through the `Any`.
+  if a.type.size == 16 {
+    n = n + 8;
+  }
+  if a.type.kind == Type_Info_Kind.STRUCT {
+    n = n + 16;
+  }
 
-    // A **builtin** erased and recovered — the path that has no declaration.
-    m: s64;
-    m = 99;
-    b := any_of(*m);
-    r := any_as(b, s64);
-    if r == 99 {
-        n = n + 32;
-    }
-    if b.type.id == type_info(s64).id {
-        n = n + 64;
-    }
+  // A **builtin** erased and recovered — the path that has no declaration.
+  m: s64;
+  m = 99;
+  b := any_of(*m);
+  r := any_as(b, s64);
+  if r == 99 {
+    n = n + 32;
+  }
+  if b.type.id == type_info(s64).id {
+    n = n + 64;
+  }
 
-    // `Point` and `Pair` are the same shape but **different types**: their `id`s differ, which is exactly
-    // what a sound `any_as` relies on and a name/size comparison would get wrong.
-    ip := type_info(Point);
-    ir := type_info(Pair);
-    if ip.id != ir.id {
-        n = n + 128;
-    }
+  // `Point` and `Pair` are the same shape but **different types**: their `id`s differ, which is exactly
+  // what a sound `any_as` relies on and a name/size comparison would get wrong.
+  ip := type_info(Point);
+  ir := type_info(Pair);
+  if ip.id != ir.id {
+    n = n + 128;
+  }
 
-    // Every assertion: 767 (255 + the 512 coercion bit).
-    if n == 767 {
-        exit(0);
-    }
-    exit(1);
+  // Every assertion: 767 (255 + the 512 coercion bit).
+  if n == 767 {
+    exit(0);
+  }
+  exit(1);
 }

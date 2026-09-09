@@ -8,21 +8,21 @@
 #import "String";
 
 main :: () {
-    path := "/tmp/jr-example-07.txt";
+  path := "/tmp/jr-example-07.txt";
 
-    if !write_entire_file(path, "hello from a Jairs program") {
-        exit(1);
-    }
+  if !write_entire_file(path, "hello from a Jairs program") {
+    exit(1);
+  }
 
-    contents, ok := read_entire_file(path);
-    if !ok {
-        exit(2);
-    }
+  contents, ok := read_entire_file(path);
+  if !ok {
+    exit(2);
+  }
 
-    print_line(contents);
-    free_string(contents);
+  print("%\n", contents);
+  free_string(contents);
 
-    if !remove(path) {
-        exit(3);
-    }
+  if !remove(path) {
+    exit(3);
+  }
 }

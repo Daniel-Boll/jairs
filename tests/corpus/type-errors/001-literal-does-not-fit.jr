@@ -3,5 +3,5 @@
 // own, so only the annotation says what it must fit. Lowering cannot make this
 // check, because lowering does not know the target type.
 main :: () {
-    g: u8 = 300;
+  g: u8 = 300;
 }

@@ -6,20 +6,19 @@
 #import "Basic";
 
 larger :: (a: $T, b: T) -> T {
-    if a > b {
-        return a;
-    }
-    return b;
+  if a > b {
+    return a;
+  }
+  return b;
 }
 
 main :: () {
-    // Instantiates `larger` at s64.
-    print_int(larger(3, 7));
-    print_line("");
+  // Instantiates `larger` at s64.
+  print("%\n", larger(3, 7));
 
-    // A second, distinct instantiation at float64 — the same declaration, a different
-    // concrete procedure.
-    if larger(1.5, 0.5) > 1.0 {
-        print_line("floats too");
-    }
+  // A second, distinct instantiation at float64 — the same declaration, a different
+  // concrete procedure.
+  if larger(1.5, 0.5) > 1.0 {
+    print("floats too\n");
+  }
 }

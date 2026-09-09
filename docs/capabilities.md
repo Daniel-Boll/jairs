@@ -9,11 +9,10 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1333** workspace tests (**1344** under gate 7). ADR-0220's full gates were green; ADR-0221's
-  focused formatter checks are green, with the full set not rerun by the decider's instruction.
+- **1333** workspace tests (**1344** under gate 7), with all six ordinary gates green for ADR-0222.
 - **291** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
   (**302** counting those).
-- **221** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **222** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **25** standard library modules under `modules/`.
 - Diagnostic codes run **E0001–E0296**; **E0297** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership
@@ -27,7 +26,7 @@ behind them — that narrative is not duplicated here):
 | **Install the compiler globally** | `cargo install --path crates/jr-cli` | The whole procedure. The standard library is **compiled into the binary**, so `jr` works from any directory with the source tree deleted — verified by installing it, copying the binary away and compiling a program that imports `Basic` (ADR-0202 §1). `cargo install` cannot install data files at all, which is what forced this rather than an executable-relative search. The bundled tier appears in diagnostics as `<bundled>/Name/module.jr`, spelled so no real directory can shadow it or be shadowed by it |
 | **Start a project** | `jr new hello`, or `jr init` in a directory you have | Writes `jairs.toml`, a `src/main.jr` that compiles on the first try, an inert `build.jr` showing the build-script form, and a `.gitignore`. Neither command ever overwrites: `jr new` refuses an existing directory, `jr init` refuses an existing manifest, and any other file it would write is kept and reported |
 | **Run any command with no arguments inside a project** | `jr run`, `jr build`, `jr check`, `jr fmt` | The entry point comes from `jairs.toml`, resolved by walking **up**, so the same command means the same thing from any subdirectory. `[project] name` also names the artefact — as a *fallback*, ranked after `-o` and after a declared `BUILD_OUTPUT`, so neither is overridden. Outside a project a path is still required, and its absence names both ways to supply one |
-| **Configure the formatter** | `[fmt] indent_style`, `indent_width`, `case_block_style`, `max_width` in `jairs.toml` | Spaces or **tabs**, any width, and `next_line` or `same_line` placement for an arm whose sole statement is a block. `same_line` emits `case .TEXT; {` and a comment-free empty block as `{}`. Generated projects and manifest-free files both default to two spaces. Every setting is honoured by `jr fmt` *and* over LSP, and an unrecognised key is an **error**, not ignored. `max_width` breaks argument and parameter lists; it never reflows comments or breaks boolean chains or strings (ADR-0204, ADR-0220, ADR-0221) |
+| **Configure the formatter** | `[fmt] indent_style`, `indent_width`, `case_block_style`, `max_width` in `jairs.toml` | Spaces or **tabs**, any width, and `next_line` or `same_line` placement for an arm whose sole statement is a block. `same_line` emits `case .TEXT; {` and a comment-free empty block as `{}`. Generated projects, direct formatter callers and manifest-free files all default to two spaces. Every setting is honoured by `jr fmt` *and* over LSP, and an unrecognised key is an **error**, not ignored. `max_width` breaks argument and parameter lists; it never reflows comments or breaks boolean chains or strings (ADR-0204, ADR-0220–ADR-0222) |
 | Compile and run a program in the comptime VM | `jr run file.jr` | Register bytecode interpreter, no JIT tier |
 | Control a struct's layout | `x: s64 #align 16;`, `y: s64 #place 32;` | Raise a field's alignment, or put it at an exact byte offset (ADR-0144). `#align` is a *minimum*, a power of two up to 4096; `#place` takes any non-negative offset, may be unaligned, and **may overlap another field** — that is the point, and nothing checks for it, exactly as an untagged `union` reinterprets bits. A placed field never moves the ones after it. The operand is a literal or a named constant; arithmetic needs the compile-time evaluator, which runs after a struct is laid out |
 | Choose a code generator | `jr build file.jr --backend llvm` | Cranelift by default and LLVM 21 on request (ADR-0143). The LLVM path needs a compiler built with `--features llvm`; without it the flag is refused with a message naming the feature, rather than reported as unknown. The three engines are held to agreement by the differential harness — all corpus programs and every hand-tried trap matched the VM on the first run |
@@ -35,11 +34,11 @@ behind them — that narrative is not duplicated here):
 | Build without bounds checks | `jr build file.jr --no-bounds-check`, or `jr run` | ADR-0003's build setting, finally wired (ADR-0058). An out-of-range index is then undefined behaviour, which is the trade. `#no_abc` on a procedure does the same locally, whatever the build says; compile-time execution checks regardless |
 | Choose an optimisation level | `jr build file.jr -O0`, or `jr run -O0` | Two levels, `0` and `1` (the default, and what every build did before the flag). `-O0` runs no mid-end pass, so the code executed is exactly what lowering produced — which is how a wrong answer becomes attributable to lowering rather than to a pass. A level may **not** change what a program computes, and the differential harness sweeps every corpus program at both levels to check it (ADR-0142). The one thing `-O0` does change is a backtrace: nothing is inlined, so a trap inside a leaf names the leaf's own line. There is no `-O2` yet and no `--release` — deliberately, since a level with no pass behind it is a promise rather than a flag |
 | Get rustc-grade diagnostics | `jr check file.jr` | Codes across lexer, parser, HIR, sema, MIR and const-eval, with cross-crate uniqueness enforced by a test (ADR-0123). E0218 and E0212 suggest a near name; E0231 and E0245 are *warnings* — an unused `#import`, and a body the compiler could not lower |
-| Format source canonically | `jr fmt [--check] paths…` | The corpus is canonical under it, enforced by gate 5 — locally, since CI has never run |
+| Format source canonically | `jr fmt [--check] paths…` | Owned Jairs sources use the shared two-space default and the corpus is canonical under it, enforced by gate 5 locally and by the `jairs-fmt` CI job |
 | Inspect tokens or the CST | `jr parse file.jr` | Debug aid |
 | Measure language-server latency | `jr bench file.jr` | Reports min/median/p95 cold, warm and after an edit. **Reports, never judges** — no threshold, not a gate (ADR-0033), so a performance regression is invisible to CI by construction |
 | Measure compile throughput | `jr bench --throughput paths…` | Lines and bytes per second for `check` and `build`, cold only — a compiler is a process, so there is no warm throughput to report (ADR-0146). Same contract: reports, never judges |
-| Run the executable guide-compatibility baseline | `cargo test -p jr-cli --test compatibility` | One strict manifest covers all 35 example-bearing top-level chapters in the pinned `The_Way_to_Jai` guide. Every row runs a repository-owned probe in an isolated directory and records a source-compatible example, a port, an exact blocker, or an intentional divergence. Six representatives are source-compatible at the pinned revision. The test never reads the submodule, and 35 representatives do **not** justify a percentage claim (ADR-0219) |
+| Run the executable guide-compatibility baseline | `cargo test -p jr-cli --test compatibility` | One strict manifest covers all 35 example-bearing top-level groups in the pinned `The_Way_to_Jai` guide. Every row runs a repository-owned probe in an isolated directory and records a source-compatible example, a port, an exact blocker, or an intentional divergence. Six representatives are source-compatible at the pinned revision. The test never reads the submodule, and 35 representatives do **not** justify a percentage claim (ADR-0219, ADR-0222) |
 | Own a game-loop foundation | `Game.open`, `begin_frame`, `end_frame`, `close` | One explicit `Game.App` owns SDL/window/Simp startup, one event drain, close latching, monotonic delta time, presentation and idempotent teardown (ADR-0210). Only one App may be open because Simp has one process-global renderer, and its lifecycle stays on one thread. Held input, primitive helpers, textures, PNG, text and audio are later slices |
 | Print anything | `print("x = %, ok = %\n", 42, true)` from `modules/Basic` | Written in Jairs (ADR-0189, ADR-0193). Every integer width signed and unsigned including `S64_MIN`, floats, `bool`, `string`, pointers as hex, a struct one level deep, an array's and a view's elements, and an enum by **member name**. A nested aggregate or enum *field* still prints `..`: a field's type is an *id* and an id cannot be resolved to a `*Type_Info` |
 | Build text incrementally | `Basic.String_Builder`, `append`, `print_to_builder`, `builder_to_string`, `free_buffers` | A zero value lazily captures the active allocator triple; explicit initialization resets first. Private buffers stay chained and stable, conversion copies through the caller's current allocator, and cleanup is idempotent. `print_to_builder` uses the same renderer as `print`, supports one-based `%1`/`%2` selection, and bypasses `format`'s 4096-byte staging limit. Byte and pointer-length append have explicit names until general procedure overloading exists (ADR-0217) |
@@ -138,7 +137,7 @@ missing feature.
 | Formatter | **Works, safety redesign pending** | Pure function over the CST. ADR-0212 fixes `jr fmt` deleting `#program_export` and therefore changing a library's exported ABI. The optimisation audit found the recurring cause—duplicated raw-kind allowlists and wildcard fallbacks—and keeps the typed exhaustiveness redesign explicit rather than claiming the added arm closes it |
 | HIR, name resolution, module loader | **Works** | Flat import merge (ADR-0014); an aliased import merges nothing (ADR-0179) |
 | InternPool (types, comptime values, layout, arithmetic) | **Works** | One layout computation and one integer evaluator, shared (ADR-0018 §2, ADR-0022 §2) |
-| Sema (signatures, checking, inference) | **Works** | A union's diagnostics are a struct's unchanged, deliberately; no const-eval here — ADR-0018 §3 puts it in the VM, which is why an array length must be a literal. Float literals are context-typed with **no** fit check, because IEEE-754 saturates (ADR-0040 §5) |
+| Sema (signatures, checking, inference) | **Works** | A union's diagnostics are a struct's unchanged, deliberately. Array lengths may be literals, literal-valued constants, enum members, or `$N` parameters; arbitrary evaluated expressions still cross the phase boundary to const-eval and are refused. Float literals are context-typed with **no** fit check, because IEEE-754 saturates (ADR-0040 §5) |
 | MIR (typed SSA, Braun construction) | **Works** | Block parameters, not phis (ADR-0017); an explicit `bounds_check` statement and an explicit `zero`, both ADR-0039. `for` reuses the `while` shape with a synthesised induction variable; `defer`'s statements appear once per exit path |
 | Mid-end | **Four passes** | Inliner, store-to-load forwarding, const-prop, DCE, to a bounded fixed point (ADR-0021 – ADR-0023), all skipped at `-O0` (ADR-0142). The inliner refuses recursive callees so their backtraces survive (ADR-0145); forwarding follows a **single-predecessor chain** across blocks, but a join still ends it. No SROA — that needs a new `Rvalue` extracting a field from an operand, not a pass |
 | Bytecode VM + libffi | **Works** | Per-instruction spans, so a trap names its line. No JIT |
@@ -204,9 +203,9 @@ missing feature.
   auto-number from 0, an explicit value is allowed, and **later members continue from it** —
   `enum { A; B :: 10; C; }` is 0, 10, 11, not 0, 10, 2. Duplicate values are legal. Ordering
   and arithmetic are refused.
-- **An enum declared in an imported module cannot be used from another file yet.** The member
-  lookup handles a local declaration only, because an imported enum's arena index belongs to
-  the other file — the same cross-file restriction an imported *constant* has.
+- **Imported enum members work through the enum type.** Both qualified and contextual member
+  lookup cross the file boundary, and E0258's exhaustiveness/code-action path handles imported
+  enum types. The declaration order and runtime values still come from the declaring module.
 - **Floats do not trap, and that is a scoping of ADR-0002 rather than an exception to it.**
   `1.0/0.0` is `inf`, `0.0/0.0` is `NaN`, and an overflowing multiply saturates. The consequence
   that surprises people: `==` is not reflexive, because `NaN == NaN` is false. There is no
@@ -261,10 +260,10 @@ missing feature.
   context to reach through the literal into each element. `Point.{1, 2}` is still absent — it needs
   field-order decisions an element count does not supply. An array literal has no **compile-time**
   value either, so `A :: s64.[1, 2];` is refused with a message saying so.
-- **An array length must be a literal.** `[20]u8` works and `[COUNT]u8` does not: constant
-  evaluation lives downstream of where a type annotation is resolved, so sema cannot ask for
-  `COUNT`'s value without inverting that dependency. `[N]T` sized by a `$N` comptime parameter
-  is the one case this restriction does not apply to.
+- **An array length may use a literal-valued name, but not a general expression.** `[20]u8`,
+  `[COUNT]u8`, an enum member, and `[N]T` under a `$N` parameter work. Arithmetic such as
+  `[WIDTH * HEIGHT]T`, an alias chain, a `#run`, or another file's constant still needs evaluation
+  downstream of type resolution and is refused.
 - **The two engines agreeing is *tested*, not assumed.** They share MIR, which makes agreement
   likely; `crates/jr-cli/tests/differential.rs` is what makes it checked.
 - **Most corpus programs still drive a computation out through `exit` rather than printing** —

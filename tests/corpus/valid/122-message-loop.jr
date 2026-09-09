@@ -21,50 +21,50 @@
 #import "Basic";
 
 health :: () -> s64 @route "/health" {
-    return 1;
+  return 1;
 }
 
 users :: () -> s64 @route "/users" {
-    return 2;
+  return 2;
 }
 
 // Carries a *different* note, so the table below must not contain it. That is the half a count-only test
 // would miss: a table containing every declaration would still have the right length here if the counts
 // happened to match, which is why the name is read back too.
 old_thing :: () -> s64 @deprecated {
-    return 3;
+  return 3;
 }
 
 main :: () {
-    routes := noted_declarations("route");
-    total := routes.count;
+  routes := noted_declarations("route");
+  total := routes.count;
 
-    // **An ordinary loop over a compiler-emitted table**, which is the whole point: the bound is
-    // `routes.count`, not a literal the script chose, so adding a fourth `@route` declaration changes this
-    // program's answer without touching it.
-    i := 0;
-    while i < routes.count {
-        total = total + routes[i].note_value.count;
-        i = i + 1;
+  // **An ordinary loop over a compiler-emitted table**, which is the whole point: the bound is
+  // `routes.count`, not a literal the script chose, so adding a fourth `@route` declaration changes this
+  // program's answer without touching it.
+  i := 0;
+  while i < routes.count {
+    total = total + routes[i].note_value.count;
+    i = i + 1;
+  }
+
+  // A name read back through the view's `string`, which proves the table's pointers reach real bytes in
+  // whichever engine is running — the term that caught both native back ends emitting a zero pointer
+  // (ADR-0152 §2).
+  total = total + routes[1].name.count;
+
+  // The bare note's value is `""` — a real answer rather than an absent marker, so a script can ask
+  // whether a payload was written by comparing the count against 0.
+  bare := noted_declarations("deprecated");
+  total = total + bare[0].note_value.count;
+
+  // **Selection is real.** `@deprecated` is not in the `@route` table, so the two tables differ, and a
+  // query that returned every declaration regardless of note would fail here.
+  if bare.count == 1 {
+    if routes.count == 2 {
+      total = total + 1;
     }
+  }
 
-    // A name read back through the view's `string`, which proves the table's pointers reach real bytes in
-    // whichever engine is running — the term that caught both native back ends emitting a zero pointer
-    // (ADR-0152 §2).
-    total = total + routes[1].name.count;
-
-    // The bare note's value is `""` — a real answer rather than an absent marker, so a script can ask
-    // whether a payload was written by comparing the count against 0.
-    bare := noted_declarations("deprecated");
-    total = total + bare[0].note_value.count;
-
-    // **Selection is real.** `@deprecated` is not in the `@route` table, so the two tables differ, and a
-    // query that returned every declaration regardless of note would fail here.
-    if bare.count == 1 {
-        if routes.count == 2 {
-            total = total + 1;
-        }
-    }
-
-    exit(total);
+  exit(total);
 }

@@ -2,27 +2,9 @@
 // `get`, `set`, `clear`, `is_empty`, `is_full`. W7's third sub-wave, the fourth module, and the first that is a
 // *data structure* rather than operations on something the language already has.
 //
-// **W7's plan names a dynamic array, and this is not one.** The reason is not effort: it is three refusals the
-// language makes on purpose, every one of them *probed* rather than assumed, which is the honest way to find
-// out what a library can be.
-//
-//   * **A `malloc`'d region cannot be typed.** `cast(*s64, p)` is E0232 (ADR-0045 §1) — a general pointer cast
-//     makes a wrong pointee type a silent wrong read, so it is refused. `data: *T` is declarable, but nothing
-//     can produce a `*T` from an allocator returning `*u8`, so heap-backed storage is unreachable. The fix is a
-//     **typed allocation** primitive rather than a weaker cast, and that is a language decision.
-//   * **Inference through a parameterised struct is deferred** (ADR-0085 §5): `push :: (a: *Array($T), v: T)`
-//     is E0212, since `T` is not in scope there.
-//   * **A parameterised struct cannot cross a module boundary at all** (E0269, ADR-0085 §5). This is the one
-//     that decided the shape, and it was found by *importing the module*: the first draft declared
-//     `Array :: struct($T)`, which compiled inside the module and failed at the first `a: Array(s64)` here. A
-//     polymorphic struct in a module is therefore **unusable by every importer**, so the module declares a
-//     concrete `Array(s64)` and says so in the name.
-//
-// **Routing around them was considered and rejected.** A `*u8`-backed array with hand-computed byte offsets
-// *is* expressible — pointer arithmetic works — but every read would need the element size as a literal and
-// every write would reinterpret bytes, which is exactly the silent wrong read E0232 exists to prevent. Doing
-// that in the standard library, where a reader looks to learn what the language means, would be the worst place
-// for it.
+// `Array` is now a cross-file parameterised struct (ADR-0117). Its procedures remain deliberately concrete
+// on `Array(s64)`, because an imported polymorphic procedure still cannot be instantiated (E0268). This test
+// therefore exercises the usable public instance rather than repeating the historical E0269 blocker.
 //
 // What is checked here:
 //
@@ -48,62 +30,62 @@
 #import "Array";
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    a: Array(s64);
-    a.count = 0;
+  a: Array(s64);
+  a.count = 0;
 
-    // Empty to start with, and `pop` says so.
-    _, empty_ok := pop(*a);
-    if is_empty(*a) && !is_full(*a) && !empty_ok {
-        n = n + 1;
-    }
+  // Empty to start with, and `pop` says so.
+  _, empty_ok := pop(*a);
+  if is_empty(*a) && !is_full(*a) && !empty_ok {
+    n = n + 1;
+  }
 
-    // Two pushes, then read them back in order.
-    if push(*a, 10) && push(*a, 20) && a.count == 2 {
-        n = n + 2;
-    }
-    first, first_ok := get(*a, 0);
-    second, second_ok := get(*a, 1);
-    if first_ok && second_ok && first == 10 && second == 20 {
-        n = n + 4;
-    }
+  // Two pushes, then read them back in order.
+  if push(*a, 10) && push(*a, 20) && a.count == 2 {
+    n = n + 2;
+  }
+  first, first_ok := get(*a, 0);
+  second, second_ok := get(*a, 1);
+  if first_ok && second_ok && first == 10 && second == 20 {
+    n = n + 4;
+  }
 
-    // `get` refuses an index in `[count, CAPACITY)` — the slot exists, the element does not.
-    _, past := get(*a, 2);
-    _, negative := get(*a, -1);
-    if !past && !negative {
-        n = n + 8;
-    }
+  // `get` refuses an index in `[count, CAPACITY)` — the slot exists, the element does not.
+  _, past := get(*a, 2);
+  _, negative := get(*a, -1);
+  if !past && !negative {
+    n = n + 8;
+  }
 
-    // `set` replaces in range and refuses to extend.
-    if set(*a, 0, 11) && !set(*a, 2, 99) {
-        n = n + 16;
-    }
-    replaced, _ := get(*a, 0);
-    if replaced == 11 {
-        n = n + 32;
-    }
+  // `set` replaces in range and refuses to extend.
+  if set(*a, 0, 11) && !set(*a, 2, 99) {
+    n = n + 16;
+  }
+  replaced, _ := get(*a, 0);
+  if replaced == 11 {
+    n = n + 32;
+  }
 
-    // `pop` returns the last element and shortens the array.
-    popped, popped_ok := pop(*a);
-    if popped_ok && popped == 20 && a.count == 1 {
-        n = n + 64;
-    }
+  // `pop` returns the last element and shortens the array.
+  popped, popped_ok := pop(*a);
+  if popped_ok && popped == 20 && a.count == 1 {
+    n = n + 64;
+  }
 
-    // Fill to capacity, confirm the refusal, then clear and confirm it accepts again.
-    filling := true;
-    while filling {
-        if !push(*a, 1) {
-            filling = false;
-        }
+  // Fill to capacity, confirm the refusal, then clear and confirm it accepts again.
+  filling := true;
+  while filling {
+    if !push(*a, 1) {
+      filling = false;
     }
-    if a.count == CAPACITY && is_full(*a) && !push(*a, 1) {
-        clear(*a);
-        if is_empty(*a) && push(*a, 5) {
-            n = n + 128;
-        }
+  }
+  if a.count == CAPACITY && is_full(*a) && !push(*a, 1) {
+    clear(*a);
+    if is_empty(*a) && push(*a, 5) {
+      n = n + 128;
     }
+  }
 
-    exit(n);
+  exit(n);
 }

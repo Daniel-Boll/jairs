@@ -148,10 +148,9 @@ fn the_purity_predicate_agrees_with_the_operators_trap_flag() {
 
 #[test]
 fn a_spill_slot_nothing_reads_is_removed_with_its_store() {
-    // The symptom `PLAN.md` §7 named, in miniature. `modules/Basic`'s `print_line`
-    // spills its `string` parameter to a slot and then passes the *value* on, so the
-    // slot is written and never read. Removing it needs the dead store to go first,
-    // which is the correction ADR-0022 §4 records.
+    // A forwarding procedure spills its `string` parameter to a slot and then passes
+    // the *value* on, so the slot is written and never read. Removing it needs the dead
+    // store to go first, which is the correction ADR-0022 §4 records.
     let mut program = Program::new();
     let lowered = program.lower_clean(
         "k :: (s: string) { }\n\

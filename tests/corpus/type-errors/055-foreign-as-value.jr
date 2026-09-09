@@ -21,6 +21,6 @@ libc :: #system_library "c";
 puts :: (s: *u8) -> s64 #foreign libc "puts";
 
 grab_foreign :: () {
-    // The refusal: a `#foreign` procedure taken as a value.
-    g := puts;
+  // The refusal: a `#foreign` procedure taken as a value.
+  g := puts;
 }

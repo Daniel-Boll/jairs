@@ -25,50 +25,50 @@
 
 /// The canonical parameterised struct: one field of the type variable.
 Box :: struct($T) {
-    value: T;
+  value: T;
 }
 
 /// Two fields of one type variable, to exercise layout of a substituted aggregate.
 Pair :: struct($T) {
-    first: T;
-    second: T;
+  first: T;
+  second: T;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // `Box(s64)` — the field is `s64`.
-    bi: Box(s64);
-    bi.value = 7;
-    if bi.value == 7 {
-        n = n + 1;
-    }
+  // `Box(s64)` — the field is `s64`.
+  bi: Box(s64);
+  bi.value = 7;
+  if bi.value == 7 {
+    n = n + 1;
+  }
 
-    // `Box(bool)` — the *same* declaration, a distinct type with a `bool` field.
-    bb: Box(bool);
-    bb.value = true;
-    if bb.value {
-        n = n + 2;
-    }
+  // `Box(bool)` — the *same* declaration, a distinct type with a `bool` field.
+  bb: Box(bool);
+  bb.value = true;
+  if bb.value {
+    n = n + 2;
+  }
 
-    // `Pair(s64)` — both fields substitute, and both are readable at their offsets.
-    p: Pair(s64);
-    p.first = 4;
-    p.second = 8;
-    if p.first + p.second == 12 {
-        n = n + 4;
-    }
+  // `Pair(s64)` — both fields substitute, and both are readable at their offsets.
+  p: Pair(s64);
+  p.first = 4;
+  p.second = 8;
+  if p.first + p.second == 12 {
+    n = n + 4;
+  }
 
-    // `Box(Box(s64))` — an instance as another instance's type argument.
-    bb2: Box(Box(s64));
-    bb2.value.value = 8;
-    if bb2.value.value == 8 {
-        n = n + 8;
-    }
+  // `Box(Box(s64))` — an instance as another instance's type argument.
+  bb2: Box(Box(s64));
+  bb2.value.value = 8;
+  if bb2.value.value == 8 {
+    n = n + 8;
+  }
 
-    // Every assertion: 15.
-    if n == 15 {
-        exit(0);
-    }
-    exit(1);
+  // Every assertion: 15.
+  if n == 15 {
+    exit(0);
+  }
+  exit(1);
 }

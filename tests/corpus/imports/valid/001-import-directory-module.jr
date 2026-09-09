@@ -3,9 +3,9 @@
 #import "Shapes";
 
 main :: () {
-    r: Rect;
-    r.w = 3;
-    r.h = 4;
-    a := area(r);
-    v := SHAPES_VERSION;
+  r: Rect;
+  r.w = 3;
+  r.h = 4;
+  a := area(r);
+  v := SHAPES_VERSION;
 }

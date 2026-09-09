@@ -14,11 +14,11 @@
 // No `#import "Basic"`: an unused import is E0231, a second diagnostic this directory does not allow.
 
 Point :: struct {
-    x: s64;
-    y: s64;
+  x: s64;
+  y: s64;
 }
 
 asks_about_a_struct :: () {
-    // A struct type, which resolves fine and carries no notes at all.
-    answer := has_note(Point, "packed");
+  // A struct type, which resolves fine and carries no notes at all.
+  answer := has_note(Point, "packed");
 }

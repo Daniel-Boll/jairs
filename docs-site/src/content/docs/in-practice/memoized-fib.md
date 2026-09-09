@@ -38,8 +38,7 @@ main :: () {
 
     i := 0;
     while i <= 30 {
-        print_int(fib(*m, i));
-        print(" ");
+        print("% ", fib(*m, i));
         i = i + 1;
     }
     print("\n");

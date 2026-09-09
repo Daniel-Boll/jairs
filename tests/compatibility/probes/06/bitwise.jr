@@ -1,18 +1,18 @@
 #import "Basic";
 
 main :: () {
-    value: u8 = 90;
-    mask: u8 = 60;
-    rotated := (value << 1) | (value >> 7);
+  value: u8 = 90;
+  mask: u8 = 60;
+  rotated := (value << 1) | (value >> 7);
 
-    print(
-        "bits % % % % % % %\n",
-        value & mask,
-        value | mask,
-        value ^ mask,
-        ~value,
-        value << 1,
-        value >> 2,
-        rotated,
-    );
+  print(
+    "bits % % % % % % %\n",
+    value & mask,
+    value | mask,
+    value ^ mask,
+    ~value,
+    value << 1,
+    value >> 2,
+    rotated,
+  );
 }

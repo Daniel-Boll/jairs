@@ -20,57 +20,57 @@ Compiler :: #import "Compiler";
 String :: #import "String";
 
 main :: () {
-    // `Compiler.arguments()` allocates through the default context allocator. A script can still
-    // replace the pair when it wants an arena or another policy.
-    args := Compiler.arguments();
-    is_release := args.count > 0 && String.equal(args[0], "release");
+  // `Compiler.arguments()` allocates through the default context allocator. A script can still
+  // replace the pair when it wants an arena or another policy.
+  args := Compiler.arguments();
+  is_release := args.count > 0 && String.equal(args[0], "release");
 
-    // Shell out, which is what a build script is *for*: a git hash to stamp in, a shader to compile,
-    // a bundle to sign. The driver spawns the process, so there is no `argv` to marshal.
-    git := Compiler.command("git");
-    Compiler.argument_of(git, "rev-parse");
-    Compiler.argument_of(git, "--short");
-    Compiler.argument_of(git, "HEAD");
-    status := Compiler.run(git);
-    if status == 0 {
-        print("at commit %", Compiler.output(git));
-    }
-    if status != 0 {
-        print("not a git checkout, carrying on\n");
-    }
+  // Shell out, which is what a build script is *for*: a git hash to stamp in, a shader to compile,
+  // a bundle to sign. The driver spawns the process, so there is no `argv` to marshal.
+  git := Compiler.command("git");
+  Compiler.argument_of(git, "rev-parse");
+  Compiler.argument_of(git, "--short");
+  Compiler.argument_of(git, "HEAD");
+  status := Compiler.run(git);
+  if status == 0 {
+    print("at commit %", Compiler.output(git));
+  }
+  if status != 0 {
+    print("not a git checkout, carrying on\n");
+  }
 
-    if is_release {
-        print("release build\n");
-    }
-    if !is_release {
-        print("debug build\n");
-    }
+  if is_release {
+    print("release build\n");
+  }
+  if !is_release {
+    print("debug build\n");
+  }
 
-    // Per-OS decisions are ordinary code here, not a directive.
-    if Compiler.os() == Compiler.Operating_System.MACOS {
-        print("building for macOS\n");
-    }
+  // Per-OS decisions are ordinary code here, not a directive.
+  if Compiler.os() == Compiler.Operating_System.MACOS {
+    print("building for macOS\n");
+  }
 
-    level: s64 = 0;
-    if is_release {
-        level = 1;
-    }
+  level: s64 = 0;
+  if is_release {
+    level = 1;
+  }
 
-    // A literal must be named before it is viewed: there is no implicit array-to-view conversion.
-    paths := string.["modules"];
+  // A literal must be named before it is viewed: there is no implicit array-to-view conversion.
+  paths := string.["modules"];
 
-    t := Compiler.create_target("hello");
-    o := Compiler.options(t);
-    o.output = "hello-from-a-build-script";
-    o.opt_level = level;
-    o.bounds_checks = !is_release;
-    o.module_paths = paths[];
-    Compiler.set_options(t, o);
-    Compiler.add_file(t, "examples/01-hello.jr");
+  t := Compiler.create_target("hello");
+  o := Compiler.options(t);
+  o.output = "hello-from-a-build-script";
+  o.opt_level = level;
+  o.bounds_checks = !is_release;
+  o.module_paths = paths[];
+  Compiler.set_options(t, o);
+  Compiler.add_file(t, "examples/01-hello.jr");
 
-    if !Compiler.build(t) {
-        Compiler.report("the target did not build");
-        exit(1);
-    }
-    exit(0);
+  if !Compiler.build(t) {
+    Compiler.report("the target did not build");
+    exit(1);
+  }
+  exit(0);
 }

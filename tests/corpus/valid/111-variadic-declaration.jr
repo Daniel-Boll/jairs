@@ -17,47 +17,47 @@
 #import "Basic";
 
 sum_view :: (xs: []s64) -> s64 {
-    total := 0;
-    for x: xs {
-        total = total + x;
-    }
-    return total;
+  total := 0;
+  for x: xs {
+    total = total + x;
+  }
+  return total;
 }
 
 // The variadic parameter's type is `[]s64` in HIR, wrapped from the written `..s64` at
 // lowering. Inside the body, `args` is an ordinary view.
 sum :: (args: ..s64) -> s64 {
-    return sum_view(args);
+  return sum_view(args);
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // Passing an explicit view.
-    buf: [3]s64;
-    buf[0] = 1;
-    buf[1] = 2;
-    buf[2] = 4;
-    if sum(buf[]) == 7 {
-        n = n + 1;
-    }
+  // Passing an explicit view.
+  buf: [3]s64;
+  buf[0] = 1;
+  buf[1] = 2;
+  buf[2] = 4;
+  if sum(buf[]) == 7 {
+    n = n + 1;
+  }
 
-    // A different view — the callee sees it as an ordinary `[]s64`.
-    buf2: [2]s64;
-    buf2[0] = 10;
-    buf2[1] = 20;
-    if sum(buf2[]) == 30 {
-        n = n + 2;
-    }
+  // A different view — the callee sees it as an ordinary `[]s64`.
+  buf2: [2]s64;
+  buf2[0] = 10;
+  buf2[1] = 20;
+  if sum(buf2[]) == 30 {
+    n = n + 2;
+  }
 
-    // An empty view — the loop runs zero times.
-    empty: [0]s64;
-    if sum(empty[]) == 0 {
-        n = n + 4;
-    }
+  // An empty view — the loop runs zero times.
+  empty: [0]s64;
+  if sum(empty[]) == 0 {
+    n = n + 4;
+  }
 
-    if n == 7 {
-        exit(0);
-    }
-    exit(1);
+  if n == 7 {
+    exit(0);
+  }
+  exit(1);
 }

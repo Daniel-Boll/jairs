@@ -3,10 +3,10 @@
 // The help line names `enum_flags`, because a reader who does not know it exists cannot find
 // it — and keeping this refusal is what makes the two declaration forms mean different things.
 Colour :: enum {
-    RED;
-    GREEN;
+  RED;
+  GREEN;
 }
 
 main :: () {
-    c := Colour.RED | Colour.GREEN;
+  c := Colour.RED | Colour.GREEN;
 }

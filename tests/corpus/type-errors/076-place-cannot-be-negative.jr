@@ -16,11 +16,11 @@
 // satisfy the field's alignment, which every engine handles because each computes its own
 // addresses.
 Negative :: struct {
-    header: s64;
-    value: s64 #place -8;
+  header: s64;
+  value: s64 #place -8;
 }
 
 main :: () {
-    n: Negative;
-    n.header = 1;
+  n: Negative;
+  n.header = 1;
 }

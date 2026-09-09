@@ -43,68 +43,68 @@
 #import "Sort";
 
 Pair :: struct {
-    a: s64;
-    b: s64;
+  a: s64;
+  b: s64;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // A view over a heap allocation, indexed and counted.
-    d := typed(s64, malloc(4 * size_of(s64)));
-    (d + 0).* = 10;
-    (d + 1).* = 20;
-    (d + 2).* = 30;
-    (d + 3).* = 40;
-    v := view(d, 4);
-    if v.count == 4 && v[0] == 10 && v[3] == 40 {
-        n = n + 1;
-    }
+  // A view over a heap allocation, indexed and counted.
+  d := typed(s64, malloc(4 * size_of(s64)));
+  (d + 0).* = 10;
+  (d + 1).* = 20;
+  (d + 2).* = 30;
+  (d + 3).* = 40;
+  v := view(d, 4);
+  if v.count == 4 && v[0] == 10 && v[3] == 40 {
+    n = n + 1;
+  }
 
-    // A **shorter** view of the same memory: the count is the view's, not the allocation's.
-    short := view(d, 2);
-    if short.count == 2 && short[1] == 20 {
-        n = n + 2;
-    }
+  // A **shorter** view of the same memory: the count is the view's, not the allocation's.
+  short := view(d, 2);
+  if short.count == 2 && short[1] == 20 {
+    n = n + 2;
+  }
 
-    // A view is a **window**: writing through it changes the memory behind it.
-    v[0] = 99;
-    if (d + 0).* == 99 {
-        n = n + 4;
-    }
-    free(untyped(d));
+  // A view is a **window**: writing through it changes the memory behind it.
+  v[0] = 99;
+  if (d + 0).* == 99 {
+    n = n + 4;
+  }
+  free(untyped(d));
 
-    // Not scalar-only: a view over a struct element type.
-    ps := typed(Pair, malloc(2 * size_of(Pair)));
-    pv := view(ps, 2);
-    pv[0].a = 3;
-    pv[0].b = 4;
-    if pv[0].a + pv[0].b == 7 && pv.count == 2 {
-        n = n + 8;
-    }
-    free(untyped(ps));
+  // Not scalar-only: a view over a struct element type.
+  ps := typed(Pair, malloc(2 * size_of(Pair)));
+  pv := view(ps, 2);
+  pv[0].a = 3;
+  pv[0].b = 4;
+  if pv[0].a + pv[0].b == 7 && pv.count == 2 {
+    n = n + 8;
+  }
+  free(untyped(ps));
 
-    // **The point of the sub-wave**: a growable list's contents, sorted in place by another module. The list is
-    // a native `[..]s64` (ADR-0136/0140), zero-initialised, so it declares without a manual reset.
-    l: [..]s64;
+  // **The point of the sub-wave**: a growable list's contents, sorted in place by another module. The list is
+  // a native `[..]s64` (ADR-0136/0140), zero-initialised, so it declares without a manual reset.
+  l: [..]s64;
 
-    // A zero-count view over an empty list is well-formed — nothing indexes it.
-    if elements(*l).count == 0 {
-        n = n + 16;
-    }
+  // A zero-count view over an empty list is well-formed — nothing indexes it.
+  if elements(*l).count == 0 {
+    n = n + 16;
+  }
 
-    push(*l, 5);
-    push(*l, 1);
-    push(*l, 4);
-    push(*l, 2);
-    push(*l, 3);
-    sort_ints(elements(*l));
-    first, _ := get(*l, 0);
-    last, _ := get(*l, 4);
-    if first == 1 && last == 5 && ints_sorted(elements(*l)) {
-        n = n + 32;
-    }
-    free_data(*l);
+  push(*l, 5);
+  push(*l, 1);
+  push(*l, 4);
+  push(*l, 2);
+  push(*l, 3);
+  sort_ints(elements(*l));
+  first, _ := get(*l, 0);
+  last, _ := get(*l, 4);
+  if first == 1 && last == 5 && ints_sorted(elements(*l)) {
+    n = n + 32;
+  }
+  free_data(*l);
 
-    exit(n);
+  exit(n);
 }

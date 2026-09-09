@@ -9,22 +9,22 @@
 #import "Basic";
 
 main :: () {
-    // The minimum of a two's-complement type is not the negation of anything the
-    // type can hold, which is the whole reason the fold exists.
-    small: s8 = -128;
-    widened := cast(s64, small);
+  // The minimum of a two's-complement type is not the negation of anything the
+  // type can hold, which is the whole reason the fold exists.
+  small: s8 = -128;
+  widened := cast(s64, small);
 
-    // An ordinary negative literal, and a negation of a *value* — which still
-    // lowers to `Unary(Neg, ..)` and still traps on overflow (ADR-0002).
-    ordinary := -5;
-    negated := -ordinary;
+  // An ordinary negative literal, and a negation of a *value* — which still
+  // lowers to `Unary(Neg, ..)` and still traps on overflow (ADR-0002).
+  ordinary := -5;
+  negated := -ordinary;
 
-    if widened == -128 {
-        if ordinary == -5 {
-            if negated == 5 {
-                exit(0);
-            }
-        }
+  if widened == -128 {
+    if ordinary == -5 {
+      if negated == 5 {
+        exit(0);
+      }
     }
-    exit(1);
+  }
+  exit(1);
 }

@@ -1,5 +1,5 @@
 #import "Basic";
 
 main :: () {
-    print_line("hello from the compatibility probe");
+  print("hello from the compatibility probe\n");
 }

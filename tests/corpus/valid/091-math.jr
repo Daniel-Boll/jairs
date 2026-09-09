@@ -32,44 +32,44 @@
 #import "Math";
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // The integer functions, exact.
-    if abs(-5) == 5 && abs(5) == 5 && abs(0) == 0 {
-        n = n + 1;
-    }
-    if min(3, 7) == 3 && max(3, 7) == 7 && min(-2, -9) == -9 {
-        n = n + 2;
-    }
-    if sign(-3) == -1 && sign(0) == 0 && sign(8) == 1 {
-        n = n + 4;
-    }
+  // The integer functions, exact.
+  if abs(-5) == 5 && abs(5) == 5 && abs(0) == 0 {
+    n = n + 1;
+  }
+  if min(3, 7) == 3 && max(3, 7) == 7 && min(-2, -9) == -9 {
+    n = n + 2;
+  }
+  if sign(-3) == -1 && sign(0) == 0 && sign(8) == 1 {
+    n = n + 4;
+  }
 
-    // `clamp`, including the crossed-bounds case where `low` wins.
-    if clamp(10, 0, 5) == 5 && clamp(-1, 0, 5) == 0 && clamp(3, 0, 5) == 3 {
-        if clamp(3, 8, 2) == 8 {
-            n = n + 8;
-        }
+  // `clamp`, including the crossed-bounds case where `low` wins.
+  if clamp(10, 0, 5) == 5 && clamp(-1, 0, 5) == 0 && clamp(3, 0, 5) == 3 {
+    if clamp(3, 8, 2) == 8 {
+      n = n + 8;
     }
+  }
 
-    // `pow` and `gcd`, exact.
-    if pow(2, 10) == 1024 && pow(5, 0) == 1 && pow(3, 3) == 27 {
-        n = n + 16;
-    }
-    if gcd(12, 18) == 6 && gcd(7, 0) == 7 && gcd(0, 0) == 0 {
-        n = n + 32;
-    }
+  // `pow` and `gcd`, exact.
+  if pow(2, 10) == 1024 && pow(5, 0) == 1 && pow(3, 3) == 27 {
+    n = n + 16;
+  }
+  if gcd(12, 18) == 6 && gcd(7, 0) == 7 && gcd(0, 0) == 0 {
+    n = n + 32;
+  }
 
-    // `floor`/`ceil`/`round` on positives — exact whole-number results.
-    if floor(3.7) == 3.0 && ceil(3.2) == 4.0 && round(3.5) == 4.0 {
-        n = n + 64;
-    }
+  // `floor`/`ceil`/`round` on positives — exact whole-number results.
+  if floor(3.7) == 3.0 && ceil(3.2) == 4.0 && round(3.5) == 4.0 {
+    n = n + 64;
+  }
 
-    // The negative case, where truncation and flooring diverge. `floor(-1.5)` is -2, `ceil(-1.5)` is -1,
-    // `round(-2.5)` is -3 (halves away from zero).
-    if floor(-1.5) == -2.0 && ceil(-1.5) == -1.0 && round(-2.5) == -3.0 {
-        n = n + 128;
-    }
+  // The negative case, where truncation and flooring diverge. `floor(-1.5)` is -2, `ceil(-1.5)` is -1,
+  // `round(-2.5)` is -3 (halves away from zero).
+  if floor(-1.5) == -2.0 && ceil(-1.5) == -1.0 && round(-2.5) == -3.0 {
+    n = n + 128;
+  }
 
-    exit(n);
+  exit(n);
 }

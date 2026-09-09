@@ -41,119 +41,115 @@ KEY_S :: 115;
 KEY_D :: 100;
 
 libc_alloc :: (n: s64) -> *u8 {
-    return malloc(n);
+  return malloc(n);
 }
 
 libc_free :: (p: *u8) {
-    free(p);
+  free(p);
 }
 
 main :: () {
-    context.allocator = libc_alloc;
-    context.allocator_free = libc_free;
+  context.allocator = libc_alloc;
+  context.allocator_free = libc_free;
 
-    if !Snake.GRID_CELLS_IS_CONSISTENT {
-        exit_now(69);
-    }
+  if !Snake.GRID_CELLS_IS_CONSISTENT {
+    exit_now(69);
+  }
 
-    demo := flag_from_environment("SNAKE_DEMO");
-    frame_budget := number_from_environment("SNAKE_FRAMES");
+  demo := flag_from_environment("SNAKE_DEMO");
+  frame_budget := number_from_environment("SNAKE_FRAMES");
 
-    if !Window.start() {
-        exit_now(70);
-    }
-    window := Window.create_window(
-        Snake.GRID_WIDTH * CELL,
-        Snake.GRID_HEIGHT * CELL,
-        "Jairs Snake",
-    );
-    if !Window.is_open(*window) {
-        Window.stop();
-        exit_now(71);
-    }
+  if !Window.start() {
+    exit_now(70);
+  }
+  window := Window.create_window(Snake.GRID_WIDTH * CELL, Snake.GRID_HEIGHT * CELL, "Jairs Snake");
+  if !Window.is_open(*window) {
+    Window.stop();
+    exit_now(71);
+  }
 
-    // `RIGHT_HANDED` is `Simp`'s default: origin bottom-left, y upwards. `modules/Snake`'s row 0 is the
-    // bottom row, so grid coordinates and pixels agree with no flip. A game whose grid is y-down wants
-    // `Simp.LEFT_HANDED` instead — the choice is made once, here, and everything downstream follows it.
-    Simp.set_render_target(*window);
-    if !Simp.is_ready() {
-        Window.close(*window);
-        Window.stop();
-        exit_now(72);
-    }
-
-    // The seed is the clock, so two runs differ; `sim.jr` passes a constant, so two runs match. Both
-    // are the right answer to a different question, which is why `Snake.make` takes the seed rather
-    // than reading a clock itself.
-    state := Snake.make(cast(u64, Time.wall()));
-    events: Input.Events;
-
-    previous := Time.monotonic();
-    // Time owed to the simulation but not yet stepped. A grid game moves in ticks and the display
-    // refreshes in frames, and the two rates are unrelated: this accumulator is the whole of that
-    // relationship.
-    pending := 0.0;
-    frames := 0;
-    quit := false;
-
-    while !quit {
-        _ = Input.update_window_events(*events, Input.MAX_EVENTS_PER_FRAME);
-        quit = read_input(*state, *events, demo);
-
-        now := Time.monotonic();
-        dt := cast(float64, now - previous) / cast(float64, Time.NANOSECONDS_PER_SECOND);
-        previous = now;
-        // A long frame is clamped, so a window drag does not deliver twenty ticks at once. Losing the
-        // time is deliberate: a snake that jumps six cells after a hiccup has been killed by the
-        // scheduler rather than by the player.
-        if dt > 0.25 {
-            dt = 0.25;
-        }
-        pending = pending + dt;
-
-        // A `while`, not an `if`: on a slow frame more than one tick is owed, and stepping once per
-        // frame would make the snake's speed depend on the frame rate — which is the bug this loop
-        // shape exists to prevent.
-        while pending >= state.step_seconds && !Snake.is_over(*state) {
-            pending = pending - state.step_seconds;
-            if demo {
-                Snake.turn(*state, Snake.autopilot(*state));
-            }
-            _ = Snake.step(*state);
-        }
-
-        // Every `Simp` call returns nothing, so a GL failure is otherwise silent. `GL.error_code`
-        // reports and clears one error, which makes "did this frame draw" a question with an answer.
-        draw(*window, *state);
-        if GL.error_code() != GL.NO_ERROR {
-            print("a GL call failed while drawing\n");
-            Simp.destroy_render_target();
-            Window.close(*window);
-            Window.stop();
-            exit_now(74);
-        }
-
-        frames = frames + 1;
-        if frame_budget > 0 && frames >= frame_budget {
-            quit = true;
-        }
-        // A finished game keeps drawing for a moment rather than vanishing, so the last position is
-        // visible. Without the pause the window closes on the frame the snake dies and a player never
-        // sees what killed them.
-        if Snake.is_over(*state) {
-            pending = pending + dt;
-            if pending > 1.5 {
-                quit = true;
-            }
-        }
-    }
-
-    Simp.destroy_render_target();
+  // `RIGHT_HANDED` is `Simp`'s default: origin bottom-left, y upwards. `modules/Snake`'s row 0 is the
+  // bottom row, so grid coordinates and pixels agree with no flip. A game whose grid is y-down wants
+  // `Simp.LEFT_HANDED` instead — the choice is made once, here, and everything downstream follows it.
+  Simp.set_render_target(*window);
+  if !Simp.is_ready() {
     Window.close(*window);
     Window.stop();
+    exit_now(72);
+  }
 
-    print("frames=% score=% %\n", frames, state.score, outcome(*state));
-    exit_now(state.score);
+  // The seed is the clock, so two runs differ; `sim.jr` passes a constant, so two runs match. Both
+  // are the right answer to a different question, which is why `Snake.make` takes the seed rather
+  // than reading a clock itself.
+  state := Snake.make(cast(u64, Time.wall()));
+  events: Input.Events;
+
+  previous := Time.monotonic();
+  // Time owed to the simulation but not yet stepped. A grid game moves in ticks and the display
+  // refreshes in frames, and the two rates are unrelated: this accumulator is the whole of that
+  // relationship.
+  pending := 0.0;
+  frames := 0;
+  quit := false;
+
+  while !quit {
+    _ = Input.update_window_events(*events, Input.MAX_EVENTS_PER_FRAME);
+    quit = read_input(*state, *events, demo);
+
+    now := Time.monotonic();
+    dt := cast(float64, now - previous) / cast(float64, Time.NANOSECONDS_PER_SECOND);
+    previous = now;
+    // A long frame is clamped, so a window drag does not deliver twenty ticks at once. Losing the
+    // time is deliberate: a snake that jumps six cells after a hiccup has been killed by the
+    // scheduler rather than by the player.
+    if dt > 0.25 {
+      dt = 0.25;
+    }
+    pending = pending + dt;
+
+    // A `while`, not an `if`: on a slow frame more than one tick is owed, and stepping once per
+    // frame would make the snake's speed depend on the frame rate — which is the bug this loop
+    // shape exists to prevent.
+    while pending >= state.step_seconds && !Snake.is_over(*state) {
+      pending = pending - state.step_seconds;
+      if demo {
+        Snake.turn(*state, Snake.autopilot(*state));
+      }
+      _ = Snake.step(*state);
+    }
+
+    // Every `Simp` call returns nothing, so a GL failure is otherwise silent. `GL.error_code`
+    // reports and clears one error, which makes "did this frame draw" a question with an answer.
+    draw(*window, *state);
+    if GL.error_code() != GL.NO_ERROR {
+      print("a GL call failed while drawing\n");
+      Simp.destroy_render_target();
+      Window.close(*window);
+      Window.stop();
+      exit_now(74);
+    }
+
+    frames = frames + 1;
+    if frame_budget > 0 && frames >= frame_budget {
+      quit = true;
+    }
+    // A finished game keeps drawing for a moment rather than vanishing, so the last position is
+    // visible. Without the pause the window closes on the frame the snake dies and a player never
+    // sees what killed them.
+    if Snake.is_over(*state) {
+      pending = pending + dt;
+      if pending > 1.5 {
+        quit = true;
+      }
+    }
+  }
+
+  Simp.destroy_render_target();
+  Window.close(*window);
+  Window.stop();
+
+  print("frames=% score=% %\n", frames, state.score, outcome(*state));
+  exit_now(state.score);
 }
 
 // Folds this frame's events into turn requests, and reports whether the player asked to stop.
@@ -162,77 +158,77 @@ main :: () {
 // travelling on the tick it happens. Applying a key press directly is how a player reverses into their
 // own neck by pressing two keys inside one tick.
 read_input :: (state: *Snake.State, events: *Input.Events, demo: bool) -> bool {
-    seen := Input.events_this_frame(events);
-    i := 0;
-    while i < seen.count {
-        event := seen[i];
-        if Input.should_close(*event) {
-            return true;
-        }
-        if cast(s64, event.kind) == Input.KEY_DOWN {
-            code := cast(s64, event.key_sym);
-            if code == Input.KEY_ESCAPE {
-                return true;
-            }
-            if !demo {
-                if code == KEY_W {
-                    Snake.turn(state, Snake.DIR_UP);
-                }
-                if code == KEY_S {
-                    Snake.turn(state, Snake.DIR_DOWN);
-                }
-                if code == KEY_A {
-                    Snake.turn(state, Snake.DIR_LEFT);
-                }
-                if code == KEY_D {
-                    Snake.turn(state, Snake.DIR_RIGHT);
-                }
-            }
-        }
-        i = i + 1;
+  seen := Input.events_this_frame(events);
+  i := 0;
+  while i < seen.count {
+    event := seen[i];
+    if Input.should_close(*event) {
+      return true;
     }
-    return false;
+    if cast(s64, event.kind) == Input.KEY_DOWN {
+      code := cast(s64, event.key_sym);
+      if code == Input.KEY_ESCAPE {
+        return true;
+      }
+      if !demo {
+        if code == KEY_W {
+          Snake.turn(state, Snake.DIR_UP);
+        }
+        if code == KEY_S {
+          Snake.turn(state, Snake.DIR_DOWN);
+        }
+        if code == KEY_A {
+          Snake.turn(state, Snake.DIR_LEFT);
+        }
+        if code == KEY_D {
+          Snake.turn(state, Snake.DIR_RIGHT);
+        }
+      }
+    }
+    i = i + 1;
+  }
+  return false;
 }
 
 // Draws one frame: the grid, the apple, and the snake from tail to head.
 draw :: (window: *Window.Window, state: *Snake.State) {
-    Simp.clear_render_target(0.05, 0.07, 0.06, 1.0);
-    Simp.set_shader_for_color(false);
-    Simp.immediate_begin();
+  Simp.clear_render_target(0.05, 0.07, 0.06, 1.0);
+  Simp.set_shader_for_color(false);
+  Simp.immediate_begin();
 
-    apple := Simp.vector4(0.85, 0.25, 0.30, 1.0);
-    head := Simp.vector4(0.55, 0.95, 0.55, 1.0);
-    dead := Simp.vector4(0.55, 0.55, 0.60, 1.0);
+  apple := Simp.vector4(0.85, 0.25, 0.30, 1.0);
+  head := Simp.vector4(0.55, 0.95, 0.55, 1.0);
+  dead := Simp.vector4(0.55, 0.55, 0.60, 1.0);
 
-    cell_quad(state.apple.x, state.apple.y, apple);
+  cell_quad(state.apple.x, state.apple.y, apple);
 
-    // Tail first, head last, so the head's colour wins where they overlap — which they do on the tick
-    // an apple is eaten.
-    age := state.length - 1;
-    while age >= 0 {
-        segment := Snake.segment(state, age);
-        colour := head;
-        if state.dead {
-            colour = dead;
-        } else {
-            if age > 0 {
-                // A gradient from head to tail, computed rather than tabulated: `age` over `length` is
-                // the segment's position along the body, and one multiply turns it into a shade.
-                fade := 1.0 - 0.55 * cast(float64, age) / cast(float64, state.length);
-                colour = Simp.vector4(
-                    cast(float32, 0.20 * fade),
-                    cast(float32, 0.80 * fade),
-                    cast(float32, 0.35 * fade),
-                    1.0,
-                );
-            }
-        }
-        cell_quad(segment.x, segment.y, colour);
-        age = age - 1;
+  // Tail first, head last, so the head's colour wins where they overlap — which they do on the tick
+  // an apple is eaten.
+  age := state.length - 1;
+  while age >= 0 {
+    segment := Snake.segment(state, age);
+    colour := head;
+    if state.dead {
+      colour = dead;
+    } else {
+      if age > 0 {
+        // A gradient from head to tail, computed rather than tabulated: `age` over `length` is
+        // the segment's position along the body, and one multiply turns it into a shade.
+        fade := 1.0 - 0.55 * cast(float64, age) / cast(float64, state.length);
+        colour = Simp.vector4(
+          cast(float32, 0.20 * fade),
+          cast(float32, 0.80 * fade),
+          cast(float32, 0.35 * fade),
+          1.0,
+        );
+      }
     }
+    cell_quad(segment.x, segment.y, colour);
+    age = age - 1;
+  }
 
-    Simp.immediate_flush();
-    Simp.swap_buffers(window);
+  Simp.immediate_flush();
+  Simp.swap_buffers(window);
 }
 
 // One grid cell as a quad, in pixels.
@@ -241,28 +237,28 @@ draw :: (window: *Window.Window, state: *Snake.State) {
 // so a grid drawn as lines would be four thin quads per cell; insetting each cell instead gets the
 // same look for one quad.
 cell_quad :: (x: s64, y: s64, colour: Simp.Vector4) {
-    cell := cast(float64, CELL);
-    x0 := cast(float64, x) * cell + PADDING;
-    y0 := cast(float64, y) * cell + PADDING;
-    x1 := x0 + cell - 2.0 * PADDING;
-    y1 := y0 + cell - 2.0 * PADDING;
-    Simp.immediate_quad(
-        cast(float32, x0),
-        cast(float32, y0),
-        cast(float32, x1),
-        cast(float32, y1),
-        colour,
-    );
+  cell := cast(float64, CELL);
+  x0 := cast(float64, x) * cell + PADDING;
+  y0 := cast(float64, y) * cell + PADDING;
+  x1 := x0 + cell - 2.0 * PADDING;
+  y1 := y0 + cell - 2.0 * PADDING;
+  Simp.immediate_quad(
+    cast(float32, x0),
+    cast(float32, y0),
+    cast(float32, x1),
+    cast(float32, y1),
+    colour,
+  );
 }
 
 outcome :: (state: *Snake.State) -> string {
-    if state.won {
-        return "(filled the grid)";
-    }
-    if state.dead {
-        return "(dead)";
-    }
-    return "(stopped)";
+  if state.won {
+    return "(filled the grid)";
+  }
+  if state.dead {
+    return "(dead)";
+  }
+  return "(stopped)";
 }
 
 // An environment variable as a number, or 0 when it is unset or not a number.
@@ -270,22 +266,22 @@ outcome :: (state: *Snake.State) -> string {
 // `String.to_c_string` and not `"SNAKE_FRAMES".data`: a Jairs string literal's bytes are not followed
 // by a NUL, so `getenv` would read past the end of the literal into whatever the linker placed next.
 number_from_environment :: (name: string) -> s64 {
-    value := getenv(String.to_c_string(name));
-    if value == null {
-        return 0;
-    }
-    number, ok, rest := String.to_integer(String.to_string(value));
-    if !ok {
-        return 0;
-    }
-    return number;
+  value := getenv(String.to_c_string(name));
+  if value == null {
+    return 0;
+  }
+  number, ok, rest := String.to_integer(String.to_string(value));
+  if !ok {
+    return 0;
+  }
+  return number;
 }
 
 // Whether an environment variable is set to anything other than "0".
 flag_from_environment :: (name: string) -> bool {
-    value := getenv(String.to_c_string(name));
-    if value == null {
-        return false;
-    }
-    return !String.equal(String.to_string(value), "0");
+  value := getenv(String.to_c_string(name));
+  if value == null {
+    return false;
+  }
+  return !String.equal(String.to_string(value), "0");
 }

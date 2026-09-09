@@ -32,9 +32,9 @@
 /// for a better algorithm later without changing a caller's declaration. `state` is never zero after `seed`,
 /// which is what keeps xorshift out of its fixed point.
 Random :: struct {
-    /// The generator's state. Non-zero after `seed`; xorshift is stuck at zero, so zero is never allowed to
-    /// persist.
-    state: u64;
+  /// The generator's state. Non-zero after `seed`; xorshift is stuck at zero, so zero is never allowed to
+  /// persist.
+  state: u64;
 }
 
 /// The default seed, and the replacement for a zero one.
@@ -52,7 +52,7 @@ GOLDEN :: #run golden_seed();
 
 /// The `u64` context `GOLDEN` needs, since a bare constant defaults to `s64` (ADR-0113).
 golden_seed :: () -> u64 {
-    return 11400714819323198485;
+  return 11400714819323198485;
 }
 
 #scope_export
@@ -64,11 +64,11 @@ golden_seed :: () -> u64 {
 /// defined non-degenerate sequence is the kinder answer than a trap for what is usually an uninitialised
 /// variable rather than a deliberate choice.
 seed :: (rng: *Random, value: u64) {
-    if value == 0 {
-        rng.state = GOLDEN;
-    } else {
-        rng.state = value;
-    }
+  if value == 0 {
+    rng.state = GOLDEN;
+  } else {
+    rng.state = value;
+  }
 }
 
 /// The next 64 random bits, advancing the generator.
@@ -81,12 +81,12 @@ seed :: (rng: *Random, value: u64) {
 /// **Must be seeded first.** A zero state returns zero forever; `seed` is what prevents that, and calling `next`
 /// on an unseeded `Random` (state 0) is a caller error the module cannot catch, so the docs say it instead.
 next :: (rng: *Random) -> u64 {
-    x := rng.state;
-    x = x ^ (x << 13);
-    x = x ^ (x >> 7);
-    x = x ^ (x << 17);
-    rng.state = x;
-    return x;
+  x := rng.state;
+  x = x ^ (x << 13);
+  x = x ^ (x >> 7);
+  x = x ^ (x << 17);
+  rng.state = x;
+  return x;
 }
 
 /// A random `s64` in `[low, high)`, or `low` when the range is empty.
@@ -101,12 +101,12 @@ next :: (rng: *Random) -> u64 {
 /// reason to complicate the first version: the bias is negligible for the small ranges a caller actually uses,
 /// and a rejection-sampling version is additive later behind a decision about its worst-case cost.
 below :: (rng: *Random, low: s64, high: s64) -> s64 {
-    if high <= low {
-        return low;
-    }
-    span := cast(u64, high - low);
-    r := next(rng) % span;
-    return low + cast(s64, r);
+  if high <= low {
+    return low;
+  }
+  span := cast(u64, high - low);
+  r := next(rng) % span;
+  return low + cast(s64, r);
 }
 
 /// A random `bool`, each with probability one half.
@@ -114,5 +114,5 @@ below :: (rng: *Random, low: s64, high: s64) -> s64 {
 /// The low bit of `next`, which is as good as any other for a fair coin from xorshift — the generator's bits are
 /// individually uniform, so picking the cheapest one to test is not a compromise.
 coin :: (rng: *Random) -> bool {
-    return next(rng) % 2 == 1;
+  return next(rng) % 2 == 1;
 }

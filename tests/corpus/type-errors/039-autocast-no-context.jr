@@ -4,6 +4,6 @@
 // wrote, which is the opposite of what a conversion is for. The help names `cast(T, x)`, because
 // an explicit form exists and always will.
 main :: () {
-    n := 300;
-    m := xx n;
+  n := 300;
+  m := xx n;
 }

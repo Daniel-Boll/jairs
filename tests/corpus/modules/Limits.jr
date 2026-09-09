@@ -23,5 +23,5 @@ NARROW :: 0.25;
 COMPUTED :: #run double(21);
 
 double :: (n: s64) -> s64 {
-    return n * 2;
+  return n * 2;
 }

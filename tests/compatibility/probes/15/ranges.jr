@@ -1,32 +1,32 @@
 #import "Basic";
 
 main :: () -> s64 {
-    sum := 0;
-    for value: 2..6 {
-        sum = sum + value;
-    }
+  sum := 0;
+  for value: 2..6 {
+    sum = sum + value;
+  }
 
-    pairs := 0;
-    for outer: 1..4 {
-        for inner: 7..9 {
-            pairs = pairs + outer + inner;
-        }
+  pairs := 0;
+  for outer: 1..4 {
+    for inner: 7..9 {
+      pairs = pairs + outer + inner;
     }
+  }
 
-    indexed := 0;
-    for value, index: 5..8 {
-        indexed = indexed + value + index;
-    }
+  indexed := 0;
+  for value, index: 5..8 {
+    indexed = indexed + value + index;
+  }
 
-    casted := 0;
-    upper: u8 = 4;
-    for value: 0..cast(s64, upper) {
-        casted = casted + value;
-    }
+  casted := 0;
+  upper: u8 = 4;
+  for value: 0..cast(s64, upper) {
+    casted = casted + value;
+  }
 
-    print("ranges:%:%:%:%\n", sum, pairs, indexed, casted);
-    if sum == 14 && pairs == 57 && indexed == 21 && casted == 6 {
-        return 0;
-    }
-    return 1;
+  print("ranges:%:%:%:%\n", sum, pairs, indexed, casted);
+  if sum == 14 && pairs == 57 && indexed == 21 && casted == 6 {
+    return 0;
+  }
+  return 1;
 }

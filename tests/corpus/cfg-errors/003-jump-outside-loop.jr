@@ -4,5 +4,5 @@
 // entirely. So this is not a deferred check but a missing one, and MIR is the first
 // pass that keeps a loop stack and can therefore see it.
 main :: () {
-    break;
+  break;
 }

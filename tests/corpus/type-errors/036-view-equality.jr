@@ -3,11 +3,11 @@
 // plausible, so neither is chosen: picking one silently would make the other reading a bug
 // that looks like working code. The help names what to compare instead.
 same :: (a: []s64, b: []s64) -> bool {
-    return a == b;
+  return a == b;
 }
 
 main :: () {
-    one: [2]s64;
-    two: [2]s64;
-    r := same(one[], two[]);
+  one: [2]s64;
+  two: [2]s64;
+  r := same(one[], two[]);
 }

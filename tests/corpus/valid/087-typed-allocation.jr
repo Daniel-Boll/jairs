@@ -49,56 +49,56 @@
 #import "Basic";
 
 Point :: struct {
-    x: s64;
-    y: s64;
+  x: s64;
+  y: s64;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // `size_of` on a scalar and on a struct: eight bytes and sixteen, from the same `layout_of` reflection uses.
-    if size_of(s64) == 8 && size_of(u8) == 1 {
-        n = n + 1;
-    }
-    if size_of(Point) == 16 {
-        n = n + 2;
-    }
+  // `size_of` on a scalar and on a struct: eight bytes and sixteen, from the same `layout_of` reflection uses.
+  if size_of(s64) == 8 && size_of(u8) == 1 {
+    n = n + 1;
+  }
+  if size_of(Point) == 16 {
+    n = n + 2;
+  }
 
-    // A heap block of three `s64`s — `size_of` folded *inside* the arithmetic, which is every allocation's use.
-    raw := malloc(3 * size_of(s64));
-    if raw == null {
-        exit(200);
-    }
-    d := typed(s64, raw);
+  // A heap block of three `s64`s — `size_of` folded *inside* the arithmetic, which is every allocation's use.
+  raw := malloc(3 * size_of(s64));
+  if raw == null {
+    exit(200);
+  }
+  d := typed(s64, raw);
 
-    // Written through pointer arithmetic, which is the dynamic array's storage working.
-    (d + 0).* = 10;
-    (d + 1).* = 20;
-    (d + 2).* = 30;
-    if (d + 0).* == 10 && (d + 2).* == 30 {
-        n = n + 4;
-    }
-    total := (d + 0).* + (d + 1).* + (d + 2).*;
-    if total == 60 {
-        n = n + 8;
-    }
+  // Written through pointer arithmetic, which is the dynamic array's storage working.
+  (d + 0).* = 10;
+  (d + 1).* = 20;
+  (d + 2).* = 30;
+  if (d + 0).* == 10 && (d + 2).* == 30 {
+    n = n + 4;
+  }
+  total := (d + 0).* + (d + 1).* + (d + 2).*;
+  if total == 60 {
+    n = n + 8;
+  }
 
-    // `untyped` gives the block back to `free`, which takes a `*u8`.
-    free(untyped(d));
-    n = n + 16;
+  // `untyped` gives the block back to `free`, which takes a `*u8`.
+  free(untyped(d));
+  n = n + 16;
 
-    // A **struct** through a typed pointer, so retyping is not scalar-only.
-    raw2 := malloc(size_of(Point));
-    if raw2 == null {
-        exit(201);
-    }
-    p := typed(Point, raw2);
-    p.x = 3;
-    p.y = 4;
-    if p.x + p.y == 7 {
-        n = n + 32;
-    }
-    free(untyped(p));
+  // A **struct** through a typed pointer, so retyping is not scalar-only.
+  raw2 := malloc(size_of(Point));
+  if raw2 == null {
+    exit(201);
+  }
+  p := typed(Point, raw2);
+  p.x = 3;
+  p.y = 4;
+  if p.x + p.y == 7 {
+    n = n + 32;
+  }
+  free(untyped(p));
 
-    exit(n);
+  exit(n);
 }

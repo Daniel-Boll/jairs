@@ -32,78 +32,78 @@ String :: #import "String";
 SDL2_DIRECTORY :: "/opt/homebrew/lib";
 
 main :: () {
-    // `Compiler.arguments()` uses the default context allocator.
-    args := Compiler.arguments();
-    is_release := args.count > 0 && String.equal(args[0], "release");
+  // `Compiler.arguments()` uses the default context allocator.
+  args := Compiler.arguments();
+  is_release := args.count > 0 && String.equal(args[0], "release");
 
-    level: s64 = 0;
-    if is_release {
-        level = 1;
-    }
+  level: s64 = 0;
+  if is_release {
+    level = 1;
+  }
 
-    // A literal must be named before it is viewed: there is no implicit array-to-view conversion. Each
-    // target gets its own pair of arrays because `module_paths` is a `[]string` — a view — and two
-    // targets sharing one would share whatever it last pointed at.
-    library_paths := string.[SDL2_DIRECTORY];
+  // A literal must be named before it is viewed: there is no implicit array-to-view conversion. Each
+  // target gets its own pair of arrays because `module_paths` is a `[]string` — a view — and two
+  // targets sharing one would share whatever it last pointed at.
+  library_paths := string.[SDL2_DIRECTORY];
 
-    // The two headless simulations first. Neither imports a graphics module, so neither needs SDL2 —
-    // and both also run under `jr run`, which is the whole point of keeping a game's rules in a module
-    // that imports only `Math` or `Random`.
-    pong_modules := string.["modules", "examples/games/pong/modules"];
-    snake_modules := string.["modules", "examples/games/snake/modules"];
-    plain_modules := string.["modules"];
+  // The two headless simulations first. Neither imports a graphics module, so neither needs SDL2 —
+  // and both also run under `jr run`, which is the whole point of keeping a game's rules in a module
+  // that imports only `Math` or `Random`.
+  pong_modules := string.["modules", "examples/games/pong/modules"];
+  snake_modules := string.["modules", "examples/games/snake/modules"];
+  plain_modules := string.["modules"];
 
-    empty: []string;
-    ok := true;
+  empty: []string;
+  ok := true;
 
-    ok = ok && target(
-        "examples/games/pong/sim.jr",
-        "pong-sim",
-        pong_modules[],
-        empty,
-        level,
-        is_release,
-    );
-    ok = ok && target(
-        "examples/games/snake/sim.jr",
-        "snake-sim",
-        snake_modules[],
-        empty,
-        level,
-        is_release,
-    );
+  ok = ok && target(
+    "examples/games/pong/sim.jr",
+    "pong-sim",
+    pong_modules[],
+    empty,
+    level,
+    is_release,
+  );
+  ok = ok && target(
+    "examples/games/snake/sim.jr",
+    "snake-sim",
+    snake_modules[],
+    empty,
+    level,
+    is_release,
+  );
 
-    // The three drawing programs, each linking SDL2.
-    ok = ok && target(
-        "examples/games/pong/main.jr",
-        "pong",
-        pong_modules[],
-        library_paths[],
-        level,
-        is_release,
-    );
-    ok = ok && target(
-        "examples/games/snake/main.jr",
-        "snake",
-        snake_modules[],
-        library_paths[],
-        level,
-        is_release,
-    );
-    ok = ok && target(
-        "examples/games/sprites/main.jr",
-        "sprites",
-        plain_modules[],
-        library_paths[],
-        level,
-        is_release,
-    );
+  // The three drawing programs, each linking SDL2.
+  ok = ok && target(
+    "examples/games/pong/main.jr",
+    "pong",
+    pong_modules[],
+    library_paths[],
+    level,
+    is_release,
+  );
+  ok = ok && target(
+    "examples/games/snake/main.jr",
+    "snake",
+    snake_modules[],
+    library_paths[],
+    level,
+    is_release,
+  );
+  ok = ok && target(
+    "examples/games/sprites/main.jr",
+    "sprites",
+    plain_modules[],
+    library_paths[],
+    level,
+    is_release,
+  );
 
-    if !ok {
-        Compiler.report("at least one target did not build");
-        exit(1);
-    }
-    exit(0);
+  if !ok {
+    Compiler.report("at least one target did not build");
+    exit(1);
+  }
+  exit(0);
 }
 
 // Declares and builds one target, and reports whether it worked.
@@ -111,28 +111,28 @@ main :: () {
 // `Compiler.build` is `#must`: a script that ignores it prints nothing and produces nothing, which is
 // the failure mode the marker exists to stop (ADR-0151).
 target :: (
-    source: string,
-    name: string,
-    module_paths: []string,
-    library_paths: []string,
-    level: s64,
-    is_release: bool,
+  source: string,
+  name: string,
+  module_paths: []string,
+  library_paths: []string,
+  level: s64,
+  is_release: bool,
 ) -> bool {
-    t := Compiler.create_target(name);
-    o := Compiler.options(t);
-    o.output = name;
-    o.output_path = "build";
-    o.opt_level = level;
-    o.bounds_checks = !is_release;
-    o.module_paths = module_paths;
-    o.library_paths = library_paths;
-    Compiler.set_options(t, o);
-    Compiler.add_file(t, source);
+  t := Compiler.create_target(name);
+  o := Compiler.options(t);
+  o.output = name;
+  o.output_path = "build";
+  o.opt_level = level;
+  o.bounds_checks = !is_release;
+  o.module_paths = module_paths;
+  o.library_paths = library_paths;
+  Compiler.set_options(t, o);
+  Compiler.add_file(t, source);
 
-    if !Compiler.build(t) {
-        Compiler.report("a target did not build");
-        return false;
-    }
-    print("built build/%\n", name);
-    return true;
+  if !Compiler.build(t) {
+    Compiler.report("a target did not build");
+    return false;
+  }
+  print("built build/%\n", name);
+  return true;
 }

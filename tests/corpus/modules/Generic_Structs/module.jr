@@ -10,24 +10,24 @@
 
 /// One type parameter.
 Box :: struct($T) {
-    value: T;
+  value: T;
 }
 
 /// Two, so the argument list is genuinely a list.
 Pair :: struct($A, $B) {
-    first: A;
-    second: B;
+  first: A;
+  second: B;
 }
 
 /// An ordinary struct in this module, named by `Wrapper`'s field below.
 Helper :: struct {
-    n: s64;
+  n: s64;
 }
 
 /// A parameterised struct whose field names **this module's** type. An importer resolving these fields must find
 /// *this* `Helper`, not one of its own with the same name — a field's type cannot depend on who imported it, and
 /// getting that wrong would resolve to a different type rather than failing to resolve.
 Wrapper :: struct($T) {
-    item: T;
-    helper: Helper;
+  item: T;
+  helper: Helper;
 }

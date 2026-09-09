@@ -12,15 +12,15 @@
 
 /// A `$T` template. Instantiating this from another file is E0268.
 identity :: (x: $T) -> T {
-    return x;
+  return x;
 }
 
 /// A `$N` comptime-value template, so the refusal covers both marks rather than only `$T`.
 scaled :: ($N: s64, factor: s64) -> s64 {
-    return N * factor;
+  return N * factor;
 }
 
 /// The workaround: instantiated *here*, where cross-file instantiation is not in the way.
 identity_int :: (x: s64) -> s64 {
-    return identity(x);
+  return identity(x);
 }

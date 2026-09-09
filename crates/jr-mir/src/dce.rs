@@ -289,8 +289,8 @@ fn note_rvalue(rvalue: &Rvalue, used: &mut FxHashSet<ValueId>) {
 /// Drops a store to a slot that is never loaded and never address-taken.
 ///
 /// Without this, [`drop_unused_slots`] cannot fire on the case ADR-0022 §4 was
-/// written for: `print_line`'s spill slot is kept alive by the dead store that fills
-/// it, so "remove slots nothing mentions" removes nothing.
+/// written for: a forwarded parameter's spill slot is kept alive by the dead store
+/// that fills it, so "remove slots nothing mentions" removes nothing.
 ///
 /// Sound because the address was never taken. Nothing can alias the slot, so nothing
 /// can observe the write. A store through a [`PlaceBase::Deref`] is never dropped,
@@ -385,9 +385,9 @@ fn drop_nops(body: &mut MirBody) -> bool {
 
 /// Drops slots nothing stores to, loads from, or takes the address of.
 ///
-/// This is the symptom `PLAN.md` §7 named: `print_line` in `modules/Basic` keeps a
-/// spill slot it never reads. A slot is not an SSA value, so there is no definition
-/// to trace — liveness is simply "mentioned by some surviving place".
+/// A forwarded parameter can keep a spill slot it never reads. A slot is not an SSA
+/// value, so there is no definition to trace — liveness is simply "mentioned by some
+/// surviving place".
 fn drop_unused_slots(body: &mut MirBody) -> bool {
     let mut used: FxHashSet<SlotId> = FxHashSet::default();
     for block in body.blocks() {

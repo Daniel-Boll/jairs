@@ -3,10 +3,10 @@
 // *declaration order* — a fact about this file rather than about colours. A program that
 // wants the number writes `cast(s64, c)` and gets ordering where it means something.
 Colour :: enum {
-    RED;
-    GREEN;
+  RED;
+  GREEN;
 }
 
 main :: () {
-    b := Colour.RED < Colour.GREEN;
+  b := Colour.RED < Colour.GREEN;
 }

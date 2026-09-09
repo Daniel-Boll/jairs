@@ -12,50 +12,50 @@ COLOR_BUFFER_BIT : u32 : 16384;
 THICKNESS : float32 : 1.5;
 
 Colour :: enum {
-    RED;
-    GREEN;
-    BLUE;
+  RED;
+  GREEN;
+  BLUE;
 }
 
 Point :: struct {
-    x: s64;
-    y: s64;
+  x: s64;
+  y: s64;
 }
 
 // `type_of(v)` is the only way to name a polymorphic parameter's type — there is no spelling for it at
 // the call site.
 describe :: (v: $T) -> s64 {
-    return size_of(type_of(v));
+  return size_of(type_of(v));
 }
 
 main :: () {
-    // An **array literal**. The element type is named, so the length is the element count and each
-    // element is checked against that type — `u8.[…]` holds `u8`s where a bare `[1, 2, 3]` would have
-    // needed the context to reach through the literal into every element.
-    primes := s64.[2, 3, 5, 7, 11];
-    print("primes = %, count = %\n", primes, primes.count);
+  // An **array literal**. The element type is named, so the length is the element count and each
+  // element is checked against that type — `u8.[…]` holds `u8`s where a bare `[1, 2, 3]` would have
+  // needed the context to reach through the literal into every element.
+  primes := s64.[2, 3, 5, 7, 11];
+  print("primes = %, count = %\n", primes, primes.count);
 
-    bytes := u8.[255, 128, 0];
-    print("bytes = %\n", bytes);
+  bytes := u8.[255, 128, 0];
+  print("bytes = %\n", bytes);
 
-    // Elements are ordinary expressions, not constants.
-    n := 6;
-    triples := s64.[n, n * 2, n * 3];
-    print("triples = %\n", triples);
+  // Elements are ordinary expressions, not constants.
+  n := 6;
+  triples := s64.[n, n * 2, n * 3];
+  print("triples = %\n", triples);
 
-    // Iterating one works: MIR spills a sequence that is a value rather than a place.
-    total := 0;
-    for p: primes {
-        total = total + p;
-    }
-    print("sum = %, flag = %, thickness = %\n", total, COLOR_BUFFER_BIT, THICKNESS);
+  // Iterating one works: MIR spills a sequence that is a value rather than a place.
+  total := 0;
+  for p: primes {
+    total = total + p;
+  }
+  print("sum = %, flag = %, thickness = %\n", total, COLOR_BUFFER_BIT, THICKNESS);
 
-    // Reflection reaches an **enum's member names** now, so this prints `BLUE` and not `2`.
-    print("colour = %, members = %\n", Colour.BLUE, type_info(Colour).members.count);
+  // Reflection reaches an **enum's member names** now, so this prints `BLUE` and not `2`.
+  print("colour = %, members = %\n", Colour.BLUE, type_info(Colour).members.count);
 
-    // `type_of` composes with every intrinsic that takes a type, because they all ask one function.
-    p: Point;
-    print("sizes: Point %, *Point %, poly %\n", size_of(type_of(p)), size_of(*Point), describe(p));
+  // `type_of` composes with every intrinsic that takes a type, because they all ask one function.
+  p: Point;
+  print("sizes: Point %, *Point %, poly %\n", size_of(type_of(p)), size_of(*Point), describe(p));
 
-    exit(0);
+  exit(0);
 }

@@ -18,10 +18,10 @@
 //!
 //! # Why `fork` and not `posix_spawn`
 //!
-//! `posix_spawn` is the modern answer and takes **two attribute structs by pointer**, whose layouts are opaque
-//! and platform-specific — this module would have to hard-code sizes and offsets, which is guessing rather
-//! than portability, and E0286 refuses an aggregate at a `#foreign` boundary in any case (ADR-0150). `fork`
-//! plus `execvp` is scalars and pointers throughout, which is the FFI shape that works.
+//! `posix_spawn` is the modern answer and takes attribute/file-action objects through pointers. Pointer
+//! passing works; the blocker is that those objects are opaque, platform-specific storage with lifecycle
+//! procedures, so this module would have to hard-code private sizes or first expose a platform abstraction.
+//! `fork` plus `execvp` is scalars and pointers throughout and needs no guessed layout.
 //!
 //! The cost is stated: between `fork` and `execvp` the child is a copy of this process, and in the comptime
 //! VM that means a copy of the **interpreter**. That is correct — forking an interpreter is well-defined and
@@ -75,9 +75,8 @@
 //! which `JSON` uses and which *works* — the callee writes a pointer there rather than reading one, and no
 //! type can tell those apart. A refusal that breaks working code to describe broken code is the wrong trade.
 //!
-//! Rejected: **`posix_spawn`**, which takes no array of pointers for its file actions — but does take two
-//! opaque attribute structs whose layouts this module would have to hard-code, and E0286 refuses an aggregate
-//! at the boundary anyway (ADR-0150).
+//! Rejected for now: **`posix_spawn`**, whose opaque file-action and attribute storage needs a real
+//! per-platform representation and lifecycle rather than guessed byte counts.
 //!
 //! # The platform commitment
 //!
@@ -85,24 +84,25 @@
 //! decodes: the low seven bits are the terminating signal and `0x7f` means stopped, so `status & 0x7f == 0`
 //! means a normal exit and `(status >> 8) & 0xff` is the code. Named here the way ADR-0155 §1 named
 //! `CLOCK_MONOTONIC` and ADR-0157 named `O_CREAT`: this project has only ever run on macOS (PLAN §1.5), and a
-//! portability claim it cannot test is worth less than a stated one it can.
+//! portability claim it cannot test is worth less than a stated one it can. The x86-64 Linux CI leg now
+//! exercises this module's status decoding; Windows remains unverified and unsupported here.
 
 #import "Basic";
 
 /// A child process.
 Process :: struct {
-    /// The child's process id. Negative when the spawn failed.
-    pid: s64;
+  /// The child's process id. Negative when the spawn failed.
+  pid: s64;
 }
 
 /// How a child finished.
 Exit_Status :: struct {
-    /// Whether the child exited normally, rather than being killed.
-    exited: bool;
-    /// The exit code, when `exited`. Zero otherwise.
-    code: s64;
-    /// The signal that killed it, when not `exited`. Zero otherwise.
-    signal: s64;
+  /// Whether the child exited normally, rather than being killed.
+  exited: bool;
+  /// The exit code, when `exited`. Zero otherwise.
+  code: s64;
+  /// The signal that killed it, when not `exited`. Zero otherwise.
+  signal: s64;
 }
 
 /// libc `fork(2)`. Returns 0 in the child, the child's pid in the parent, and -1 on failure.
@@ -119,8 +119,8 @@ fork_raw :: () -> s64 #foreign libc "fork";
 /// of an array of pointers", and `*Argument` says exactly that — where `**u8` says it in a way that reads as
 /// two levels of indirection rather than one array.
 Argument :: struct {
-    /// The argument's bytes, NUL-terminated.
-    text: *u8;
+  /// The argument's bytes, NUL-terminated.
+  text: *u8;
 }
 
 /// libc `execvp(3)`: `execvp(const char *file, char *const argv[])`, **fixed-arity**.
@@ -175,29 +175,29 @@ EXEC_FAILED :: 127;
 /// end the array. It only has to survive until `execvp`, which either replaces the image or fails — so an
 /// arena is exactly right (ADR-0065), and the parent's copy is dead the moment `fork` returns.
 spawn :: (argv: []string) -> (Process, bool) #must {
-    p: Process;
-    p.pid = -1;
-    if argv.count == 0 {
-        return p, false;
-    }
+  p: Process;
+  p.pid = -1;
+  if argv.count == 0 {
+    return p, false;
+  }
 
-    vector, built := build_argv(argv);
-    if !built {
-        return p, false;
-    }
+  vector, built := build_argv(argv);
+  if !built {
+    return p, false;
+  }
 
-    child := fork_raw();
-    if child < 0 {
-        return p, false;
-    }
-    if child == 0 {
-        // **The child.** `execvp` returns only on failure, so reaching the next line means it failed — and
-        // the child must not fall back into the caller's code, which would run the rest of `main` twice.
-        _ = execvp_raw(vector[0].text, *vector[0]);
-        underscore_exit_raw(EXEC_FAILED);
-    }
-    p.pid = child;
-    return p, true;
+  child := fork_raw();
+  if child < 0 {
+    return p, false;
+  }
+  if child == 0 {
+    // **The child.** `execvp` returns only on failure, so reaching the next line means it failed — and
+    // the child must not fall back into the caller's code, which would run the rest of `main` twice.
+    _ = execvp_raw(vector[0].text, *vector[0]);
+    underscore_exit_raw(EXEC_FAILED);
+  }
+  p.pid = child;
+  return p, true;
 }
 
 /// Waits for `p` to finish and decodes its status.
@@ -208,20 +208,20 @@ spawn :: (argv: []string) -> (Process, bool) #must {
 /// Blocks. There is no `try_wait`, because `WNOHANG` returns "not finished yet" as a *third* outcome and a
 /// caller polling in a loop is busy-waiting — which wants a condition variable, and that is W11.
 wait :: (p: *Process) -> (Exit_Status, bool) #must {
-    s: Exit_Status;
-    s.exited = false;
-    s.code = 0;
-    s.signal = 0;
-    if p.pid < 0 {
-        return s, false;
-    }
-    raw := 0;
-    done := waitpid_raw(p.pid, *raw, 0);
-    if done < 0 {
-        return s, false;
-    }
-    p.pid = -1;
-    return decode_status(raw), true;
+  s: Exit_Status;
+  s.exited = false;
+  s.code = 0;
+  s.signal = 0;
+  if p.pid < 0 {
+    return s, false;
+  }
+  raw := 0;
+  done := waitpid_raw(p.pid, *raw, 0);
+  if done < 0 {
+    return s, false;
+  }
+  p.pid = -1;
+  return decode_status(raw), true;
 }
 
 /// Runs `argv` to completion and returns its status — `spawn` then `wait`.
@@ -229,15 +229,15 @@ wait :: (p: *Process) -> (Exit_Status, bool) #must {
 /// The routine most callers want, because "start it and then wait" is one thought and splitting it invites
 /// forgetting the second half, which leaves a zombie.
 run :: (argv: []string) -> (Exit_Status, bool) #must {
-    s: Exit_Status;
-    s.exited = false;
-    s.code = 0;
-    s.signal = 0;
-    p, ok := spawn(argv);
-    if !ok {
-        return s, false;
-    }
-    return wait(*p);
+  s: Exit_Status;
+  s.exited = false;
+  s.code = 0;
+  s.signal = 0;
+  p, ok := spawn(argv);
+  if !ok {
+    return s, false;
+  }
+  return wait(*p);
 }
 
 /// Sends `signal` to `p`.
@@ -245,17 +245,17 @@ run :: (argv: []string) -> (Exit_Status, bool) #must {
 /// `#must`: a failed `kill` means the process is still running, and a caller who ignores that goes on to wait
 /// forever.
 signal_to :: (p: *Process, signal: s64) -> bool #must {
-    if p.pid < 0 {
-        return false;
-    }
-    return kill_raw(p.pid, signal) == 0;
+  if p.pid < 0 {
+    return false;
+  }
+  return kill_raw(p.pid, signal) == 0;
 }
 
 /// This process's own id.
 ///
 /// Not `#must` — it *is* the answer, and it cannot fail.
 current_id :: () -> s64 {
-    return getpid_raw();
+  return getpid_raw();
 }
 
 /// Whether `status` means "finished normally with code 0".
@@ -263,30 +263,30 @@ current_id :: () -> s64 {
 /// The question almost every caller actually has, named so that nobody writes `status.code == 0` and forgets
 /// that a killed process also has `code == 0`. That mistake reads as correct and is the reason this exists.
 succeeded :: (status: Exit_Status) -> bool {
-    if !status.exited {
-        return false;
-    }
-    return status.code == 0;
+  if !status.exited {
+    return false;
+  }
+  return status.code == 0;
 }
 
 #scope_module
 
 /// Decodes `waitpid`'s integer. See the module docs for the platform commitment.
 decode_status :: (raw: s64) -> Exit_Status {
-    s: Exit_Status;
-    s.exited = false;
-    s.code = 0;
-    s.signal = 0;
-    low := raw % 128;
-    if low == 0 {
-        s.exited = true;
-        s.code = raw / 256 % 256;
-        return s;
-    }
-    // 0x7f is "stopped", which this module does not report separately: it is not a *finish*, and `waitpid`
-    // without `WUNTRACED` never returns it. Treated as a signal so the struct is never in a fourth state.
-    s.signal = low;
+  s: Exit_Status;
+  s.exited = false;
+  s.code = 0;
+  s.signal = 0;
+  low := raw % 128;
+  if low == 0 {
+    s.exited = true;
+    s.code = raw / 256 % 256;
     return s;
+  }
+  // 0x7f is "stopped", which this module does not report separately: it is not a *finish*, and `waitpid`
+  // without `WUNTRACED` never returns it. Treated as a signal so the struct is never in a fourth state.
+  s.signal = low;
+  return s;
 }
 
 /// Builds the C argument vector in temporary storage.
@@ -295,43 +295,43 @@ decode_status :: (raw: s64) -> Exit_Status {
 /// the writes are bounds-checked (ADR-0003) — this is the one place in the module where an off-by-one would
 /// hand `execvp` an unterminated array and read past the allocation.
 build_argv :: (argv: []string) -> ([]Argument, bool) {
-    empty: []Argument;
-    slots := talloc((argv.count + 1) * size_of(Argument));
-    if slots == null {
-        return empty, false;
+  empty: []Argument;
+  slots := talloc((argv.count + 1) * size_of(Argument));
+  if slots == null {
+    return empty, false;
+  }
+  vector := view(typed(Argument, slots), argv.count + 1);
+  i := 0;
+  while i < argv.count {
+    copied, ok := nul_copy(argv[i]);
+    if !ok {
+      return empty, false;
     }
-    vector := view(typed(Argument, slots), argv.count + 1);
-    i := 0;
-    while i < argv.count {
-        copied, ok := nul_copy(argv[i]);
-        if !ok {
-            return empty, false;
-        }
-        slot: Argument;
-        slot.text = copied;
-        vector[i] = slot;
-        i = i + 1;
-    }
-    // The null that ends the vector. `execvp` reads until it finds this, so an off-by-one here reads past the
-    // allocation — which is why the array is `count + 1` and this write is unconditional.
-    last: Argument;
-    last.text = null;
-    vector[argv.count] = last;
-    return vector, true;
+    slot: Argument;
+    slot.text = copied;
+    vector[i] = slot;
+    i = i + 1;
+  }
+  // The null that ends the vector. `execvp` reads until it finds this, so an off-by-one here reads past the
+  // allocation — which is why the array is `count + 1` and this write is unconditional.
+  last: Argument;
+  last.text = null;
+  vector[argv.count] = last;
+  return vector, true;
 }
 
 /// A NUL-terminated copy of `s` in temporary storage.
 nul_copy :: (s: string) -> (*u8, bool) {
-    scratch := talloc(s.count + 1);
-    if scratch == null {
-        return null, false;
-    }
-    bytes := view(scratch, s.count + 1);
-    i := 0;
-    while i < s.count {
-        bytes[i] = (s.data + i).*;
-        i = i + 1;
-    }
-    bytes[s.count] = cast(u8, 0);
-    return scratch, true;
+  scratch := talloc(s.count + 1);
+  if scratch == null {
+    return null, false;
+  }
+  bytes := view(scratch, s.count + 1);
+  i := 0;
+  while i < s.count {
+    bytes[i] = (s.data + i).*;
+    i = i + 1;
+  }
+  bytes[s.count] = cast(u8, 0);
+  return scratch, true;
 }

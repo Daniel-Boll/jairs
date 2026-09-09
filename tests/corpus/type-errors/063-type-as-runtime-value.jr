@@ -48,11 +48,11 @@
 // So E0261's help line names where a type *may* go rather than suggesting an annotation the parser would
 // reject.
 Point :: struct {
-    x: s64;
+  x: s64;
 }
 
 bind_a_type :: () {
-    // The refusal: a type bound to a local. No expectation to mismatch against, which is exactly why
-    // this was the case that got through.
-    t := Point;
+  // The refusal: a type bound to a local. No expectation to mismatch against, which is exactly why
+  // this was the case that got through.
+  t := Point;
 }

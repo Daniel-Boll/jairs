@@ -14,11 +14,11 @@
 // No `#import "Basic"` and no `exit`: this directory's harness runs without a module path.
 
 EMPTY :: () {
-    _ = s64.[];
+  _ = s64.[];
 }
 
 TOO_BIG :: () {
-    _ = u8.[1, 2, 300];
+  _ = u8.[1, 2, 300];
 }
 
 main :: () {

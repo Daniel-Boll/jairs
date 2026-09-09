@@ -67,6 +67,10 @@ executable source and gates still outrank every hand-maintained table.
 
 ## Findings at a glance
 
+- The prose matrix has **59 feature-family rows** covering all 60 Markdown book assets
+  (`01A`/`01B` share one row): **2 present, 42 partial, 8 absent, and 7 intentionally
+  divergent**. “Partial” dominates because Jairs usually has the core mechanism but not
+  the guide's complete spelling, inference, library surface, or platform breadth.
 - Jairs already covers much of the guide's procedural core: explicit memory,
   numeric types, pointers, structs/unions/enums, loops, `defer`, operator
   overloading, multiple returns plus `#must`, compile-time execution, basic
@@ -91,11 +95,45 @@ executable source and gates still outrank every hand-maintained table.
   and a packaged VS Code extension have been declined; Jairs' generated build
   source is a `Build` module rather than shared global scope.
 - ADR-0219 turns the first parity baseline into a required test: one owned probe
-  for each of the guide's 35 example-bearing top-level chapters. Six selected
+  for each of the guide's 35 example-bearing top-level groups. Six selected
   examples check unchanged at the pinned revision; every other row records a
   runnable port, an exact blocker, or an intentional divergence. The submodule
   remains provenance only, and this representative set does not support a
   percentage claim.
+
+## Coverage accounting: what was assessed and what is executable
+
+The pinned reference contains **42 numbered groups**, **60 Markdown chapters**, one
+ASCII-art PDF, and **315 `.jai` examples**. The chapter matrix above is the full-book
+assessment layer. The executable layer is intentionally smaller:
+
+| Executable probe result | Count | Meaning |
+|---|---:|---|
+| Source-compatible | 6 | A selected pinned example checks without a Jairs-side source port |
+| Ported | 18 | The behavior is expressible with documented spelling/API changes |
+| Blocked | 9 | The representative pins an exact current compiler diagnostic |
+| Divergent | 2 | Jairs deliberately chooses a different architecture or product boundary |
+
+Those 35 probes cover every **example-bearing top-level group** selected by ADR-0219.
+They do not cover every numbered group:
+
+- `00` and `01` are narrative/philosophy, so executable coverage would be artificial.
+- `02` (development environment and compiler CLI) is materially under-tested: command
+  contracts, project discovery, help text, and option differences need explicit CLI tests.
+- `32` (processes) is materially under-tested: capture, environment, working directory,
+  timeout, stdin/stdout and portable spawn behavior need contract tests.
+- `36` (plugins) is an intentional divergence and needs a permanent executable/documented
+  refusal boundary rather than a pretend implementation.
+- `37` (testing) is materially under-tested: Jairs has Rust-side tests but no in-language
+  `#assert`, test discovery, runner, or testing module matching the guide.
+- `65` is ecosystem/community material rather than one compiler feature.
+- `05C` is an ASCII table PDF and carries no independent language capability.
+
+One probe is also too weak for broad chapters. The highest-priority families for
+multi-probe coverage are modules/loading (8), structs (12), procedures (17), arrays
+(18), polymorphism (22–23), metaprogramming (26), builds (30), and concurrency (31).
+Until those are split into family-level contracts, “chapter covered” means only that
+one representative outcome is pinned.
 
 ## Chapter-by-chapter matrix
 
@@ -228,6 +266,25 @@ This is the prerequisite for later percentage claims, not such a claim itself:
 35 representatives establish executable chapter coverage, not support for all
 315 guide examples or unpublished Jai.
 
+### P0 follow-up — close the audit's executable blind spots
+
+Before expanding the compatibility percentage or adding more showcase features:
+
+1. Add CLI/project contract tests for chapter 02: help surface, project discovery,
+   source injection differences, build/run/check/fmt behavior, and deliberate flag
+   incompatibilities.
+2. Add process contract tests for chapter 32: arguments, environment, working
+   directory, capture, stdin, timeout/termination, and the VM-versus-native boundary.
+3. Decide the chapter-37 testing surface: at minimum `#assert`, in-language test
+   declarations/discovery, a runner contract, and failure locations.
+4. Pin chapter 36 as an explicit plugin divergence unless a concrete consumer justifies
+   reversing ADR-0154.
+5. Split chapters 8, 12, 17, 18, 22, 23, 26, 30, and 31 into several family probes each.
+
+This follow-up improves the evidence. It is intentionally ahead of graphics breadth:
+missing CLI, process, and testing contracts affect ordinary programs and every later
+compatibility claim.
+
 ### P1 — Finish the high-leverage everyday language surface
 
 1. General procedure overloading. It unlocks guide-shaped `append`, string
@@ -312,14 +369,31 @@ tree model would affect syntax, HIR, const evaluation, diagnostics, and tools.
 
 ### P7 — Ecosystem breadth
 
-1. Complete held input, textures, PNG/JPEG, text/fonts, audio, and graphics
-   resource destruction.
+1. Complete the in-language testing module and discovery workflow specified in
+   the P0 follow-up.
 2. Add a package/module route for external bindings such as Raylib.
-3. Add an in-language testing module and discovery workflow.
+3. Complete held input, textures, PNG/JPEG, text/fonts, audio, and graphics
+   resource destruction.
 4. Consider pools, mail, advanced hash tables, and other guide modules based on
    example demand.
 5. Treat inline assembly and plugins as separate strategic projects. Neither is
    a sensible incidental addition to make a tutorial row green.
+
+### Recommended execution order
+
+1. **Evidence first:** P0 follow-up contracts for CLI, processes, testing, plugins,
+   and broad-chapter family probes.
+2. **Largest source multiplier:** general procedure overloading.
+3. **Everyday syntax:** inferred aggregate literals, evaluated lengths, pointer
+   iteration, then the remaining control-flow spellings.
+4. **Module composition:** `#load`, conditional items, module parameters, argv/stdin.
+5. **Generic library unlock:** cross-file template instantiation and stronger inference.
+6. **Architectural project:** first-class `Code` and inspectable metaprogramming, only
+   after its representation and tool impact are decided.
+7. **Systems breadth:** process I/O/capture, directory/metadata, synchronization,
+   C variadics and bindings generation.
+8. **Ecosystem breadth:** packages, graphics/media expansion, then separate strategic
+   decisions for assembly, plugins, Windows hosting, and exact Jai distribution parity.
 
 ## Claims requiring real Jai or vendored-primary confirmation
 

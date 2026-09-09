@@ -2,6 +2,6 @@
 // `!` is the boolean negation. A `bool` is one byte and its complement is 254, which is not
 // a `bool` at all — so the help line names `!` rather than leaving the reader to guess.
 main :: () {
-    a := true;
-    b := ~a;
+  a := true;
+  b := ~a;
 }

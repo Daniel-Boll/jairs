@@ -17,16 +17,16 @@
 /// The inner template. Instantiated *only* from inside another template's body, so nothing
 /// in the base tree records the call site that matters.
 inner :: (x: $T) -> T {
-    return x;
+  return x;
 }
 
 /// Calls `inner` with a concrete argument. Its own `$U` makes it a template too, so its body
 /// exists only as a clone by the time MIR is built.
 outer :: (flag: $U) -> s64 {
-    n := inner(40);
-    return n + 2;
+  n := inner(40);
+  return n + 2;
 }
 
 main :: () {
-    exit(outer(true));
+  exit(outer(true));
 }

@@ -17,42 +17,42 @@
 
 // One `$$T` alongside a runtime parameter.
 scaled :: (base: s64, factor: $$T) -> s64 {
-    return base * factor;
+  return base * factor;
 }
 
 // A `$$T` that infers `bool` and the callee returns a bool literal keyed on the baked value.
 picked :: (flag: $$T) -> s64 {
-    if flag {
-        return 1;
-    }
-    return 0;
+  if flag {
+    return 1;
+  }
+  return 0;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // `factor: $$T` infers `T = s64` from `5`, bakes `5` into the clone.
-    if scaled(7, 5) == 35 {
-        n = n + 1;
-    }
+  // `factor: $$T` infers `T = s64` from `5`, bakes `5` into the clone.
+  if scaled(7, 5) == 35 {
+    n = n + 1;
+  }
 
-    // A different literal at the same call site: a distinct instantiation with a distinct
-    // baked value, giving a different result.
-    if scaled(2, 4) == 8 {
-        n = n + 2;
-    }
+  // A different literal at the same call site: a distinct instantiation with a distinct
+  // baked value, giving a different result.
+  if scaled(2, 4) == 8 {
+    n = n + 2;
+  }
 
-    // A bool argument infers a different `T` and bakes `true`/`false`.
-    if picked(true) == 1 {
-        n = n + 4;
-    }
-    if picked(false) == 0 {
-        n = n + 8;
-    }
+  // A bool argument infers a different `T` and bakes `true`/`false`.
+  if picked(true) == 1 {
+    n = n + 4;
+  }
+  if picked(false) == 0 {
+    n = n + 8;
+  }
 
-    // Every assertion: 15.
-    if n == 15 {
-        exit(0);
-    }
-    exit(1);
+  // Every assertion: 15.
+  if n == 15 {
+    exit(0);
+  }
+  exit(1);
 }

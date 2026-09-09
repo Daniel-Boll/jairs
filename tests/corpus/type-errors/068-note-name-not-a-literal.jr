@@ -16,11 +16,11 @@
 // compiler rather than imported, so the refusal does not depend on a module being loaded.
 
 tuned :: (x: s64) -> s64 @fast {
-    return x;
+  return x;
 }
 
 asks_with_a_local :: () {
-    which := "fast";
-    // A local, so the name resolves — the refusal is about *when* it is readable, not whether it exists.
-    answer := has_note(tuned, which);
+  which := "fast";
+  // A local, so the name resolves — the refusal is about *when* it is readable, not whether it exists.
+  answer := has_note(tuned, which);
 }

@@ -3,100 +3,100 @@
 #import "Basic";
 
 returned_string :: () -> string {
-    return "Hi";
+  return "Hi";
 }
 
 main :: () {
-    score := 0;
+  score := 0;
 
-    // Plain and escaped #char operands, including contextual u8 typing.
-    quote: u8 = #char "\"";
-    slash: u8 = #char "\\";
-    if #char "A" == 65 && #char "\n" == 10 && #char "\0" == 0 && quote == 34 && slash == 92 && #char "\u0041" == 65 {
-        score = score + 1;
-    }
+  // Plain and escaped #char operands, including contextual u8 typing.
+  quote: u8 = #char "\"";
+  slash: u8 = #char "\\";
+  if #char "A" == 65 && #char "\n" == 10 && #char "\0" == 0 && quote == 34 && slash == 92 && #char "\u0041" == 65 {
+    score = score + 1;
+  }
 
-    // Named iteration yields bytes.
-    named := 0;
-    for c: "A<z" {
-        named = named + cast(s64, c);
-    }
-    if named == 247 {
-        score = score + 2;
-    }
+  // Named iteration yields bytes.
+  named := 0;
+  for c: "A<z" {
+    named = named + cast(s64, c);
+  }
+  if named == 247 {
+    score = score + 2;
+  }
 
-    // Nameless iteration injects a u8 `it` and an s64 `it_index`.
-    indexed := 0;
-    for "abc" {
-        indexed = indexed + cast(s64, it) * (it_index + 1);
-    }
-    if indexed == 590 {
-        score = score + 4;
-    }
+  // Nameless iteration injects a u8 `it` and an s64 `it_index`.
+  indexed := 0;
+  for "abc" {
+    indexed = indexed + cast(s64, it) * (it_index + 1);
+  }
+  if indexed == 590 {
+    score = score + 4;
+  }
 
-    // A named index is also s64.
-    named_index := 0;
-    for c, i: "abc" {
-        named_index = named_index + cast(s64, c) + i;
-    }
-    if named_index == 297 {
-        score = score + 8;
-    }
+  // A named index is also s64.
+  named_index := 0;
+  for c, i: "abc" {
+    named_index = named_index + cast(s64, c) + i;
+  }
+  if named_index == 297 {
+    score = score + 8;
+  }
 
-    // Reverse iteration visits the same bytes from count-1 down to zero.
-    reverse := 0;
-    for < c, i: "abc" {
-        reverse = reverse * 10 + i;
-        if c == #char "b" {
-            reverse = reverse + 100;
-        }
+  // Reverse iteration visits the same bytes from count-1 down to zero.
+  reverse := 0;
+  for < c, i: "abc" {
+    reverse = reverse * 10 + i;
+    if c == #char "b" {
+      reverse = reverse + 100;
     }
-    if reverse == 1210 {
-        score = score + 16;
-    }
+  }
+  if reverse == 1210 {
+    score = score + 16;
+  }
 
-    // Pointer-to-string auto-dereference uses the same iteration path.
-    text := "AZ";
-    pointer := *text;
-    through_pointer := 0;
-    for c: pointer {
-        through_pointer = through_pointer + cast(s64, c);
-    }
-    if through_pointer == 155 {
-        score = score + 32;
-    }
+  // Pointer-to-string auto-dereference uses the same iteration path.
+  text := "AZ";
+  pointer := *text;
+  through_pointer := 0;
+  for c: pointer {
+    through_pointer = through_pointer + cast(s64, c);
+  }
+  if through_pointer == 155 {
+    score = score + 32;
+  }
 
-    // A returned string value is spilled once and iterated.
-    returned := 0;
-    for c: returned_string() {
-        returned = returned + cast(s64, c);
-    }
-    if returned == 177 {
-        score = score + 64;
-    }
+  // A returned string value is spilled once and iterated.
+  returned := 0;
+  for c: returned_string() {
+    returned = returned + cast(s64, c);
+  }
+  if returned == 177 {
+    score = score + 64;
+  }
 
-    // UTF-8 text is traversed as bytes, not Unicode scalar values.
-    utf8_sum := 0;
-    utf8_count := 0;
-    for c: "é" {
-        utf8_sum = utf8_sum + cast(s64, c);
-        utf8_count = utf8_count + 1;
-    }
-    if utf8_count == 2 && utf8_sum == 364 {
-        score = score + 128;
-    }
+  // UTF-8 text is traversed as bytes, not Unicode scalar values.
+  utf8_sum := 0;
+  utf8_count := 0;
+  for c: "é" {
+    utf8_sum = utf8_sum + cast(s64, c);
+    utf8_count = utf8_count + 1;
+  }
+  if utf8_count == 2 && utf8_sum == 364 {
+    score = score + 128;
+  }
 
-    // Empty strings execute no iterations.
-    empty_count := 0;
-    for "" {
-        empty_count = empty_count + cast(s64, it) + it_index + 1;
-    }
-    if empty_count == 0 {
-        score = score + 256;
-    }
+  // Empty strings execute no iterations.
+  empty_count := 0;
+  for "" {
+    empty_count = empty_count + cast(s64, it) + it_index + 1;
+  }
+  if empty_count == 0 {
+    score = score + 256;
+  }
 
-    if score == 511 {
-        exit(0);
-    }
-    exit(1);
+  if score == 511 {
+    exit(0);
+  }
+  exit(1);
 }

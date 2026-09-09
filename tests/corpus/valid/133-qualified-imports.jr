@@ -29,36 +29,36 @@ File :: #import "File";
 
 // A qualified type in a parameter. The argument is a local declared `File.File` in `main`.
 descriptor_of :: (f: *File.File) -> s64 {
-    return f.fd;
+  return f.fd;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // A qualified value, in a call. `byte_at("abc", 2)` is `c`, 99.
-    if String.byte_at("abc", 2) == 99 {
-        n = n + 1;
-    }
-    if String.starts_with("hello", "he") {
-        n = n + 2;
-    }
-    // A qualified constant.
-    if File.READ_WRITE == 2 {
-        n = n + 4;
-    }
+  // A qualified value, in a call. `byte_at("abc", 2)` is `c`, 99.
+  if String.byte_at("abc", 2) == 99 {
+    n = n + 1;
+  }
+  if String.starts_with("hello", "he") {
+    n = n + 2;
+  }
+  // A qualified constant.
+  if File.READ_WRITE == 2 {
+    n = n + 4;
+  }
 
-    // A qualified type as a local's annotation. `-1` is what `File`'s own docs call a closed handle,
-    // so this is a legal value of the type and needs no filesystem.
-    f: File.File;
-    f.fd = -1;
-    if descriptor_of(*f) == -1 {
-        n = n + 8;
-    }
-    // The same pointer handed to the module's own procedure, whose parameter is spelled `*File` inside
-    // its own file. Two spellings, one type.
-    if !File.is_open(*f) {
-        n = n + 16;
-    }
+  // A qualified type as a local's annotation. `-1` is what `File`'s own docs call a closed handle,
+  // so this is a legal value of the type and needs no filesystem.
+  f: File.File;
+  f.fd = -1;
+  if descriptor_of(*f) == -1 {
+    n = n + 8;
+  }
+  // The same pointer handed to the module's own procedure, whose parameter is spelled `*File` inside
+  // its own file. Two spellings, one type.
+  if !File.is_open(*f) {
+    n = n + 16;
+  }
 
-    exit(n);
+  exit(n);
 }

@@ -122,29 +122,29 @@ OUTLINE_THICKNESS : float32 : 1.0;
 /// Small on purpose: a caller declares one, keeps it between frames, and never allocates. Every field is
 /// written by `feed` or by a widget call, and none by the caller.
 UI :: struct {
-    /// Where the cursor is, in window pixels.
-    mouse_x: s32;
-    /// Where the cursor is, in window pixels.
-    mouse_y: s32;
-    /// Whether the left button is currently held.
-    ///
-    /// Persistent across frames, because a press that begins in one frame and ends in another is the normal
-    /// case at sixty frames a second.
-    mouse_down: bool;
-    /// Whether the left button went down **during this frame**. Cleared by `begin_frame`.
-    pressed_this_frame: bool;
-    /// Whether the left button came up **during this frame**. Cleared by `begin_frame`.
-    released_this_frame: bool;
-    /// The id of the widget under the cursor, or `NONE`.
-    ///
-    /// Recomputed every frame, by each widget's own hit test — which is why it is cleared in `begin_frame`
-    /// rather than remembered: a widget that stopped being declared must stop being hot.
-    hot: s64;
-    /// The id of the widget being pressed, or `NONE`.
-    ///
-    /// **Not** cleared by `begin_frame`: it is the one piece of genuinely multi-frame state, and clearing it
-    /// is what makes a naive immediate-mode button fire on press instead of on release.
-    active: s64;
+  /// Where the cursor is, in window pixels.
+  mouse_x: s32;
+  /// Where the cursor is, in window pixels.
+  mouse_y: s32;
+  /// Whether the left button is currently held.
+  ///
+  /// Persistent across frames, because a press that begins in one frame and ends in another is the normal
+  /// case at sixty frames a second.
+  mouse_down: bool;
+  /// Whether the left button went down **during this frame**. Cleared by `begin_frame`.
+  pressed_this_frame: bool;
+  /// Whether the left button came up **during this frame**. Cleared by `begin_frame`.
+  released_this_frame: bool;
+  /// The id of the widget under the cursor, or `NONE`.
+  ///
+  /// Recomputed every frame, by each widget's own hit test — which is why it is cleared in `begin_frame`
+  /// rather than remembered: a widget that stopped being declared must stop being hot.
+  hot: s64;
+  /// The id of the widget being pressed, or `NONE`.
+  ///
+  /// **Not** cleared by `begin_frame`: it is the one piece of genuinely multi-frame state, and clearing it
+  /// is what makes a naive immediate-mode button fire on press instead of on release.
+  active: s64;
 }
 
 /// Whether `id` can name a widget.
@@ -152,7 +152,7 @@ UI :: struct {
 /// `NONE` cannot, because `active == NONE` means "nothing is pressed" and a widget with that id would be
 /// indistinguishable from the absence of one.
 id_is_valid :: (id: s64) -> bool {
-    return id != NONE;
+  return id != NONE;
 }
 
 /// Starts a frame: clears the per-frame edges and forgets which widget was hot.
@@ -163,9 +163,9 @@ id_is_valid :: (id: s64) -> bool {
 ///
 /// Must be called before any `feed` for the frame, and before any widget.
 begin_frame :: (ui: *UI) {
-    ui.pressed_this_frame = false;
-    ui.released_this_frame = false;
-    ui.hot = NONE;
+  ui.pressed_this_frame = false;
+  ui.released_this_frame = false;
+  ui.hot = NONE;
 }
 
 /// Folds one event into `ui`.
@@ -176,32 +176,32 @@ begin_frame :: (ui: *UI) {
 /// Only the left button is tracked (`mouse_button == 1`). A right-click is a different interaction with
 /// different conventions on every platform, and guessing at it would be worse than not having it.
 feed :: (ui: *UI, event: *Input.Event) {
-    kind := cast(s64, event.kind);
-    if kind == Input.MOUSE_MOTION {
-        ui.mouse_x = event.mouse_x;
-        ui.mouse_y = event.mouse_y;
-        return;
+  kind := cast(s64, event.kind);
+  if kind == Input.MOUSE_MOTION {
+    ui.mouse_x = event.mouse_x;
+    ui.mouse_y = event.mouse_y;
+    return;
+  }
+  if kind == Input.MOUSE_DOWN {
+    if cast(s64, event.mouse_button) == 1 {
+      // The position comes from the event, not from the last motion: a click can arrive without a
+      // preceding motion event — a tap on a trackpad, or a synthetic event — and using a stale position
+      // would hit-test the wrong widget.
+      ui.mouse_x = event.mouse_x;
+      ui.mouse_y = event.mouse_y;
+      ui.mouse_down = true;
+      ui.pressed_this_frame = true;
     }
-    if kind == Input.MOUSE_DOWN {
-        if cast(s64, event.mouse_button) == 1 {
-            // The position comes from the event, not from the last motion: a click can arrive without a
-            // preceding motion event — a tap on a trackpad, or a synthetic event — and using a stale position
-            // would hit-test the wrong widget.
-            ui.mouse_x = event.mouse_x;
-            ui.mouse_y = event.mouse_y;
-            ui.mouse_down = true;
-            ui.pressed_this_frame = true;
-        }
-        return;
+    return;
+  }
+  if kind == Input.MOUSE_UP {
+    if cast(s64, event.mouse_button) == 1 {
+      ui.mouse_x = event.mouse_x;
+      ui.mouse_y = event.mouse_y;
+      ui.mouse_down = false;
+      ui.released_this_frame = true;
     }
-    if kind == Input.MOUSE_UP {
-        if cast(s64, event.mouse_button) == 1 {
-            ui.mouse_x = event.mouse_x;
-            ui.mouse_y = event.mouse_y;
-            ui.mouse_down = false;
-            ui.released_this_frame = true;
-        }
-    }
+  }
 }
 
 /// Whether `(ui.mouse_x, ui.mouse_y)` is inside the rectangle.
@@ -210,9 +210,9 @@ feed :: (ui: *UI, event: *Input.Event) {
 /// pixel on it. That is the same convention every drawing API here uses for a fill, and disagreeing with it
 /// would make a two-button row have a one-pixel column that highlights both.
 inside :: (ui: *UI, x: s64, y: s64, w: s64, h: s64) -> bool {
-    px := cast(s64, ui.mouse_x);
-    py := cast(s64, ui.mouse_y);
-    return px >= x && px < x + w && py >= y && py < y + h;
+  px := cast(s64, ui.mouse_x);
+  py := cast(s64, ui.mouse_y);
+  return px >= x && px < x + w && py >= y && py < y + h;
 }
 
 /// Declares a button, and reports whether it was clicked this frame.
@@ -228,29 +228,29 @@ inside :: (ui: *UI, x: s64, y: s64, w: s64, h: s64) -> bool {
 ///
 /// A zero id fires nothing and is not made hot: see `id_is_valid`.
 button :: (ui: *UI, id: s64, x: s64, y: s64, w: s64, h: s64) -> bool {
-    if !id_is_valid(id) {
-        return false;
-    }
-
-    over := inside(ui, x, y, w, h);
-    if over {
-        ui.hot = id;
-    }
-
-    if ui.pressed_this_frame && over {
-        ui.active = id;
-    }
-
-    if ui.released_this_frame {
-        if ui.active == id {
-            ui.active = NONE;
-            // The release must be over the widget too. Checked here rather than at press time, because that is
-            // where the difference between a click and an abandoned press lives.
-            return over;
-        }
-    }
-
+  if !id_is_valid(id) {
     return false;
+  }
+
+  over := inside(ui, x, y, w, h);
+  if over {
+    ui.hot = id;
+  }
+
+  if ui.pressed_this_frame && over {
+    ui.active = id;
+  }
+
+  if ui.released_this_frame {
+    if ui.active == id {
+      ui.active = NONE;
+      // The release must be over the widget too. Checked here rather than at press time, because that is
+      // where the difference between a click and an abandoned press lives.
+      return over;
+    }
+  }
+
+  return false;
 }
 
 /// Whether `id` is the widget under the cursor.
@@ -258,14 +258,14 @@ button :: (ui: *UI, id: s64, x: s64, y: s64, w: s64, h: s64) -> bool {
 /// For drawing: a caller picks a hover colour from this. Valid only after the widget's own call, since that
 /// call is what sets `hot`.
 is_hot :: (ui: *UI, id: s64) -> bool {
-    // The zero id is refused rather than compared, and this was a real bug the tests caught: `hot` *is* `NONE`
-    // whenever nothing is hot, so a bare `ui.hot == id` answered **true** for `is_hot(ui, NONE)` on every frame.
-    // A sentinel that means "nothing" must not be askable about, or every "is this widget hot" question has a
-    // widget for which the answer is yes and the widget does not exist.
-    if !id_is_valid(id) {
-        return false;
-    }
-    return ui.hot == id;
+  // The zero id is refused rather than compared, and this was a real bug the tests caught: `hot` *is* `NONE`
+  // whenever nothing is hot, so a bare `ui.hot == id` answered **true** for `is_hot(ui, NONE)` on every frame.
+  // A sentinel that means "nothing" must not be askable about, or every "is this widget hot" question has a
+  // widget for which the answer is yes and the widget does not exist.
+  if !id_is_valid(id) {
+    return false;
+  }
+  return ui.hot == id;
 }
 
 /// Whether `id` is the widget being pressed.
@@ -274,11 +274,11 @@ is_hot :: (ui: *UI, id: s64) -> bool {
 /// right: the widget is still armed, and showing it un-pressed would tell the user the release will do nothing
 /// when moving back would still fire it.
 is_active :: (ui: *UI, id: s64) -> bool {
-    // Refused for the same reason as `is_hot`: `active == NONE` means "nothing is pressed".
-    if !id_is_valid(id) {
-        return false;
-    }
-    return ui.active == id;
+  // Refused for the same reason as `is_hot`: `active == NONE` means "nothing is pressed".
+  if !id_is_valid(id) {
+    return false;
+  }
+  return ui.active == id;
 }
 
 /// Draws a button's frame in one of three shades, by its state.
@@ -313,44 +313,44 @@ is_active :: (ui: *UI, id: s64) -> bool {
 /// widget in one frame is a mistake — the state machine would see two presses — so a caller uses one or
 /// the other, and this one is the shape Jai has.
 draw_button :: (ui: *UI, id: s64, x: s64, y: s64, w: s64, h: s64) -> bool {
-    // Read the interaction **before** drawing, so the shades below reflect the state this frame ends in.
-    // A held press draws active. A click fires on release, which clears `active`, so a released button under
-    // the cursor draws hot on that frame rather than pretending it is still held.
-    fired := button(ui, id, x, y, w, h);
-    shade := 70;
-    if is_active(ui, id) {
-        shade = 130;
-    } else if is_hot(ui, id) {
-        shade = 100;
-    }
+  // Read the interaction **before** drawing, so the shades below reflect the state this frame ends in.
+  // A held press draws active. A click fires on release, which clears `active`, so a released button under
+  // the cursor draws hot on that frame rather than pretending it is still held.
+  fired := button(ui, id, x, y, w, h);
+  shade := 70;
+  if is_active(ui, id) {
+    shade = 130;
+  } else if is_hot(ui, id) {
+    shade = 100;
+  }
 
-    // The shade is 0-255 in this module's own terms and `Simp`'s colours are 0..1, so the conversion happens
-    // here, once. Kept as an integer up to this point because the three states are integers a reader can
-    // compare, which `0.27`, `0.39` and `0.51` would not be.
-    level := cast(float32, shade) / 255.0;
-    body := Simp.vector4(level, level, level, 1.0);
-    edge := Simp.vector4(0.78, 0.78, 0.78, 1.0);
+  // The shade is 0-255 in this module's own terms and `Simp`'s colours are 0..1, so the conversion happens
+  // here, once. Kept as an integer up to this point because the three states are integers a reader can
+  // compare, which `0.27`, `0.39` and `0.51` would not be.
+  level := cast(float32, shade) / 255.0;
+  body := Simp.vector4(level, level, level, 1.0);
+  edge := Simp.vector4(0.78, 0.78, 0.78, 1.0);
 
-    Simp.set_shader_for_color(false);
-    Simp.immediate_begin();
+  Simp.set_shader_for_color(false);
+  Simp.immediate_begin();
 
-    left := cast(float32, x);
-    top := cast(float32, y);
-    right := cast(float32, x + w);
-    bottom := cast(float32, y + h);
+  left := cast(float32, x);
+  top := cast(float32, y);
+  right := cast(float32, x + w);
+  bottom := cast(float32, y + h);
 
-    Simp.immediate_quad(left, top, right, bottom, body);
+  Simp.immediate_quad(left, top, right, bottom, body);
 
-    // The outline, inset nowhere: four quads one pixel thick along the edges, drawn *after* the body so they
-    // win where they overlap. `OUTLINE_THICKNESS` rather than a bare `1.0` because a hairline is invisible on
-    // a high-DPI target, and a caller who wants a different weight should be able to find the number.
-    // The constant is explicitly `float32`, matching the vertex API without a narrowing cast.
-    t := OUTLINE_THICKNESS;
-    Simp.immediate_quad(left, top, right, top + t, edge);
-    Simp.immediate_quad(left, bottom - t, right, bottom, edge);
-    Simp.immediate_quad(left, top, left + t, bottom, edge);
-    Simp.immediate_quad(right - t, top, right, bottom, edge);
+  // The outline, inset nowhere: four quads one pixel thick along the edges, drawn *after* the body so they
+  // win where they overlap. `OUTLINE_THICKNESS` rather than a bare `1.0` because a hairline is invisible on
+  // a high-DPI target, and a caller who wants a different weight should be able to find the number.
+  // The constant is explicitly `float32`, matching the vertex API without a narrowing cast.
+  t := OUTLINE_THICKNESS;
+  Simp.immediate_quad(left, top, right, top + t, edge);
+  Simp.immediate_quad(left, bottom - t, right, bottom, edge);
+  Simp.immediate_quad(left, top, left + t, bottom, edge);
+  Simp.immediate_quad(right - t, top, right, bottom, edge);
 
-    Simp.immediate_flush();
-    return fired;
+  Simp.immediate_flush();
+  return fired;
 }

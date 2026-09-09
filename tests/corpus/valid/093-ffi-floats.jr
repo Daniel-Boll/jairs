@@ -46,28 +46,28 @@ sqrtf :: (x: float32) -> float32 #foreign libm "sqrtf";
 pow :: (base: float64, exponent: float64) -> float64 #foreign libm "pow";
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    r := sqrt(16.0);
-    if r == 4.0 {
-        n = n + 1;
-    }
+  r := sqrt(16.0);
+  if r == 4.0 {
+    n = n + 1;
+  }
 
-    p := pow(2.0, 10.0);
-    if p == 1024.0 {
-        n = n + 2;
-    }
+  p := pow(2.0, 10.0);
+  if p == 1024.0 {
+    n = n + 2;
+  }
 
-    f := sqrtf(9.0);
-    if f == 3.0 {
-        n = n + 4;
-    }
+  f := sqrtf(9.0);
+  if f == 3.0 {
+    n = n + 4;
+  }
 
-    // A returned float is a usable value: feed it back in. sqrt(sqrt(16.0)) = sqrt(4.0) = 2.0.
-    nested := sqrt(sqrt(16.0));
-    if nested == 2.0 {
-        n = n + 8;
-    }
+  // A returned float is a usable value: feed it back in. sqrt(sqrt(16.0)) = sqrt(4.0) = 2.0.
+  nested := sqrt(sqrt(16.0));
+  if nested == 2.0 {
+    n = n + 8;
+  }
 
-    exit(n);
+  exit(n);
 }

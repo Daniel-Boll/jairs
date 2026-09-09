@@ -26,10 +26,10 @@ libc :: #system_library "c";
 open_it :: (path: *u8, flags: s64) -> s64 #c_variadic #foreign libc "open";
 
 main :: () {
-    // A real pointer rather than `null`, and `_ =` rather than a binding. Both avoid a *second* diagnostic
-    // on one mistake: the refused call has an `ERROR` type, so binding it is E0257 and a bare `null` has no
-    // context to take a pointer type from. This directory's contract is exactly one refusal per file, and
-    // getting there is a reminder that a refusal which poisons its expression makes every neighbour speak up.
-    name: [1]u8;
-    _ = open_it(*name[0], 0);
+  // A real pointer rather than `null`, and `_ =` rather than a binding. Both avoid a *second* diagnostic
+  // on one mistake: the refused call has an `ERROR` type, so binding it is E0257 and a bare `null` has no
+  // context to take a pointer type from. This directory's contract is exactly one refusal per file, and
+  // getting there is a reminder that a refusal which poisons its expression makes every neighbour speak up.
+  name: [1]u8;
+  _ = open_it(*name[0], 0);
 }

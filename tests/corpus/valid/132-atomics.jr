@@ -26,61 +26,61 @@
 #import "Basic";
 
 main :: () {
-    total := 0;
-    counter := 10;
+  total := 0;
+  counter := 10;
 
-    if atomic_load(*counter) == 10 {
-        total = total + 1;
-    }
+  if atomic_load(*counter) == 10 {
+    total = total + 1;
+  }
 
-    atomic_store(*counter, 20);
-    if atomic_load(*counter) == 20 {
-        total = total + 2;
-    }
+  atomic_store(*counter, 20);
+  if atomic_load(*counter) == 20 {
+    total = total + 2;
+  }
 
-    // The *previous* value. A caller wanting the new one adds again; a caller wanting a distinct ticket per
-    // thread needs exactly this.
-    if atomic_add(*counter, 5) == 20 {
-        total = total + 4;
-    }
-    if atomic_load(*counter) == 25 {
-        total = total + 8;
-    }
+  // The *previous* value. A caller wanting the new one adds again; a caller wanting a distinct ticket per
+  // thread needs exactly this.
+  if atomic_add(*counter, 5) == 20 {
+    total = total + 4;
+  }
+  if atomic_load(*counter) == 25 {
+    total = total + 8;
+  }
 
-    if atomic_compare_exchange(*counter, 25, 99) {
-        total = total + 16;
-    }
-    if atomic_load(*counter) == 99 {
-        total = total + 32;
-    }
+  if atomic_compare_exchange(*counter, 25, 99) {
+    total = total + 16;
+  }
+  if atomic_load(*counter) == 99 {
+    total = total + 32;
+  }
 
-    // A failed exchange must not write. This is the assertion that catches a compare-exchange lowered as an
-    // unconditional swap, which would pass every positive check above.
-    if !atomic_compare_exchange(*counter, 25, 7) {
-        total = total + 64;
-    }
-    if atomic_load(*counter) == 99 {
-        total = total + 128;
-    }
+  // A failed exchange must not write. This is the assertion that catches a compare-exchange lowered as an
+  // unconditional swap, which would pass every positive check above.
+  if !atomic_compare_exchange(*counter, 25, 7) {
+    total = total + 64;
+  }
+  if atomic_load(*counter) == 99 {
+    total = total + 128;
+  }
 
-    // **Wrapping**, not trapping: an atomic add is one machine instruction with no overflow check, so an
-    // interpreter that trapped here would disagree with both back ends about a legal program.
-    edge := 9223372036854775807;
-    _ = atomic_add(*edge, 1);
-    if atomic_load(*edge) == -9223372036854775808 {
-        total = total + 256;
-    }
+  // **Wrapping**, not trapping: an atomic add is one machine instruction with no overflow check, so an
+  // interpreter that trapped here would disagree with both back ends about a legal program.
+  edge := 9223372036854775807;
+  _ = atomic_add(*edge, 1);
+  if atomic_load(*edge) == -9223372036854775808 {
+    total = total + 256;
+  }
 
-    // Signed comparison. A compare-exchange implemented with an unsigned compare would still match here,
-    // so the value is chosen to differ under the two interpretations only if the *stored* bits differ —
-    // which they do not, making this a check that the operand is not silently widened or truncated.
-    negative := -7;
-    if atomic_compare_exchange(*negative, -7, -1) {
-        total = total + 512;
-    }
-    if atomic_load(*negative) == -1 {
-        total = total + 1024;
-    }
+  // Signed comparison. A compare-exchange implemented with an unsigned compare would still match here,
+  // so the value is chosen to differ under the two interpretations only if the *stored* bits differ —
+  // which they do not, making this a check that the operand is not silently widened or truncated.
+  negative := -7;
+  if atomic_compare_exchange(*negative, -7, -1) {
+    total = total + 512;
+  }
+  if atomic_load(*negative) == -1 {
+    total = total + 1024;
+  }
 
-    exit(total % 251);
+  exit(total % 251);
 }

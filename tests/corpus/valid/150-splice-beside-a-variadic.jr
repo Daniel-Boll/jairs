@@ -24,31 +24,31 @@
 #import "Basic";
 
 first :: () -> s64 @step {
-    print("  first\n");
-    return 1;
+  print("  first\n");
+  return 1;
 }
 
 second :: () -> s64 @step {
-    print("  second\n");
-    return 2;
+  print("  second\n");
+  return 2;
 }
 
 main :: () {
-    total := 0;
+  total := 0;
 
-    // The splice, and then a variadic call in the same body. Either alone always worked.
-    #insert noted_insert("step", "total = total + #();");
-    print("total = %\n", total);
+  // The splice, and then a variadic call in the same body. Either alone always worked.
+  #insert noted_insert("step", "total = total + #();");
+  print("total = %\n", total);
 
-    // Declared after the splice on purpose: the query walks the file's declarations rather than the
-    // names in scope where it is written, so this one is generated too (ADR-0101).
-    if total != 7 {
-        exit(1);
-    }
-    exit(total);
+  // Declared after the splice on purpose: the query walks the file's declarations rather than the
+  // names in scope where it is written, so this one is generated too (ADR-0101).
+  if total != 7 {
+    exit(1);
+  }
+  exit(total);
 }
 
 third :: () -> s64 @step {
-    print("  third\n");
-    return 4;
+  print("  third\n");
+  return 4;
 }

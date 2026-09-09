@@ -20,11 +20,11 @@
 COUNT :: 3;
 
 Bad :: enum {
-    // Legal now, and here so the file shows the line rather than only one side of it.
-    OK :: COUNT;
+  // Legal now, and here so the file shows the line rather than only one side of it.
+  OK :: COUNT;
 
-    // E0237: arithmetic needs the evaluator, which runs after an enum's members are typed.
-    X :: 2 + 2;
+  // E0237: arithmetic needs the evaluator, which runs after an enum's members are typed.
+  X :: 2 + 2;
 }
 
 main :: () {

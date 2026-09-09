@@ -3,5 +3,5 @@ helper :: () {
 }
 
 main :: () {
-    x: helper;
+  x: helper;
 }

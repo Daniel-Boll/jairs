@@ -31,7 +31,7 @@ are not merged. This checklist is verbatim from PLAN.md §2.0:
 
 **Any grammar change requires a corpus file.** A change that parses in the
 compiler but not in tree-sitter (or vice versa) is a bug. The `corpus-drift` CI
-job enforces this automatically once both parsers exist.
+job enforces this for both parsers and validates the Neovim and Zed queries.
 
 ---
 
@@ -81,5 +81,5 @@ the subject line, blank line before body if a body is needed.
 
 ## Licence
 
-By contributing you agree that your contributions will be dual-licensed under
-MIT OR Apache-2.0, the same terms as the project.
+By contributing you agree that your contributions are released into the public
+domain under [The Unlicense](UNLICENSE), the same terms as the project.

@@ -23,11 +23,11 @@
 
 // An ordinary struct — no type parameters.
 Pair :: struct {
-    first: s64;
-    second: s64;
+  first: s64;
+  second: s64;
 }
 
 uses_arguments_on_an_ordinary_struct :: () {
-    // The refusal: `Pair` takes no type arguments, so `Pair(s64)` is not a type.
-    p: Pair(s64);
+  // The refusal: `Pair` takes no type arguments, so `Pair(s64)` is not a type.
+  p: Pair(s64);
 }

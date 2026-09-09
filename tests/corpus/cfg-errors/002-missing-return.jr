@@ -4,7 +4,7 @@
 // `if c { return 1; } else { return 0; }` because that one's last statement is an
 // `if`. Only the CFG distinguishes them, which is why `jr-sema` deferred it.
 sometimes :: (n: s64) -> s64 {
-    if n > 0 {
-        return 1;
-    }
+  if n > 0 {
+    return 1;
+  }
 }

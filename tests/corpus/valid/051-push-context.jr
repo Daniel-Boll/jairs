@@ -33,64 +33,64 @@
 /// `050`'s `counting_alloc` has. Used here to prove a `defer`'d free inside the block runs against the
 /// pushed context, and that the state word it moves is the block's copy rather than the caller's.
 recording_alloc :: (n: s64) -> *u8 {
-    context.allocator_data = context.allocator_data + n;
-    return malloc(n);
+  context.allocator_data = context.allocator_data + n;
+  return malloc(n);
 }
 
 /// The release half.
 recording_free :: (p: *u8) {
-    free(p);
+  free(p);
 }
 
 /// A callee that writes the context. It never sees the `push_context`; it just writes a field. Its
 /// write is visible to its caller because the context is shared by pointer — which is the behaviour
 /// `push_context` scopes rather than removes.
 callee_writes :: () {
-    context.allocator_data = 42;
+  context.allocator_data = 42;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // Before the block: set the field to 7 in the caller's own context.
-    context.allocator_data = 7;
+  // Before the block: set the field to 7 in the caller's own context.
+  context.allocator_data = 7;
 
-    push_context {
-        // Inside: this is a *copy*. Writing it does not touch the caller's context.
-        context.allocator_data = 99;
+  push_context {
+    // Inside: this is a *copy*. Writing it does not touch the caller's context.
+    context.allocator_data = 99;
 
-        // A callee's write is still visible to us — the context is shared downward, and
-        // `push_context` scopes that sharing rather than turning it off.
-        callee_writes();
-        if context.allocator_data == 42 {
-            n = n + 1;
-        }
-
-        // Install an allocator in the copy, allocate through it, and free at block exit. The `defer`
-        // runs against this pushed context (ADR-0063 §3), so it frees through `recording_free`.
-        context.allocator = recording_alloc;
-        context.allocator_free = recording_free;
-        context.allocator_data = 0;
-        p := context.allocator(10);
-        defer context.allocator_free(p);
-        if p == null {
-            exit(1);
-        }
-        // The recording allocator moved the copy's state word.
-        if context.allocator_data == 10 {
-            n = n + 2;
-        }
+    // A callee's write is still visible to us — the context is shared downward, and
+    // `push_context` scopes that sharing rather than turning it off.
+    callee_writes();
+    if context.allocator_data == 42 {
+      n = n + 1;
     }
 
-    // After the block: the copy is gone and the caller's context is restored. `allocator_data` is 7
-    // again — the block's 99, the callee's 42 and the allocator's 10 all lived in the copy.
-    if context.allocator_data == 7 {
-        n = n + 4;
+    // Install an allocator in the copy, allocate through it, and free at block exit. The `defer`
+    // runs against this pushed context (ADR-0063 §3), so it frees through `recording_free`.
+    context.allocator = recording_alloc;
+    context.allocator_free = recording_free;
+    context.allocator_data = 0;
+    p := context.allocator(10);
+    defer context.allocator_free(p);
+    if p == null {
+      exit(1);
     }
+    // The recording allocator moved the copy's state word.
+    if context.allocator_data == 10 {
+      n = n + 2;
+    }
+  }
 
-    // `n` accumulated across the block boundary — an ordinary local, unaffected by the context copy.
-    if n == 7 {
-        exit(0);
-    }
-    exit(2);
+  // After the block: the copy is gone and the caller's context is restored. `allocator_data` is 7
+  // again — the block's 99, the callee's 42 and the allocator's 10 all lived in the copy.
+  if context.allocator_data == 7 {
+    n = n + 4;
+  }
+
+  // `n` accumulated across the block boundary — an ordinary local, unaffected by the context copy.
+  if n == 7 {
+    exit(0);
+  }
+  exit(2);
 }

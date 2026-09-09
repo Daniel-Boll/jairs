@@ -563,18 +563,12 @@ fn an_insert_beside_an_instantiation_agrees_in_both_engines() {
     );
 }
 
-/// **`print_int` must actually print** — and this is the first test that ever ran it (ADR-0125).
+/// Integer arguments rendered by `print` must agree in both engines.
 ///
-/// The README advertises "Print a number" as a capability, and until this test nothing executed it:
-/// `print_int` and `print_error` appeared in the whole tree only in their own definitions and in
-/// comments, so both engines could have broken them with all six gates green. That is the project's own
-/// named failure shape — `modules/Basic` hid a bug for a whole wave for exactly this reason.
-///
-/// The **output** is what has teeth here, not the exit code: the digits are where a recursion emitting
-/// them in the wrong order, an off-by-one in the `+ 48` byte arithmetic, or a lost sign would show. The
-/// exit code is a checksum of the same values, so a wrong digit fails twice.
+/// The **output** is what has teeth here, not the exit code: a wrong digit, order or
+/// sign is visible even when the arithmetic checksum still agrees.
 #[test]
-fn printing_a_number_agrees_in_both_engines() {
+fn printing_integer_arguments_agrees_in_both_engines() {
     let dir = TempDir::new().expect("a temporary directory");
     let program = workspace_root().join("tests/corpus/valid/101-print-int.jr");
 
@@ -836,8 +830,8 @@ fn both_engines(source: &str, dir: &Path, name: &str) -> (Behaviour, Behaviour) 
 /// `modules/Basic`, because an exit status is observable in both engines.
 ///
 /// This used to say Jairs "cannot print an integer" because `cast` was "reserved until
-/// wave W1". Both halves expired: `cast` landed in ADR-0037 and `print_int` is written
-/// in Jairs and executed by `valid/101` (ADR-0125). An exit status is still the right
+/// wave W1". Both halves expired: `cast` landed in ADR-0037 and integer formatting is
+/// executed by `valid/101` (ADR-0125). An exit status is still the right
 /// mechanism here — it is the cheapest thing both engines agree on — but it is now a
 /// choice rather than the only option.
 ///

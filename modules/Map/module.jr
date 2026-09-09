@@ -4,12 +4,12 @@
 //! most exercises what the earlier sub-waves built: a heap array of *structs* (typed allocation, ADR-0106),
 //! grown by allocate-copy-free (like `List`, ADR-0107), with field access through pointer arithmetic.
 //!
-//! # Why `Int_Map`, concrete
+//! # Generic storage, concrete operations
 //!
-//! Cross-file parameterised structs are deferred (E0269, ADR-0085 §5), so a `Map($K, $V)` declared here would be
-//! unusable by every importer — the same discovery that shaped `Array(s64)` and `List(s64)`. `s64 -> s64` is the
-//! useful concrete instance (a set of integers, a count-by-id, an index), and the name says which it is. When
-//! cross-file parameterised structs arrive, this becomes `Map($K, $V)` and the `Int_` drops.
+//! `Map :: struct($K, $V)` and its `Slot($K, $V)` cross module boundaries (ADR-0117). The public operations
+//! below remain specialised to `Map(s64, s64)` because imported polymorphic procedures still cannot be
+//! instantiated (E0268). The type can describe other instances today; this module does not pretend to provide
+//! operations for them until that call boundary is lifted.
 //!
 //! # Why open addressing
 //!
@@ -32,31 +32,31 @@
 /// enum, because `enum` across a module boundary is a path this module need not open when two flags say it
 /// plainly.
 Slot :: struct($K, $V) {
-    /// The key. Meaningful only when `used`.
-    key: K;
-    /// The value. Meaningful only when `used`.
-    value: V;
-    /// True for a live slot.
-    used: bool;
-    /// True for a tombstone — a slot that was live and was removed. A probe skips it; an insert may reuse it.
-    deleted: bool;
+  /// The key. Meaningful only when `used`.
+  key: K;
+  /// The value. Meaningful only when `used`.
+  value: V;
+  /// True for a live slot.
+  used: bool;
+  /// True for a tombstone — a slot that was live and was removed. A probe skips it; an insert may reuse it.
+  deleted: bool;
 }
 
-/// A hash table from `s64` to `s64`.
+/// A parameterised hash-table layout.
 ///
 /// `slots` is null until the first `put`, so an unused map allocates nothing and `free_map` is safe on one that
 /// never grew. `count` is live entries; `tombstones` is deleted-but-not-reused slots, tracked because the *probe
 /// load* is `count + tombstones` — a table thick with tombstones must grow (which clears them) even if `count`
 /// is low, or probes lengthen without bound.
 Map :: struct($K, $V) {
-    /// The slot array, or null before the first `put`.
-    slots: *Slot(K, V);
-    /// Live entries.
-    count: s64;
-    /// Tombstones — removed slots not yet reclaimed by a rehash.
-    tombstones: s64;
-    /// The slot array's length. A power of two, so a bucket index is a mask rather than a modulo.
-    capacity: s64;
+  /// The slot array, or null before the first `put`.
+  slots: *Slot(K, V);
+  /// Live entries.
+  count: s64;
+  /// Tombstones — removed slots not yet reclaimed by a rehash.
+  tombstones: s64;
+  /// The slot array's length. A power of two, so a bucket index is a mask rather than a modulo.
+  capacity: s64;
 }
 
 /// The capacity of a map's first allocation. A power of two, so `hash & (capacity - 1)` is the bucket.
@@ -67,30 +67,30 @@ FIRST_CAPACITY :: 8;
 /// Amortised `O(1)`: the table doubles at 3/4 probe load, so a run of inserts copies `O(n)` slots in total.
 /// Updating an existing key does not change `count` and never grows.
 put :: (m: *Map(s64, s64), key: s64, value: s64) -> bool {
-    // Grow when the *probe load* — live plus tombstones — would exceed 3/4, because a linear-probing table's
-    // probes lengthen with occupied-or-tombstoned slots, not just live ones.
-    if (m.count + m.tombstones + 1) * 4 > m.capacity * 3 {
-        if !grow(m) {
-            return false;
-        }
+  // Grow when the *probe load* — live plus tombstones — would exceed 3/4, because a linear-probing table's
+  // probes lengthen with occupied-or-tombstoned slots, not just live ones.
+  if (m.count + m.tombstones + 1) * 4 > m.capacity * 3 {
+    if !grow(m) {
+      return false;
     }
-    slot := find_slot(m, key);
-    s := m.slots + slot;
-    if s.used {
-        // An existing key: update in place, no count change.
-        s.value = value;
-        return true;
-    }
-    // A fresh or tombstoned slot becomes live. A reused tombstone stops being one.
-    if s.deleted {
-        m.tombstones = m.tombstones - 1;
-    }
-    s.key = key;
+  }
+  slot := find_slot(m, key);
+  s := m.slots + slot;
+  if s.used {
+    // An existing key: update in place, no count change.
     s.value = value;
-    s.used = true;
-    s.deleted = false;
-    m.count = m.count + 1;
     return true;
+  }
+  // A fresh or tombstoned slot becomes live. A reused tombstone stops being one.
+  if s.deleted {
+    m.tombstones = m.tombstones - 1;
+  }
+  s.key = key;
+  s.value = value;
+  s.used = true;
+  s.deleted = false;
+  m.count = m.count + 1;
+  return true;
 }
 
 /// The value for `key`, plus whether it was present.
@@ -98,21 +98,21 @@ put :: (m: *Map(s64, s64), key: s64, value: s64) -> bool {
 /// Two return values (ADR-0008) rather than a sentinel, for the reason `List.get` gives: every `s64` is a
 /// legitimate value, so no value could mean "absent" without excluding it.
 get :: (m: *Map(s64, s64), key: s64) -> (s64, bool) {
-    if m.capacity == 0 {
-        return 0, false;
-    }
-    slot := find_slot(m, key);
-    s := m.slots + slot;
-    if s.used {
-        return s.value, true;
-    }
+  if m.capacity == 0 {
     return 0, false;
+  }
+  slot := find_slot(m, key);
+  s := m.slots + slot;
+  if s.used {
+    return s.value, true;
+  }
+  return 0, false;
 }
 
 /// Whether `key` is present.
 has :: (m: *Map(s64, s64), key: s64) -> bool {
-    _, present := get(m, key);
-    return present;
+  _, present := get(m, key);
+  return present;
 }
 
 /// Removes `key`, answering whether it was there.
@@ -121,24 +121,24 @@ has :: (m: *Map(s64, s64), key: s64) -> bool {
 /// through it to a key stored later. Tombstones are reclaimed by the next `grow`, which rehashes only live
 /// entries.
 remove :: (m: *Map(s64, s64), key: s64) -> bool {
-    if m.capacity == 0 {
-        return false;
-    }
-    slot := find_slot(m, key);
-    s := m.slots + slot;
-    if s.used {
-        s.used = false;
-        s.deleted = true;
-        m.count = m.count - 1;
-        m.tombstones = m.tombstones + 1;
-        return true;
-    }
+  if m.capacity == 0 {
     return false;
+  }
+  slot := find_slot(m, key);
+  s := m.slots + slot;
+  if s.used {
+    s.used = false;
+    s.deleted = true;
+    m.count = m.count - 1;
+    m.tombstones = m.tombstones + 1;
+    return true;
+  }
+  return false;
 }
 
 /// Live entries.
 size :: (m: *Map(s64, s64)) -> s64 {
-    return m.count;
+  return m.count;
 }
 
 /// Releases the storage and empties the map.
@@ -146,13 +146,13 @@ size :: (m: *Map(s64, s64)) -> s64 {
 /// **The routine a caller must not forget** — there are no destructors. Safe on a map that never grew (`slots`
 /// is null) and safe twice, because it resets `slots`.
 free_map :: (m: *Map(s64, s64)) {
-    if m.slots != null {
-        free(untyped(m.slots));
-    }
-    m.slots = null;
-    m.count = 0;
-    m.tombstones = 0;
-    m.capacity = 0;
+  if m.slots != null {
+    free(untyped(m.slots));
+  }
+  m.slots = null;
+  m.count = 0;
+  m.tombstones = 0;
+  m.capacity = 0;
 }
 
 #scope_module
@@ -165,10 +165,10 @@ free_map :: (m: *Map(s64, s64)) {
 /// hash table needs from the differential harness. Masked with `capacity - 1`, valid because the capacity is a
 /// power of two.
 bucket :: (m: *Map(s64, s64), key: s64) -> s64 {
-    h := cast(u64, key);
-    h = h *% 11400714819323198485;
-    h = h ^ (h >> 29);
-    return cast(s64, h % cast(u64, m.capacity));
+  h := cast(u64, key);
+  h = h *% 11400714819323198485;
+  h = h ^ (h >> 29);
+  return cast(s64, h % cast(u64, m.capacity));
 }
 
 /// The slot `key` belongs in: the first live slot holding it, or the first insertable slot on its probe path.
@@ -181,45 +181,45 @@ bucket :: (m: *Map(s64, s64), key: s64) -> s64 {
 ///
 /// Guaranteed to terminate because `put` keeps the probe load below 3/4, so an empty slot always exists.
 find_slot :: (m: *Map(s64, s64), key: s64) -> s64 {
-    start := bucket(m, key);
-    i := 0;
-    first_tombstone := -1;
-    result := -1;
-    while i < m.capacity {
-        idx := (start + i) % m.capacity;
-        s := m.slots + idx;
-        if s.used {
-            if s.key == key {
-                result = idx;
-                i = m.capacity;
-            } else {
-                i = i + 1;
-            }
-        } else {
-            if s.deleted {
-                // A tombstone: remember the first one, keep looking for a live match.
-                if first_tombstone < 0 {
-                    first_tombstone = idx;
-                }
-                i = i + 1;
-            } else {
-                // An empty slot: the key is not present. Insert here, or in an earlier tombstone if one was
-                // passed.
-                if first_tombstone >= 0 {
-                    result = first_tombstone;
-                } else {
-                    result = idx;
-                }
-                i = m.capacity;
-            }
+  start := bucket(m, key);
+  i := 0;
+  first_tombstone := -1;
+  result := -1;
+  while i < m.capacity {
+    idx := (start + i) % m.capacity;
+    s := m.slots + idx;
+    if s.used {
+      if s.key == key {
+        result = idx;
+        i = m.capacity;
+      } else {
+        i = i + 1;
+      }
+    } else {
+      if s.deleted {
+        // A tombstone: remember the first one, keep looking for a live match.
+        if first_tombstone < 0 {
+          first_tombstone = idx;
         }
+        i = i + 1;
+      } else {
+        // An empty slot: the key is not present. Insert here, or in an earlier tombstone if one was
+        // passed.
+        if first_tombstone >= 0 {
+          result = first_tombstone;
+        } else {
+          result = idx;
+        }
+        i = m.capacity;
+      }
     }
-    // The table was full of live-or-tombstone with no match and no empty slot — impossible while the load stays
-    // below 3/4, but if it happened, an earlier tombstone is the only insertable slot.
-    if result < 0 {
-        result = first_tombstone;
-    }
-    return result;
+  }
+  // The table was full of live-or-tombstone with no match and no empty slot — impossible while the load stays
+  // below 3/4, but if it happened, an earlier tombstone is the only insertable slot.
+  if result < 0 {
+    result = first_tombstone;
+  }
+  return result;
 }
 
 /// Doubles the capacity (or allocates the first), rehashing every live entry and dropping tombstones.
@@ -229,43 +229,43 @@ find_slot :: (m: *Map(s64, s64), key: s64) -> s64 {
 /// copy, because a slot's bucket depends on the capacity — so every live entry is re-inserted into the new
 /// array, which also leaves the tombstones behind.
 grow :: (m: *Map(s64, s64)) -> bool {
-    wanted := FIRST_CAPACITY;
-    if m.capacity > 0 {
-        wanted = m.capacity * 2;
-    }
-    raw := malloc(wanted * size_of(Slot(s64, s64)));
-    if raw == null {
-        return false;
-    }
-    fresh := typed(Slot(s64, s64), raw);
-    // Every slot starts empty: neither used nor a tombstone.
-    j := 0;
-    while j < wanted {
-        s := fresh + j;
-        s.used = false;
-        s.deleted = false;
-        j = j + 1;
-    }
+  wanted := FIRST_CAPACITY;
+  if m.capacity > 0 {
+    wanted = m.capacity * 2;
+  }
+  raw := malloc(wanted * size_of(Slot(s64, s64)));
+  if raw == null {
+    return false;
+  }
+  fresh := typed(Slot(s64, s64), raw);
+  // Every slot starts empty: neither used nor a tombstone.
+  j := 0;
+  while j < wanted {
+    s := fresh + j;
+    s.used = false;
+    s.deleted = false;
+    j = j + 1;
+  }
 
-    old := m.slots;
-    old_cap := m.capacity;
-    m.slots = fresh;
-    m.capacity = wanted;
-    m.count = 0;
-    m.tombstones = 0;
+  old := m.slots;
+  old_cap := m.capacity;
+  m.slots = fresh;
+  m.capacity = wanted;
+  m.count = 0;
+  m.tombstones = 0;
 
-    // Re-insert the live entries from the old array into the new one, which recomputes each bucket for the new
-    // capacity and drops the tombstones by simply not copying them.
-    if old != null {
-        k := 0;
-        while k < old_cap {
-            s := old + k;
-            if s.used {
-                put(m, s.key, s.value);
-            }
-            k = k + 1;
-        }
-        free(untyped(old));
+  // Re-insert the live entries from the old array into the new one, which recomputes each bucket for the new
+  // capacity and drops the tombstones by simply not copying them.
+  if old != null {
+    k := 0;
+    while k < old_cap {
+      s := old + k;
+      if s.used {
+        put(m, s.key, s.value);
+      }
+      k = k + 1;
     }
-    return true;
+    free(untyped(old));
+  }
+  return true;
 }

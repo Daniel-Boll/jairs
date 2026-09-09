@@ -3,6 +3,6 @@
 // operator is refused rather than given a meaning — a one-element view of an `s64` would be a
 // different feature with its own design questions.
 main :: () {
-    n := 7;
-    xs := n[];
+  n := 7;
+  xs := n[];
 }

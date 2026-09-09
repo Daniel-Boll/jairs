@@ -4,10 +4,10 @@
 // specific diagnostic whose help names `buf[]`, rather than the generic E0214 mismatch — a
 // reader arriving from Jai, where the conversion is implicit, hits this first.
 total :: (xs: []s64) -> s64 {
-    return xs.count;
+  return xs.count;
 }
 
 main :: () {
-    buf: [4]s64;
-    n := total(buf);
+  buf: [4]s64;
+  n := total(buf);
 }

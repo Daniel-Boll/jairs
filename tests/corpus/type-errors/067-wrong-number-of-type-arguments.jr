@@ -14,10 +14,10 @@
 
 // A parameterised struct taking one type argument.
 Box :: struct($T) {
-    value: T;
+  value: T;
 }
 
 supplies_too_many :: () {
-    // The refusal: `Box` wants one argument, two were given.
-    b: Box(s64, bool);
+  // The refusal: `Box` wants one argument, two were given.
+  b: Box(s64, bool);
 }

@@ -9,13 +9,13 @@
 #import "Palette2";
 
 main :: () {
-    // The qualified form, which used to crash.
-    a := Shade.LIGHT;
-    // The bare form, which already worked (ADR-0046 §3).
-    b: Shade = .LIGHT;
-    // A member crossing the boundary a second way: as a call argument.
-    n := level(.MID);
-    // A flags enum from another module, combined.
-    both: Style = .BOLD | .ITALIC;
-    m := cast(s64, both);
+  // The qualified form, which used to crash.
+  a := Shade.LIGHT;
+  // The bare form, which already worked (ADR-0046 §3).
+  b: Shade = .LIGHT;
+  // A member crossing the boundary a second way: as a call argument.
+  n := level(.MID);
+  // A flags enum from another module, combined.
+  both: Style = .BOLD | .ITALIC;
+  m := cast(s64, both);
 }

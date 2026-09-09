@@ -2,7 +2,7 @@
 //!
 //! Valid corpus files must lower with zero HIR lowering diagnostics.
 //! (Resolution diagnostics are not checked here because the corpus test
-//! cannot provide real import scopes — `print` and `print_int` come from
+//! cannot provide real import scopes — `print` and `format` come from
 //! `#import "Basic"` which is not available in the test environment.)
 //!
 //! Invalid corpus files must lower without panicking.

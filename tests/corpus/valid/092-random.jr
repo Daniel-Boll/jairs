@@ -36,73 +36,73 @@
 #import "Random";
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    r: Random;
-    seed(*r, 12345);
-    a := next(*r);
-    b := next(*r);
-    if a != b {
-        n = n + 1;
-    }
+  r: Random;
+  seed(*r, 12345);
+  a := next(*r);
+  b := next(*r);
+  if a != b {
+    n = n + 1;
+  }
 
-    // Reproducibility: the same seed, the same first value.
-    r2: Random;
-    seed(*r2, 12345);
-    if next(*r2) == a {
-        n = n + 2;
-    }
+  // Reproducibility: the same seed, the same first value.
+  r2: Random;
+  seed(*r2, 12345);
+  if next(*r2) == a {
+    n = n + 2;
+  }
 
-    // `below` stays in `[10, 20)`.
-    r3: Random;
-    seed(*r3, 999);
-    v := below(*r3, 10, 20);
-    if v >= 10 && v < 20 {
-        n = n + 4;
-    }
+  // `below` stays in `[10, 20)`.
+  r3: Random;
+  seed(*r3, 999);
+  v := below(*r3, 10, 20);
+  if v >= 10 && v < 20 {
+    n = n + 4;
+  }
 
-    // A second draw is also in range — the generator keeps working, not just its first call.
-    w := below(*r3, 10, 20);
-    if w >= 10 && w < 20 {
-        n = n + 8;
-    }
+  // A second draw is also in range — the generator keeps working, not just its first call.
+  w := below(*r3, 10, 20);
+  if w >= 10 && w < 20 {
+    n = n + 8;
+  }
 
-    // An empty range returns `low`.
-    if below(*r3, 5, 5) == 5 {
-        n = n + 16;
-    }
+  // An empty range returns `low`.
+  if below(*r3, 5, 5) == 5 {
+    n = n + 16;
+  }
 
-    // A zero seed still advances, because it is replaced by `GOLDEN`.
-    r4: Random;
-    seed(*r4, 0);
-    if next(*r4) != 0 {
-        n = n + 32;
-    }
+  // A zero seed still advances, because it is replaced by `GOLDEN`.
+  r4: Random;
+  seed(*r4, 0);
+  if next(*r4) != 0 {
+    n = n + 32;
+  }
 
-    // Different seeds diverge: the state is per-generator, not shared.
-    ra: Random;
-    rb: Random;
-    seed(*ra, 1);
-    seed(*rb, 2);
-    if next(*ra) != next(*rb) {
-        n = n + 64;
-    }
+  // Different seeds diverge: the state is per-generator, not shared.
+  ra: Random;
+  rb: Random;
+  seed(*ra, 1);
+  seed(*rb, 2);
+  if next(*ra) != next(*rb) {
+    n = n + 64;
+  }
 
-    // `coin` returns something both true and false across draws — checked by counting a short run rather than
-    // asserting a single flip, since a fair coin can repeat.
-    rc: Random;
-    seed(*rc, 424242);
-    trues := 0;
-    i := 0;
-    while i < 8 {
-        if coin(*rc) {
-            trues = trues + 1;
-        }
-        i = i + 1;
+  // `coin` returns something both true and false across draws — checked by counting a short run rather than
+  // asserting a single flip, since a fair coin can repeat.
+  rc: Random;
+  seed(*rc, 424242);
+  trues := 0;
+  i := 0;
+  while i < 8 {
+    if coin(*rc) {
+      trues = trues + 1;
     }
-    if trues > 0 && trues < 8 {
-        n = n + 128;
-    }
+    i = i + 1;
+  }
+  if trues > 0 && trues < 8 {
+    n = n + 128;
+  }
 
-    exit(n);
+  exit(n);
 }

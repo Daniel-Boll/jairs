@@ -39,9 +39,7 @@ main :: () {
     // with `#` standing for each task's name.
     #insert noted_insert("task", "total = total + #();");
 
-    print("done; checksum = ");
-    print_int(total);
-    print("\n");
+    print("done; checksum = %\n", total);
 }
 
 seed_admin :: () -> s64 @task {

@@ -22,10 +22,10 @@
 // whose type is a struct resolved later has no layout yet — so a "must not lower" rule would be
 // enforced sometimes, and a rule enforced sometimes is worse than a rule stated exactly.
 Misaligned :: struct {
-    value: s64 #align 12;
+  value: s64 #align 12;
 }
 
 main :: () {
-    m: Misaligned;
-    m.value = 1;
+  m: Misaligned;
+  m.value = 1;
 }

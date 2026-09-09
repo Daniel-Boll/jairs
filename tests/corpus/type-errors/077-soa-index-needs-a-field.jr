@@ -18,12 +18,12 @@
 // because that message is true and unhelpful to someone who has just written `#soa` and expected
 // exactly this to work: it names the two spellings that do.
 Entities :: struct #soa(4) {
-    x: s64;
-    hp: u8;
+  x: s64;
+  hp: u8;
 }
 
 main :: () {
-    e: Entities;
-    e.x[0] = 1;
-    one := e[0];
+  e: Entities;
+  e.x[0] = 1;
+  one := e[0];
 }

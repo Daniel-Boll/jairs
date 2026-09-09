@@ -11,12 +11,12 @@
 #import "Cycle_A";
 
 b_value :: () -> s64 {
-    return 1;
+  return 1;
 }
 
 /// The import must be *used*, or E0231 warns about it — and the import is the whole point of
 /// this fixture. A **call** across the cycle is the use, which ADR-0018 §5 made lowerable
 /// where an imported constant's *value* still is not.
 b_calls_a :: () -> s64 {
-    return a_calls_b();
+  return a_calls_b();
 }

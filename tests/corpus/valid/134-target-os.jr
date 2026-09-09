@@ -32,59 +32,59 @@ POINT_SIZE :: size_of(Point);
 VIA_RUN :: #run os_code();
 
 Point :: struct {
-    x: s64;
-    y: s64;
+  x: s64;
+  y: s64;
 }
 
 os_code :: () -> s64 {
-    if os() == Operating_System.MACOS {
-        return 1;
-    }
-    if os() == Operating_System.LINUX {
-        return 2;
-    }
-    return 4;
+  if os() == Operating_System.MACOS {
+    return 1;
+  }
+  if os() == Operating_System.LINUX {
+    return 2;
+  }
+  return 4;
 }
 
 // A `switch` over the enum, which is exhaustiveness-checked (ADR-0067). Its answer must agree with
 // `os_code`'s chain of `if`s — two spellings of one decision, so a compiler that folded `os()` to two
 // different values in two places would be caught.
 os_code_switched :: () -> s64 {
-    switch os() {
-        case .MACOS;
-            return 1;
-        case .LINUX;
-            return 2;
-        case .WINDOWS;
-            return 4;
-    }
-    return 0;
+  switch os() {
+    case .MACOS;
+      return 1;
+    case .LINUX;
+      return 2;
+    case .WINDOWS;
+      return 4;
+  }
+  return 0;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // Which host, as the low bits: 1, 2 or 4.
-    n = n + os_code();
+  // Which host, as the low bits: 1, 2 or 4.
+  n = n + os_code();
 
-    // The same answer through a `#run` at file scope, and through a `switch`.
-    if VIA_RUN == os_code() {
-        n = n + 8;
-    }
-    if os_code_switched() == os_code() {
-        n = n + 16;
-    }
-    // `os()` read straight into a file-scope constant, with no `#run` around it.
-    if HERE == os() {
-        n = n + 32;
-    }
-    // `size_of` in a file-scope constant: a builtin, and a struct.
-    if BUILTIN_SIZE == 8 {
-        n = n + 64;
-    }
-    if POINT_SIZE == 16 {
-        n = n + 128;
-    }
+  // The same answer through a `#run` at file scope, and through a `switch`.
+  if VIA_RUN == os_code() {
+    n = n + 8;
+  }
+  if os_code_switched() == os_code() {
+    n = n + 16;
+  }
+  // `os()` read straight into a file-scope constant, with no `#run` around it.
+  if HERE == os() {
+    n = n + 32;
+  }
+  // `size_of` in a file-scope constant: a builtin, and a struct.
+  if BUILTIN_SIZE == 8 {
+    n = n + 64;
+  }
+  if POINT_SIZE == 16 {
+    n = n + 128;
+  }
 
-    exit(n);
+  exit(n);
 }

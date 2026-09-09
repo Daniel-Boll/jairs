@@ -4,5 +4,5 @@
 // wrong value would pass silently. Its own code rather than E0242, because "delete the `xx`" is
 // a different instruction from "add a type".
 main :: () {
-    x: u8 = xx 200;
+  x: u8 = xx 200;
 }

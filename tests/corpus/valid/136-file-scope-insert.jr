@@ -47,36 +47,36 @@
 #insert "";
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    if GENERATED == 7 {
-        n = n + 1;
-    }
-    if NESTED == 5 {
-        n = n + 2;
-    }
+  if GENERATED == 7 {
+    n = n + 1;
+  }
+  if NESTED == 5 {
+    n = n + 2;
+  }
 
-    p: Pair;
-    p.a = 4;
-    p.b = 6;
-    if p.a + p.b == 10 {
-        n = n + 4;
-    }
+  p: Pair;
+  p.a = 4;
+  p.b = 6;
+  if p.a + p.b == 10 {
+    n = n + 4;
+  }
 
-    if triple(5) == 15 {
-        n = n + 8;
-    }
+  if triple(5) == 15 {
+    n = n + 8;
+  }
 
-    // Declared by an insert *below* this body in source order, which is what makes a generated
-    // declaration ordinary: file-scope items resolve in any order (ADR-0014).
-    if LATER == 11 {
-        n = n + 16;
-    }
-    if quadruple(3) == 12 {
-        n = n + 32;
-    }
+  // Declared by an insert *below* this body in source order, which is what makes a generated
+  // declaration ordinary: file-scope items resolve in any order (ADR-0014).
+  if LATER == 11 {
+    n = n + 16;
+  }
+  if quadruple(3) == 12 {
+    n = n + 32;
+  }
 
-    exit(n);
+  exit(n);
 }
 
 #insert "LATER :: 11;";

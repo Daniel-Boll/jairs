@@ -10,7 +10,7 @@ work actually proceeds, including the things that have cost real time.
 ## The rhythm
 
 Work happens in **waves**. One wave is one component of the slice, and it follows the
-same five steps every time:
+same six steps every time:
 
 1. **Put the design forks to the decider before writing code.** Not after. Every wave's
    forks turned out to be expensive to undo, and two of them were only *visible* as
@@ -23,9 +23,9 @@ same five steps every time:
    Add the index row in `docs/adr/README.md`.
 3. **Implement on a branch named `feat/<component>`.**
 4. **All six gates green** (below), then update `PLAN.md` §1.5 and rewrite §7 as the
-   *next* wave's handoff, and refresh the README's **"Status, honestly"** section — the
-   wave name and test count in its first line, plus any row of its four tables the wave
-   changed. That section is the project's only outward-facing honest inventory, and it
+   *next* wave's handoff, and refresh the README's **"Status, honestly"** section plus
+   any current-facing inventory the wave changed. That section is the project's only
+   outward-facing honest inventory, and it
    has rotted before: it went a whole wave claiming "a trap still reports no source
    location" after both engines had learned to report one. A capability table is easier
    to keep true than a paragraph, which is why it replaced one.
@@ -72,7 +72,9 @@ cd tree-sitter-jairs && npx --yes tree-sitter-cli@0.26.11 generate \
   && for q in highlights brackets indents outline; do \
        npx --yes tree-sitter-cli@0.26.11 query "../editors/zed/languages/jairs/$q.scm" \
          ../tests/corpus/valid/024-hello.jr > /dev/null || exit 1; \
-     done
+     done \
+  && git -C .. diff --exit-code -- tree-sitter-jairs/src/parser.c \
+       editors/zed/languages/jairs/highlights.scm
 ```
 
 The gate covers **both** editors' queries, and its `git status` drift check now covers two generated
@@ -1909,7 +1911,7 @@ the one-test feedback loop passed immediately with host WindowServer access, and
 unsandboxed gate then passed without a code change.
 
 **ADR-0219 reaches 1326 tests (1337 under gate 7) and holds at 291 corpus files.** Thirty-five
-example-bearing top-level chapters in the pinned `The_Way_to_Jai` guide now have one named
+example-bearing top-level groups in the pinned `The_Way_to_Jai` guide now have one named
 compatibility probe, plus one manifest-invariant test. They do **not** enter `tests/corpus`: a blocked
 secondary-source example is useful compatibility evidence and an invalid language-specification
 program, so combining the two would weaken one contract or lie about the other.
@@ -1920,8 +1922,8 @@ chapter directory to a fresh temporary directory before invoking the real `jr` b
 file writes, build artefacts and current-directory changes out of both the worktree and neighbouring
 tests. An uninitialized submodule still has the complete ordinary gate.
 
-**Chapter-complete is not example-complete.** The guide has 315 `.jai` files; this wave chooses one
-representative for each of 35 example-bearing chapters. Six selected sources check unchanged at the
+**Group-complete is not example-complete.** The guide has 315 `.jai` files; this wave chooses one
+representative for each of 35 example-bearing groups. Six selected sources check unchanged at the
 pinned revision, and every other representative is a port, an exact diagnostic blocker, or an
 intentional divergence. That is enough to catch a chapter silently losing its only executable claim
 and not enough to publish a compatibility percentage.
@@ -1963,6 +1965,28 @@ programs.
 spaces were initially preserved; ADR-0221 records the decider's reversal. Six existing assertions
 move with the default and no test is added. The decider explicitly waived rerunning every gate for
 this amendment, so focused formatter, manifest, CLI and LSP checks are the evidence attached to it.
+
+**ADR-0222 keeps 1333 tests (1344 under gate 7) and 291 corpus files.** The Way-to-Jai assessment
+now counts the whole reference separately from its executable sample: 42 numbered groups, 60
+Markdown chapters, one ASCII PDF and 315 examples versus 35 representative probes (6
+source-compatible, 18 ported, 9 blocked, 2 divergent). The next evidence wave closes chapters 02,
+32, 36 and 37 and deepens the broad one-probe groups before anybody turns that sample into a
+percentage.
+
+**The default split is closed rather than layered again.** `jr_fmt::Config::default()` moves to two,
+`jr_manifest::default_fmt_config()` delegates to it, and every parseable owned `.jr` source is
+reformatted. A 335-file whitespace diff is the cost of making “canonical” mean one thing; preserving
+four only for direct callers would leave the same trap under a less visible entry point.
+
+**Compatibility names are not teaching names.** Active examples, probes and tests use `print`, while
+`print_line` and `print_int` remain wrappers for downstream source. The old optimizer test was also
+decoupled from `Basic.print_line`: a miniature local sink now proves the write-only spill property,
+so a library rename cannot masquerade as an optimizer regression.
+
+**The audit found a gate describing work it no longer did.** CI's `corpus-drift` job still carried
+“skeleton” guards after both parsers existed, omitted Zed query generation/validation and never
+checked the two tracked generated artefacts for drift. It now runs the contributor gate
+unconditionally. A gate's prose is not evidence that its command contains the check.
 
 ## House style
 

@@ -38,7 +38,7 @@
 /// special — it is `#run` at the constant's declaration that makes it a build script, which means any
 /// procedure can be one.
 choose_name :: () -> string {
-    return "note_driven_app";
+  return "note_driven_app";
 }
 
 /// The declaration the driver reads. A `#run` here, so the name is *computed*; `BUILD_OUTPUT :: "app";` is the
@@ -46,8 +46,8 @@ choose_name :: () -> string {
 BUILD_OUTPUT :: #run choose_name();
 
 main :: () {
-    // The program is entirely unaffected by the constant above: it is compile-time data for the driver, so it
-    // contributes no code and this exits on its own arithmetic.
-    n := 8;
-    exit(n + 1);
+  // The program is entirely unaffected by the constant above: it is compile-time data for the driver, so it
+  // contributes no code and this exits on its own arithmetic.
+  n := 8;
+  exit(n + 1);
 }

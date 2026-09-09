@@ -33,39 +33,39 @@
 #import "Basic";
 
 Point :: struct {
-    x: s64;
-    y: s64;
+  x: s64;
+  y: s64;
 }
 
 Nested :: struct {
-    inner: Point;
-    scale: s64;
+  inner: Point;
+  scale: s64;
 }
 
 /// Returns a struct, so its value must be interned as an aggregate.
 make_point :: () -> Point {
-    p: Point;
-    p.x = 3;
-    p.y = 4;
-    return p;
+  p: Point;
+  p.x = 3;
+  p.y = 4;
+  return p;
 }
 
 /// Returns a fixed array — the shape whose refusal used to be reported as a struct's.
 make_sizes :: () -> [3]s64 {
-    a: [3]s64;
-    a[0] = 5;
-    a[1] = 6;
-    a[2] = 7;
-    return a;
+  a: [3]s64;
+  a[0] = 5;
+  a[1] = 6;
+  a[2] = 7;
+  return a;
 }
 
 /// A struct holding a struct: the element is itself an aggregate, and the representation recurses.
 make_nested :: () -> Nested {
-    n: Nested;
-    n.inner.x = 1;
-    n.inner.y = 2;
-    n.scale = 10;
-    return n;
+  n: Nested;
+  n.inner.x = 1;
+  n.inner.y = 2;
+  n.scale = 10;
+  return n;
 }
 
 POINT :: #run make_point();
@@ -73,21 +73,21 @@ SIZES :: #run make_sizes();
 NESTED :: #run make_nested();
 
 main :: () {
-    // A struct constant, read field by field. Reading a field of a constant is what needed the constant
-    // to have a *place*: a projection needs an address, and an operand has none.
-    total := POINT.x + POINT.y;
+  // A struct constant, read field by field. Reading a field of a constant is what needed the constant
+  // to have a *place*: a projection needs an address, and an operand has none.
+  total := POINT.x + POINT.y;
 
-    // An array constant, read by index.
-    total = total + SIZES[0] + SIZES[1] + SIZES[2];
+  // An array constant, read by index.
+  total = total + SIZES[0] + SIZES[1] + SIZES[2];
 
-    // A nested aggregate, two levels deep.
-    total = total + NESTED.inner.x + NESTED.inner.y + NESTED.scale;
+  // A nested aggregate, two levels deep.
+  total = total + NESTED.inner.x + NESTED.inner.y + NESTED.scale;
 
-    // And through a local copy, which exercises the whole aggregate rather than one field: if the
-    // constant's bytes were laid out differently by the two engines, this is where they would disagree.
-    p := POINT;
-    total = total + p.x + p.y;
+  // And through a local copy, which exercises the whole aggregate rather than one field: if the
+  // constant's bytes were laid out differently by the two engines, this is where they would disagree.
+  p := POINT;
+  total = total + p.x + p.y;
 
-    // 3+4 + 5+6+7 + 1+2+10 + 3+4 = 45.
-    exit(total);
+  // 3+4 + 5+6+7 + 1+2+10 + 3+4 = 45.
+  exit(total);
 }

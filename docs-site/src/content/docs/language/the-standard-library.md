@@ -25,10 +25,8 @@ The bottom of the library — imported by essentially every program. It reaches 
 
 ```jr
 print(fmt: string, args: ..Any) -> s64        // formats to stdout; % takes the next argument
-print_line(fmt: string, args: ..Any) -> s64   // print, with a newline appended
 print_error(fmt: string, args: ..Any) -> s64  // print, to standard error
 format(buffer: []u8, fmt: string, args: ..Any) -> s64  // formats into a caller buffer, truncating
-print_int(n: s64)           // writes n in decimal; print("%", n) underneath
 write(fd, buf, count)       // the #foreign syscall underneath print
 exit(status: s64)           // terminate the process
 malloc(size) -> *u8         // raw allocation; null on failure
@@ -36,6 +34,9 @@ free(p: *u8)                // release; free(null) is a no-op
 talloc(n) -> *u8            // temporary-storage bump arena
 reset_temporary_storage()   // rewind the arena
 ```
+
+Older programs may still call `print_line` and `print_int`; both are compatibility wrappers.
+New code uses `print("...\n")` and `print("%", n)`.
 
 `Basic` also declares the `Type_Info` and `Any` structs that [reflection](/language/reflection/)
 uses. Floats print: `print`'s `..Any` variadic renders any argument the formatter knows,

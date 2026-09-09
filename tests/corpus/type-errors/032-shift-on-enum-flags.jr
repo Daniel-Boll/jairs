@@ -4,10 +4,10 @@
 // ordering. The note says so rather than claiming bitwise operators need an integer, which
 // would be misleading for a type that accepts the other four.
 Perm :: enum_flags {
-    READ;
-    WRITE;
+  READ;
+  WRITE;
 }
 
 main :: () {
-    p := Perm.READ << 1;
+  p := Perm.READ << 1;
 }

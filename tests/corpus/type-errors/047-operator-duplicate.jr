@@ -5,15 +5,15 @@
 // to a single synthetic name — so the real key `(operator, lhs, rhs)` is checked in sema, which is
 // the only place that key exists.
 Vec2 :: struct {
-    x: s64;
+  x: s64;
 }
 
 operator + :: (a: Vec2, b: Vec2) -> s64 {
-    return a.x;
+  return a.x;
 }
 
 operator + :: (a: Vec2, b: Vec2) -> s64 {
-    return b.x;
+  return b.x;
 }
 
 main :: () {

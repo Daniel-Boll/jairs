@@ -28,59 +28,59 @@
 N :: 32;
 
 main :: () {
-    a: [N]s64;
-    b: [N]s64;
-    // Reversed: 32, 31, … 1. Insertion sort's worst case, and heapsort's ordinary one.
-    i := 0;
-    while i < N {
-        a[i] = N - i;
-        b[i] = N - i;
-        i = i + 1;
-    }
+  a: [N]s64;
+  b: [N]s64;
+  // Reversed: 32, 31, … 1. Insertion sort's worst case, and heapsort's ordinary one.
+  i := 0;
+  while i < N {
+    a[i] = N - i;
+    b[i] = N - i;
+    i = i + 1;
+  }
 
-    insertion_comparisons := 0;
-    heap_comparisons := 0;
-    sort_ints_counting(a[], *insertion_comparisons);
-    heap_sort_ints_counting(b[], *heap_comparisons);
+  insertion_comparisons := 0;
+  heap_comparisons := 0;
+  sort_ints_counting(a[], *insertion_comparisons);
+  heap_sort_ints_counting(b[], *heap_comparisons);
 
-    total := 0;
-    if ints_sorted(a[]) {
-        if ints_sorted(b[]) {
-            total = total + 1;
-        }
+  total := 0;
+  if ints_sorted(a[]) {
+    if ints_sorted(b[]) {
+      total = total + 1;
     }
-    // The whole point of the wave: fewer comparisons, on the input where the difference is real.
-    if heap_comparisons < insertion_comparisons {
-        total = total + 2;
-    }
-    // Both counts are bounded, so a sort that stopped comparing — or one that never ran — fails
-    // rather than passing the inequality trivially.
-    if insertion_comparisons > 400 {
-        total = total + 4;
-    }
-    if heap_comparisons < 300 {
-        total = total + 8;
-    }
+  }
+  // The whole point of the wave: fewer comparisons, on the input where the difference is real.
+  if heap_comparisons < insertion_comparisons {
+    total = total + 2;
+  }
+  // Both counts are bounded, so a sort that stopped comparing — or one that never ran — fails
+  // rather than passing the inequality trivially.
+  if insertion_comparisons > 400 {
+    total = total + 4;
+  }
+  if heap_comparisons < 300 {
+    total = total + 8;
+  }
 
-    // A stable and an unstable sort agree on distinct keys, which is what makes this comparison
-    // fair: the difference between them is the *count*, not the answer.
-    same := true;
-    sum := 0;
-    j := 0;
-    while j < N {
-        if a[j] != b[j] {
-            same = false;
-        }
-        sum = sum + b[j];
-        j = j + 1;
+  // A stable and an unstable sort agree on distinct keys, which is what makes this comparison
+  // fair: the difference between them is the *count*, not the answer.
+  same := true;
+  sum := 0;
+  j := 0;
+  while j < N {
+    if a[j] != b[j] {
+      same = false;
     }
-    if same {
-        total = total + 16;
-    }
-    // 1 + 2 + … + 32 = 528, so a lost or duplicated element changes it.
-    if sum == 528 {
-        total = total + 32;
-    }
+    sum = sum + b[j];
+    j = j + 1;
+  }
+  if same {
+    total = total + 16;
+  }
+  // 1 + 2 + … + 32 = 528, so a lost or duplicated element changes it.
+  if sum == 528 {
+    total = total + 32;
+  }
 
-    exit(total);
+  exit(total);
 }

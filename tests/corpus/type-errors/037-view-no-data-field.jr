@@ -13,10 +13,10 @@
 // what `List.elements` hands to `Sort`. So `.data` stays absent because nothing needs it, which is a better
 // reason than the one it replaced.
 first :: (xs: []u8) -> *u8 {
-    return xs.data;
+  return xs.data;
 }
 
 main :: () {
-    buf: [3]u8;
-    p := first(buf[]);
+  buf: [3]u8;
+  p := first(buf[]);
 }

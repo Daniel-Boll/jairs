@@ -22,71 +22,71 @@
 
 /// Infers `T` through a pointer and reads the pointee.
 deref :: (p: *$T) -> T {
-    return p.*;
+  return p.*;
 }
 
 /// Infers `T` through a view; the element type is where a wrong peel would show.
 sum_view :: (items: []$T) -> s64 {
-    return items.count;
+  return items.count;
 }
 
 /// `*$T` in two parameters — one variable, two positions. Returns the first pointer's value.
 first_of :: (a: *$T, b: *$T) -> T {
-    return a.*;
+  return a.*;
 }
 
 /// A struct so a pointer polymorph can peel to an aggregate.
 Point :: struct {
-    x: s64;
-    y: s64;
+  x: s64;
+  y: s64;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // `*$T` ↔ `*s64`, binding T = s64.
-    v := 42;
-    if deref(*v) == 42 {
-        n = n + 1;
-    }
+  // `*$T` ↔ `*s64`, binding T = s64.
+  v := 42;
+  if deref(*v) == 42 {
+    n = n + 1;
+  }
 
-    // `[]$T` ↔ `[]s64`, binding T = s64.
-    buf: [3]s64;
-    if sum_view(buf[]) == 3 {
-        n = n + 2;
-    }
+  // `[]$T` ↔ `[]s64`, binding T = s64.
+  buf: [3]s64;
+  if sum_view(buf[]) == 3 {
+    n = n + 2;
+  }
 
-    // `*$T` peeling to a **struct** pointee.
-    p: Point;
-    p.x = 4;
-    p.y = 4;
-    q := deref(*p);
-    if q.x + q.y == 8 {
-        n = n + 4;
-    }
+  // `*$T` peeling to a **struct** pointee.
+  p: Point;
+  p.x = 4;
+  p.y = 4;
+  q := deref(*p);
+  if q.x + q.y == 8 {
+    n = n + 4;
+  }
 
-    // `*$T` in two positions, one variable: both bind s64, and the second is checked against the first.
-    a := 16;
-    b := 99;
-    if first_of(*a, *b) == 16 {
-        n = n + 8;
-    }
+  // `*$T` in two positions, one variable: both bind s64, and the second is checked against the first.
+  a := 16;
+  b := 99;
+  if first_of(*a, *b) == 16 {
+    n = n + 8;
+  }
 
-    // The view polymorph again at a different element type — a distinct instantiation.
-    small: [2]u8;
-    if sum_view(small[]) == 2 {
-        n = n + 16;
-    }
+  // The view polymorph again at a different element type — a distinct instantiation.
+  small: [2]u8;
+  if sum_view(small[]) == 2 {
+    n = n + 16;
+  }
 
-    // `deref` at s64 again — reuses the s64 instantiation (ADR-0005 structural dedup).
-    w := 32;
-    if deref(*w) == 32 {
-        n = n + 32;
-    }
+  // `deref` at s64 again — reuses the s64 instantiation (ADR-0005 structural dedup).
+  w := 32;
+  if deref(*w) == 32 {
+    n = n + 32;
+  }
 
-    // Every assertion: 63.
-    if n == 63 {
-        exit(0);
-    }
-    exit(1);
+  // Every assertion: 63.
+  if n == 63 {
+    exit(0);
+  }
+  exit(1);
 }

@@ -17,49 +17,49 @@
 Sock :: #import "Socket";
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // macOS: `sin_len` is the structure's size and `sin_family` is one byte after it.
-    mac: Sock.Sockaddr_In;
-    Sock.leading_bytes_for(*mac, Operating_System.MACOS);
-    if mac.length == cast(u8, 16) && mac.family == cast(u8, 2) {
-        n = n + 1;
-    }
+  // macOS: `sin_len` is the structure's size and `sin_family` is one byte after it.
+  mac: Sock.Sockaddr_In;
+  Sock.leading_bytes_for(*mac, Operating_System.MACOS);
+  if mac.length == cast(u8, 16) && mac.family == cast(u8, 2) {
+    n = n + 1;
+  }
 
-    // Linux: one little-endian `uint16_t sin_family`, so `AF_INET`'s low byte lands in the first byte
-    // and the second is zero. The byte BSD uses for `sin_len` does not exist there.
-    lin: Sock.Sockaddr_In;
-    Sock.leading_bytes_for(*lin, Operating_System.LINUX);
-    if lin.length == cast(u8, 2) && lin.family == cast(u8, 0) {
-        n = n + 2;
-    }
+  // Linux: one little-endian `uint16_t sin_family`, so `AF_INET`'s low byte lands in the first byte
+  // and the second is zero. The byte BSD uses for `sin_len` does not exist there.
+  lin: Sock.Sockaddr_In;
+  Sock.leading_bytes_for(*lin, Operating_System.LINUX);
+  if lin.length == cast(u8, 2) && lin.family == cast(u8, 0) {
+    n = n + 2;
+  }
 
-    // The two must actually differ, which is what catches the mistake a reader would really make:
-    // editing one branch and leaving the other aliased to it.
-    if mac.length != lin.length {
-        n = n + 4;
-    }
+  // The two must actually differ, which is what catches the mistake a reader would really make:
+  // editing one branch and leaving the other aliased to it.
+  if mac.length != lin.length {
+    n = n + 4;
+  }
 
-    // `SOL_SOCKET` differs, and both values are named rather than one being the host's and the other
-    // unreachable text.
-    if Sock.sol_socket_for(Operating_System.MACOS) == 65535 {
-        n = n + 8;
-    }
-    if Sock.sol_socket_for(Operating_System.LINUX) == 1 {
-        n = n + 16;
-    }
+  // `SOL_SOCKET` differs, and both values are named rather than one being the host's and the other
+  // unreachable text.
+  if Sock.sol_socket_for(Operating_System.MACOS) == 65535 {
+    n = n + 8;
+  }
+  if Sock.sol_socket_for(Operating_System.LINUX) == 1 {
+    n = n + 16;
+  }
 
-    // **The host's own `SOL_SOCKET` is asserted in Rust, not here** — same reason as `137`, and found the
-    // same way. `Sock.SOL_SOCKET` is `#run sol_socket_for(os())`, so it folds to `65535` on macOS and `1`
-    // on Linux, and `os()` folds beside it; both land in this body's MIR and the snapshot is one file. See
-    // `crates/jr-cli/tests/integration.rs` and ADR-0206 §8.
+  // **The host's own `SOL_SOCKET` is asserted in Rust, not here** — same reason as `137`, and found the
+  // same way. `Sock.SOL_SOCKET` is `#run sol_socket_for(os())`, so it folds to `65535` on macOS and `1`
+  // on Linux, and `os()` folds beside it; both land in this body's MIR and the snapshot is one file. See
+  // `crates/jr-cli/tests/integration.rs` and ADR-0206 §8.
 
-    // **The size assertion this program wanted is not writable.** `size_of(Sock.Sockaddr_In)` is
-    // E0261, "`size_of` needs a type": a **qualified** name is accepted in a type *annotation*
-    // (ADR-0179 §5) and not as an intrinsic's type argument. Found by writing this test, recorded in
-    // ADR-0205 §6 as owed, and left out rather than worked around with an unqualified import — the
-    // point of this file is the two branches above, and an import style chosen to dodge a compiler
-    // gap would hide the gap.
+  // **The size assertion this program wanted is not writable.** `size_of(Sock.Sockaddr_In)` is
+  // E0261, "`size_of` needs a type": a **qualified** name is accepted in a type *annotation*
+  // (ADR-0179 §5) and not as an intrinsic's type argument. Found by writing this test, recorded in
+  // ADR-0205 §6 as owed, and left out rather than worked around with an unqualified import — the
+  // point of this file is the two branches above, and an import style chosen to dodge a compiler
+  // gap would hide the gap.
 
-    exit(n);
+  exit(n);
 }
