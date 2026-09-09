@@ -1,31 +1,21 @@
-//! The String module: byte-wise operations on a `string`, none of which allocate.
-//!
-//! Written in Jairs, like `Basic`, because PLAN.md decision #5 puts the standard library in the language
-//! rather than in the compiler. This is the second module the project has, and the first that is not
-//! `Basic` — so it is also the first real exercise of importing two modules at once (ADR-0014's flat merge).
-//!
-//! # Why this module exists, and why it is W7's first
+//! Byte-wise operations on a counted `string`, with explicit borrowing and ownership.
 //!
 //! ADR-0099 §4 refused `==` on two strings: a `string` is `{data: *u8, count: s64}` (ADR-0004), so "the same
 //! storage" and "the same contents" are both plausible readings, and picking one silently would make the
-//! other a bug that looks like working code. That refusal's own reasoning named the fix — comparing contents
-//! needs a byte loop — and a byte loop is a *library*'s job, not an operator's. So the previous wave named
-//! this module as the answer to a refusal it raised, which is the clearest possible reason to write it first.
+//! other a bug that looks like working code. Comparing contents needs a byte loop, and that loop belongs in
+//! this library rather than in the language's only implicitly-looping operator.
 //!
-//! An `==` that looped would also be the only implicitly-looping operator in the language, which is a much
-//! larger thing to introduce than a procedure called `equal`.
+//! # Ownership is part of every operation
 //!
-//! # Why nothing here allocates
+//! Borrowed views — `borrow`, `slice`, trims, split halves, parse remainders and `to_string` — allocate
+//! nothing and remain valid only while their source bytes do. Owned results — `copy_string`, `concat`,
+//! `substring`, case copies, `join` and `replace` — allocate through `context.allocator`; the caller releases
+//! them with `free_string`. `adopt` is the explicit transfer from an existing allocator-owned buffer.
 //!
-//! `concat`, `substring`, `to_upper_copy` and `split` are all deliberately absent. Each needs somewhere to put its
-//! result, which means an allocator argument and a decision about who frees it. `context.allocator` exists
-//! (ADR-0057) and so does temporary storage (ADR-0065), so the mechanism is not missing — but *choosing*
-//! between "always the context allocator", "an explicit parameter" and "always temporary" has real
-//! consequences for every caller, and it deserves its own decision rather than being settled in passing by
-//! whichever one this file happened to use.
-//!
-//! A non-allocating module is a complete and useful thing on its own. Shipping it first means the allocation
-//! decision gets made with a working baseline to compare against.
+//! A fresh context has a default allocator (ADR-0216). A caller who wants arena behavior replaces
+//! `context.allocator` and `context.allocator_free` once and gets that policy throughout the module. Failed
+//! allocations return an empty/null result rather than trapping; invalid strict operations such as `slice`
+//! are program errors and assert.
 //!
 //! # Why `byte_at` exists at all
 //!
@@ -34,30 +24,12 @@
 //! otherwise ordinary code. `byte_at` is that expression with a name, and it is honest about being a
 //! workaround: when pointer indexing arrives, this becomes a one-line wrapper rather than the only way.
 //!
-//! # What is checked, and where
+//! # Compatibility evidence
 //!
-//! `tests/corpus/valid/084-string.jr` exercises every procedure here and exits on a value that depends on all
-//! of them, so both engines must agree on each answer. That matters more than usual for this module: a
-//! comparison routine that returned a constant would pass any test that only asked "did it run".
-//!
-//! # The allocating half, and where its memory comes from
-//!
-//! `concat`, `substring`, `to_upper_copy` and `to_lower_copy` each produce a **new** string, so each allocates — through
-//! `context.allocator` (ADR-0062), and the **caller frees** with `free_string`. That is the convention ADR-0103
-//! §3 deferred, chosen in ADR-0111: not `talloc`, because a result that silently expires on an unrelated
-//! `reset_temporary_storage()` is a trap; not an explicit allocator parameter, because the context exists to
-//! carry exactly this (ADR-0001) and a caller who wants arena behaviour installs an arena and gets it for every
-//! routine at once.
-//!
-//! **A fresh context has a default allocator** (ADR-0216), so ordinary callers need no setup. A caller who
-//! wants arena behaviour still replaces `context.allocator` and `context.allocator_free` once and gets that
-//! policy for every routine. A failed allocation returns `""`, because ADR-0058 §4's line is that a trap is
-//! for a *program* error and running out of memory is not one.
-//!
-//! **And it needs no `#import "Basic"`.** The allocator comes from `context`, which is a *language* facility
-//! (ADR-0057) rather than a library name — so this module reaches its allocation through a hidden parameter every
-//! procedure already has, and imports nothing at all. A `#import "Basic"` here was an unused import (E0231), and
-//! the warning was right.
+//! ADR-0225 adds the non-overload spellings demonstrated by the pinned Way-to-Jai guide. Exact byte/string
+//! overload families remain queued for general procedure overloading; their explicit Jairs names stay public
+//! meanwhile. The module imports no other Jairs module: allocation is a language-context facility, and its
+//! one foreign declaration is libc's `strtod`.
 
 /// The byte at `index`, or `-1` when the index is out of range.
 ///
@@ -139,6 +111,11 @@ compare :: (a: string, b: string) -> s64 {
   return 0;
 }
 
+/// Compatibility spelling used as a sorting callback in the pinned guide.
+compare_strings :: (a: string, b: string) -> s64 {
+  return compare(a, b);
+}
+
 /// Whether `s` begins with `prefix`.
 ///
 /// An empty prefix is `true`, which is the reading every other language takes and the one that makes
@@ -155,6 +132,11 @@ starts_with :: (s: string, prefix: string) -> bool {
     i = i + 1;
   }
   return true;
+}
+
+/// Jai's documented spelling for [`starts_with`].
+begins_with :: (s: string, prefix: string) -> bool {
+  return starts_with(s, prefix);
 }
 
 /// Whether `s` ends with `suffix`.
@@ -212,6 +194,13 @@ find :: (haystack: string, needle: string) -> s64 {
     start = start + 1;
   }
   return -1;
+}
+
+/// Jai's substring-search spelling for [`find`].
+///
+/// The byte overload remains [`find_byte`] until general procedure overloading lands.
+find_index_from_left :: (s: string, substring: string) -> s64 {
+  return find(s, substring);
 }
 
 /// Whether `needle` occurs anywhere in `haystack`.
@@ -278,6 +267,14 @@ substring :: (s: string, start: s64, count: s64) -> string {
   }
   copy_bytes(buf, s.data + from, 0, take);
   return make_string(buf, take);
+}
+
+/// An owned mutable copy of `s`, allocated through `context.allocator`.
+///
+/// The caller releases the result with [`free_string`]. This delegates to [`substring`] so allocation
+/// failure and empty-result behavior have one implementation.
+copy_string :: (s: string) -> string {
+  return substring(s, 0, s.count);
 }
 
 /// A copy of `s` with ASCII lowercase letters raised to uppercase; other bytes unchanged.
@@ -404,6 +401,19 @@ borrow :: (data: *u8, count: s64) -> string {
   return make_string(data, count);
 }
 
+/// The `count` bytes of `s` starting at `start`, as a borrowed view.
+///
+/// Unlike [`substring`], this is strict and allocates nothing. Invalid negative, overflowing or
+/// out-of-range bounds fail through a source-located assertion. The subtraction form keeps the check itself
+/// from overflowing.
+slice :: (s: string, start: s64, count: s64) -> string {
+  assert(
+    start >= 0 && count >= 0 && start <= s.count && count <= s.count - start,
+    "string slice is out of bounds",
+  );
+  return borrow(s.data + start, count);
+}
+
 // ---------------------------------------------------------------------------
 // Trimming (ADR-0197 §7)
 // ---------------------------------------------------------------------------
@@ -490,6 +500,11 @@ contains_byte :: (s: string, b: u8) -> bool {
   return find_byte(s, b) >= 0;
 }
 
+/// Whether byte `c` appears in `chars`, using the guide's argument order.
+is_any :: (c: u8, chars: string) -> bool {
+  return contains_byte(chars, c);
+}
+
 /// The index of the first `b` in `s`, or `-1`.
 find_byte :: (s: string, b: u8) -> s64 {
   i := 0;
@@ -534,6 +549,13 @@ find_from_right :: (s: string, needle: string) -> s64 {
     start = start - 1;
   }
   return -1;
+}
+
+/// Jai's right-to-left substring-search spelling for [`find_from_right`].
+///
+/// The byte overload remains [`find_byte_from_right`] until general procedure overloading lands.
+find_index_from_right :: (s: string, substring: string) -> s64 {
+  return find_from_right(s, substring);
 }
 
 /// The index of the first byte of `s` that appears in `chars`, or `-1`.
@@ -741,6 +763,11 @@ replace_chars_in_place :: (s: string, chars: string, replacement: u8) {
   }
 }
 
+/// Jai's public spelling for the in-place operation [`replace_chars_in_place`].
+replace_chars :: (s: string, chars: string, replacement: u8) {
+  replace_chars_in_place(s, chars, replacement);
+}
+
 /// Raises ASCII lowercase letters in `s` to uppercase, **in place**.
 ///
 /// The in-place pair of [`to_upper`], which copies. Both exist because both uses are real: a parser
@@ -901,6 +928,25 @@ to_integer :: (s: string) -> (s64, bool, string) {
   return value, true, borrow(s.data + at, s.count - at);
 }
 
+/// Converts a decimal integer prefix, discarding the remainder.
+///
+/// This is the guide's two-result convenience spelling. Call [`to_integer`] when the remainder matters.
+string_to_int :: (s: string) -> (s64, bool) {
+  value, success, _ := to_integer(s);
+  return value, success;
+}
+
+/// Parses an integer prefix and advances the pointed-to string on success.
+///
+/// An all-digit input becomes an empty borrowed view. Failure leaves the input unchanged.
+parse_int :: (s: *string) -> (s64, bool) {
+  value, success, rest := to_integer(s.*);
+  if success {
+    s.* = rest;
+  }
+  return value, success;
+}
+
 /// Whether `s` is exactly `"true"` or `"false"`, and which.
 ///
 /// Returns the value and whether it parsed. Case-sensitive, because a configuration format that accepts
@@ -915,7 +961,7 @@ to_bool :: (s: string) -> (bool, bool) {
   return false, false;
 }
 
-/// Reads a decimal floating-point number from the front of `s` (ADR-0198 §1).
+/// Reads a decimal floating-point number from the front of `s` (ADR-0198 §1, amended by ADR-0225).
 ///
 /// Returns the value, whether anything was read, and the rest of `s` — the same three-value shape as
 /// [`to_integer`], for the same reason: a caller in a loop needs to know where the number ended.
@@ -945,7 +991,7 @@ to_bool :: (s: string) -> (bool, bool) {
 ///
 /// `talloc` would be the tidier scratch and is deliberately not used: it lives in `modules/Basic`, and this
 /// module imports nothing (see the module docs). One parse is not worth that dependency.
-string_to_float :: (s: string) -> (float64, bool, string) {
+to_float :: (s: string) -> (float64, bool, string) {
   n := float_extent(s);
   if n == 0 {
     return 0.0, false, s;
@@ -964,6 +1010,14 @@ string_to_float :: (s: string) -> (float64, bool, string) {
   value := strtod(scratch, *ignored);
   context.allocator_free(scratch);
   return value, true, borrow(s.data + n, s.count - n);
+}
+
+/// Converts a decimal floating-point prefix, discarding the remainder.
+///
+/// The two-result shape matches the pinned guide. Call [`to_float`] when the remainder matters.
+string_to_float :: (s: string) -> (float64, bool) {
+  value, success, _ := to_float(s);
+  return value, success;
 }
 
 // ---------------------------------------------------------------------------
@@ -1016,9 +1070,10 @@ to_string :: (str: *u8) -> string {
 /// The failure looks like a *divergence* at first and is not: both engines agree, because both are reading
 /// past the same string. That is worth knowing, because it means the differential harness cannot catch it.
 ///
-/// **Allocates**, from `context.allocator`, and the caller frees with [`free_string`] — the same obligation
-/// as [`concat`] and [`substring`], because a terminated copy is a copy. Borrowing is impossible here by
-/// construction: there is nowhere to put the NUL that is not someone else's byte.
+/// **Allocates**, from `context.allocator`. Release the returned pointer with
+/// `context.allocator_free(pointer)`, or wrap it with [`adopt`] using the original byte count and then call
+/// [`free_string`]. Borrowing is impossible here by construction: there is nowhere to put the NUL that is
+/// not someone else's byte.
 ///
 /// Returns null if the allocation fails, which is what C already expects from a failed `strdup`.
 to_c_string :: (s: string) -> *u8 {
@@ -1107,7 +1162,7 @@ QUESTION :: 63;
 /// libc `strtod(3)`, for the exact decimal-to-`float64` conversion (ADR-0198 §1).
 ///
 /// Reachable because ADR-0114 let a float cross the `#foreign` boundary. The `end` out-parameter is ignored:
-/// [`string_to_float`] has already found the number's extent with its own scanner, which has to happen
+/// [`to_float`] has already found the number's extent with its own scanner, which has to happen
 /// anyway because `strtod`'s grammar is wider than the one this accepts.
 ///
 /// **This is the module's only foreign declaration**, and the module docs' claim that it "imports nothing at
@@ -1137,7 +1192,7 @@ region_equal_nocase :: (s: string, at: s64, needle: string) -> bool {
 /// How many bytes at the front of `s` form a decimal floating-point number, or 0 if none do.
 ///
 /// The grammar is spelled out here rather than delegated to `strtod`, which is the whole point of the split
-/// (see [`string_to_float`]): an optional sign, digits, an optional `.` with digits, an optional exponent.
+/// (see [`to_float`]): an optional sign, digits, an optional `.` with digits, an optional exponent.
 /// At least one digit is required **before** the exponent, so `"e5"` and `"."` read nothing.
 float_extent :: (s: string) -> s64 {
   i := 0;

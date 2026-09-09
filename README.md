@@ -57,7 +57,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0224.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0225.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -103,6 +103,12 @@ values, and converts to independently owned text. Formatted builder output share
 supports `%1`/`%2` argument selection, and is not capped by `format`'s 4096-byte staging buffer.
 The compatibility source used to plan it is pinned locally under `references/The_Way_to_Jai`; that
 submodule is research-only and normal builds do not need it.
+
+The same pinned guide now backs a public non-overload `String` layer. `slice` is a strict borrowed
+view, `copy_string` is an owned allocator-backed copy, the demonstrated compatibility names delegate
+to existing algorithms, and the two-result integer/float conversions coexist with remainder-aware
+parsers. `parse_int(*string)` consumes the parsed prefix. Exact byte/string overload families still
+wait for general procedure overloading rather than being approximated with more ad-hoc names.
 
 Compatibility claims now have an executable baseline rather than only a prose matrix. One strict
 manifest covers all **35 example-bearing guide groups**, and each entry runs a repository-owned
@@ -176,8 +182,9 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1358** workspace tests (**1371** under gate 7), with all six ordinary gates and gate 7 green for ADR-0224.
-- **293** `.jr` corpus files, **224** accepted ADRs, **25** standard library
+- **1359** workspace tests (**1372** under gate 7), with all six ordinary gates green for ADR-0225.
+  Gate 7 was not required for this module-only wave.
+- **294** `.jr` corpus files, **225** accepted ADRs, **25** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative

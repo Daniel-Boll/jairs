@@ -1334,6 +1334,52 @@ fn assert_is_a_located_trap_with_a_static_message_and_does_not_run_defers() {
     assert_eq!(native.status, 4);
 }
 
+/// `String.slice` is the strict borrowed-view operation: every invalid extent must fail through
+/// the same assertion at the inlined call site in the VM and native engine (ADR-0225 §1).
+#[test]
+fn string_slice_rejects_every_invalid_extent_identically() {
+    for (name, start, count) in [
+        ("negative-start", "-1", "1"),
+        ("negative-count", "0", "-1"),
+        ("start-past-end", "4", "0"),
+        ("end-past-end", "2", "2"),
+        ("addition-would-overflow", "2", "9223372036854775807"),
+    ] {
+        let dir = TempDir::new().expect("a temporary directory");
+        let path = dir.path().join(format!("{name}.jr"));
+        let source = format!(
+            "#import \"Basic\";\n\
+             S :: #import \"String\";\n\
+             \n\
+             main :: () {{\n\
+             \x20   part := S.slice(\"abc\", {start}, {count});\n\
+             \x20   if part.count == 99 {{ exit(1); }}\n\
+             }}\n"
+        );
+        std::fs::write(&path, source).expect("a writable temporary directory");
+
+        let vm = run_in_vm(&path);
+        let native = run_natively(&path, dir.path());
+
+        assert_eq!(
+            vm, native,
+            "{name}: the engines disagree about the slice trap"
+        );
+        assert_eq!(vm.status, 4, "{name}: an invalid slice did not trap");
+        assert!(
+            vm.stderr
+                .contains("assertion failed: string slice is out of bounds"),
+            "{name}: the slice trap lost its reason: {}",
+            vm.stderr
+        );
+        assert!(
+            vm.stderr.contains(&format!("{}:5:13", path.display())),
+            "{name}: the slice trap lost its caller's source: {}",
+            vm.stderr
+        );
+    }
+}
+
 #[test]
 fn a_division_by_zero_names_its_own_line() {
     // A second operation and a second line, so that the location is demonstrably

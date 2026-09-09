@@ -1,4 +1,4 @@
-// **The `String` module** (ADR-0103): byte-wise operations on a `string`, none of which allocate. W7's first
+// **The `String` module** (ADR-0103): byte-wise operations on a `string`. W7's first
 // sub-wave, and the first module this project has other than `Basic` — so also the first program to import
 // **two** modules, which exercises ADR-0014's flat merge with more than one in play.
 //

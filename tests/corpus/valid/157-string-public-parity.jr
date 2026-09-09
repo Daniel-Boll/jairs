@@ -1,0 +1,82 @@
+// Publicly evidenced non-overload String spellings (ADR-0225).
+//
+// The pointer checks distinguish borrowed views from copies. The consuming parse checks that
+// `parse_int(*string)` advances the caller's view rather than merely returning the same answer as
+// `to_integer`.
+
+#import "Basic";
+S :: #import "String";
+
+main :: () {
+  source := "London";
+  part := S.slice(source, 2, 3);
+  if !S.equal(part, "ndo") || part.data != source.data + 2 {
+    exit(1);
+  }
+
+  empty_tail := S.slice(source, source.count, 0);
+  if empty_tail.count != 0 || empty_tail.data != source.data + source.count {
+    exit(1);
+  }
+
+  copied := S.copy_string(part);
+  if copied.data == part.data || !S.equal(copied, part) {
+    exit(1);
+  }
+  S.replace_chars(copied, "n", #char "N");
+  if !S.equal(copied, "Ndo") || !S.equal(part, "ndo") {
+    exit(1);
+  }
+
+  if !S.begins_with("Antwerp", "Ant") || S.compare_strings("Antwerp", "London") >= 0 {
+    exit(1);
+  }
+  if S.find_index_from_left("London", "on") != 1 {
+    exit(1);
+  }
+  if S.find_index_from_right("London", "on") != 4 {
+    exit(1);
+  }
+  if !S.is_any(#char "l", "Hello!") {
+    exit(1);
+  }
+
+  integer, integer_ok := S.string_to_int("42");
+  _, missing_integer := S.string_to_int("no");
+  if !integer_ok || integer != 42 || missing_integer {
+    exit(1);
+  }
+
+  float, float_ok := S.string_to_float("3.25");
+  prefix_float, prefix_ok, remainder := S.to_float("1.5e2rest");
+  if !float_ok || cast(s64, float * 100.0) != 325 {
+    exit(1);
+  }
+  if !prefix_ok || cast(s64, prefix_float) != 150 || !S.equal(remainder, "rest") {
+    exit(1);
+  }
+
+  text := "108rest";
+  parsed, parsed_ok := S.parse_int(*text);
+  if !parsed_ok || parsed != 108 || !S.equal(text, "rest") {
+    exit(1);
+  }
+  all_digits := "7";
+  _, all_digits_ok := S.parse_int(*all_digits);
+  if !all_digits_ok || all_digits.count != 0 {
+    exit(1);
+  }
+  not_an_integer := "no";
+  _, bad_integer_ok := S.parse_int(*not_an_integer);
+  if bad_integer_ok || !S.equal(not_an_integer, "no") {
+    exit(1);
+  }
+
+  c_text := S.to_c_string("abc");
+  if c_text == null || S.c_style_strlen(c_text) != 3 || !S.equal(S.to_string(c_text), "abc") {
+    exit(1);
+  }
+  context.allocator_free(c_text);
+  S.free_string(copied);
+  exit(157);
+}
