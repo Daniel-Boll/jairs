@@ -205,10 +205,10 @@ main :: () {
 }
 ```
 
-**Everything at file scope is currently exported.** `#scope_file`,
-`#scope_module` and `#scope_export` are lexed but unimplemented (wave W2), so
-there is no way to mark a declaration private yet. Modules therefore have no
-encapsulation at present.
+`#scope_module` hides following declarations from importers, and
+`#scope_export` restores exported-by-default behavior. `#scope_file` remains
+absent because one Jairs module is one file, so it would currently be
+indistinguishable from `#scope_module` (ADR-0054).
 
 ### Collisions
 

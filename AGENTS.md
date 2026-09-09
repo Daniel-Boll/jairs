@@ -119,7 +119,7 @@ silently skips. **Run gate 7 in any wave that touches MIR, `jr-pool`'s layout, `
 either back end** — those are exactly the places where a third engine has something to say.
 
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
-visible. **It is 1280 today (1291 under gate 7), with 290 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
+visible. **It is 1280 today (1291 under gate 7), with 291 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
 only the corpus one, which is the pattern every wave whose deliverable a `.jr` program can observe
 follows, and the reason the two counts are tracked apart. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
 → 969 (W5 sub-waves 1–4) → 974 (W5 sub-wave 5, polymorphic structs) → 976 (W5 sub-wave 6a, `$N` surface)
@@ -1853,6 +1853,39 @@ indistinguishable from the failure sentinel and gave `String.free_string` no all
 `File.read_entire_file` now allocates one NUL byte even for empty input, and the whole-file trio moved
 exclusively from `File_Utilities` into `File`; duplicate wrappers would collide in the flat import
 namespace. The original Jai-shaped probe now reports only its intentionally absent `State.TAG` case.
+
+**ADR-0217 holds at 1280 tests (1291 under gate 7) and adds one corpus file = 291.** `Basic` now has
+the `String_Builder` family the next guide example expected: zero-value and explicit initialization,
+string/pointer-length/byte append, direct formatted append, length, copy conversion and idempotent
+cleanup. The Rust test count holds because `valid/154` is consumed by the existing HIR, sema, MIR,
+VM/native differential and snapshot harnesses.
+
+**Plural `free_buffers` was useful evidence, not an implementation to copy.** The pinned secondary
+guide does not publish Basic's source, so ADR-0217 uses a chain of private buffer allocations: stable
+earlier bytes, doubling from 256, and one final copy when a contiguous `string` is requested. The
+builder captures allocator, free procedure and mutable state together. Every call runs under
+`push_context` and copies `allocator_data` back; keeping only a procedure pointer would silently call
+a stateful arena with the wrong state after the caller changes context.
+
+**Conversion and cleanup have separate owners.** `builder_to_string` allocates through the currently
+active context and leaves the builder intact. `free_buffers` uses the captured owner, retains it for
+reuse, and may be called twice. The corpus changes allocators between those operations and verifies
+that the converted string survives cleanup, so the ownership claim is executed rather than inferred
+from field names.
+
+**The formatter gained a sink, not a twin.** `print_to_builder` sends `out_byte` directly into the
+builder and shares every integer, float, aggregate and reflection renderer with `print`. Forwarding
+through `format` would silently cap generated source at 4096 bytes; the corpus writes more than 5000.
+One-based `%1`, `%2`, … arrived in the same path because the pinned examples repeat and reorder
+arguments. Extra-argument reporting now asks whether each argument was used by either sequential or
+indexed syntax.
+
+**The local Jai guide is deliberately outside the product.** `references/The_Way_to_Jai` is a pinned
+git submodule and `docs/research/way-to-jai-compatibility.md` is the chapter matrix and P0–P7 roadmap.
+Nothing under `references/` enters module discovery, the test corpus, Cargo packaging or installed
+artefacts. A secondary closed-beta guide can order probes and expose spellings; it cannot settle an
+ABI or ownership contract, which is why destination allocators and `extra_bytes_to_prepend` remain
+unimplemented.
 
 ## House style
 

@@ -388,15 +388,198 @@ Any :: struct {
     data: *u8;
 }
 
+/// A growable byte destination made from allocator-owned buffers (ADR-0217).
+///
+/// A zero value is ready to use: the first append captures the active context allocator and allocates
+/// the first buffer. [`init_string_builder`] performs that capture explicitly, and calling it again frees
+/// the existing buffers before starting over.
+///
+/// Buffer storage and strings returned by [`builder_to_string`] have deliberately separate ownership.
+/// The builder keeps using the allocator captured here even if the caller changes context; conversion
+/// copies through the allocator active at conversion time. [`free_buffers`] therefore never invalidates
+/// a string already returned to the caller.
+String_Builder :: struct {
+    /// The first private buffer header, or null while empty.
+    first_buffer: *u8;
+    /// The last private buffer header, or null while empty.
+    last_buffer: *u8;
+    /// Total appended bytes across every buffer.
+    byte_count: s64;
+    /// Capacity to request for the next ordinary buffer.
+    next_buffer_capacity: s64;
+    /// The allocator captured on explicit or lazy initialization.
+    allocator: (s64) -> *u8;
+    /// The matching release procedure.
+    allocator_free: (*u8);
+    /// Mutable allocator state, copied into and back out of a pushed context for every call.
+    allocator_data: s64;
+    /// Whether the allocator triple has been captured.
+    initialized: bool;
+}
+
+/// Explicitly initializes a builder from the active context allocator.
+///
+/// A previously initialized builder is emptied through its old captured allocator first. The new
+/// allocator triple is captured only after that cleanup, so changing context and reinitializing is an
+/// explicit ownership hand-off rather than a mismatched free.
+init_string_builder :: (builder: *String_Builder) {
+    if builder.initialized {
+        free_buffers(builder);
+    }
+    builder.first_buffer = null;
+    builder.last_buffer = null;
+    builder.byte_count = 0;
+    builder.next_buffer_capacity = STRING_BUILDER_FIRST_CAPACITY;
+    builder.allocator = context.allocator;
+    builder.allocator_free = context.allocator_free;
+    builder.allocator_data = context.allocator_data;
+    builder.initialized = true;
+}
+
+/// Appends every byte of `text`.
+///
+/// Returns false only when another buffer was required and its allocation failed. Bytes already
+/// appended before a later allocation failure remain in the builder.
+append :: (builder: *String_Builder, text: string) -> bool {
+    return append_bytes(builder, text.data, text.count);
+}
+
+/// Appends `count` bytes beginning at `data`.
+///
+/// This is the explicit pointer-length spelling of Jai's overloaded `append`; general procedure
+/// overloading is not yet available in Jairs.
+append_bytes :: (builder: *String_Builder, data: *u8, count: s64) -> bool {
+    if count <= 0 {
+        return count == 0;
+    }
+
+    copied := 0;
+    while copied < count {
+        if builder.last_buffer == null {
+            if !string_builder_add_buffer(builder, count - copied) {
+                return false;
+            }
+        }
+
+        last := typed(String_Builder_Buffer, builder.last_buffer);
+        available := last.capacity - last.used;
+        if available == 0 {
+            if !string_builder_add_buffer(builder, count - copied) {
+                return false;
+            }
+            last = typed(String_Builder_Buffer, builder.last_buffer);
+            available = last.capacity - last.used;
+        }
+
+        take := count - copied;
+        if take > available {
+            take = available;
+        }
+        destination := builder.last_buffer + size_of(String_Builder_Buffer) + last.used;
+        i := 0;
+        while i < take {
+            (destination + i).* = (data + copied + i).*;
+            i = i + 1;
+        }
+        last.used = last.used + take;
+        builder.byte_count = builder.byte_count + take;
+        copied = copied + take;
+    }
+    return true;
+}
+
+/// Appends one byte.
+///
+/// A separate name is required until Jairs has general procedure overloading.
+append_byte :: (builder: *String_Builder, byte: u8) -> bool {
+    local := byte;
+    return append_bytes(builder, *local, 1);
+}
+
+/// Formats directly into a builder through the same formatter used by [`print`] and [`format`].
+///
+/// Unlike `format`, this destination is unbounded except by allocation failure: it never stages the
+/// result through the formatter's 4096-byte array. Returns false if growing the builder failed.
+print_to_builder :: (builder: *String_Builder, format_string: string, args: ..Any) -> bool {
+    out_reset_builder(builder);
+    format_into_out(format_string, args);
+    ok := out_ok;
+    out_builder = null;
+    out_count = 0;
+    return ok;
+}
+
+/// The number of bytes currently held by a builder.
+builder_string_length :: (builder: *String_Builder) -> s64 {
+    return builder.byte_count;
+}
+
+/// Copies the builder's bytes into one string allocated through the active context.
+///
+/// The builder is unchanged. The returned storage is independent and remains valid after
+/// [`free_buffers`]; release it through the same context allocator used by other owned strings.
+builder_to_string :: (builder: *String_Builder) -> string {
+    result: string;
+    result.data = null;
+    result.count = 0;
+    if builder.byte_count == 0 {
+        return result;
+    }
+
+    result.data = context.allocator(builder.byte_count);
+    if result.data == null {
+        return result;
+    }
+    result.count = builder.byte_count;
+
+    written := 0;
+    raw := builder.first_buffer;
+    while raw != null {
+        buffer := typed(String_Builder_Buffer, raw);
+        source := raw + size_of(String_Builder_Buffer);
+        i := 0;
+        while i < buffer.used {
+            (result.data + written + i).* = (source + i).*;
+            i = i + 1;
+        }
+        written = written + buffer.used;
+        raw = buffer.next;
+    }
+    return result;
+}
+
+/// Releases every private buffer and empties the builder.
+///
+/// Idempotent. The captured allocator triple is retained, so a later append reuses the same ownership
+/// policy even when the caller's active context has changed.
+free_buffers :: (builder: *String_Builder) {
+    if !builder.initialized {
+        return;
+    }
+
+    raw := builder.first_buffer;
+    while raw != null {
+        buffer := typed(String_Builder_Buffer, raw);
+        next := buffer.next;
+        string_builder_release(builder, raw);
+        raw = next;
+    }
+    builder.first_buffer = null;
+    builder.last_buffer = null;
+    builder.byte_count = 0;
+    builder.next_buffer_capacity = STRING_BUILDER_FIRST_CAPACITY;
+}
+
 /// The standard output file descriptor.
 STDOUT :: 1;
 /// The standard error file descriptor.
 STDERR :: 2;
 
-/// Writes `fmt` to standard output, replacing each `%` with the next argument (ADR-0189 §4).
+/// Writes `fmt` to standard output, replacing each bare `%` with the next argument (ADR-0189 §4).
 ///
 /// ```jairs
 /// print("x = %, ok = %\n", 42, true);        // x = 42, ok = true
+/// print("%2 before %1\n", "first", "second"); // second before first
 /// print("100%% sure\n");                     // 100% sure
 /// print("%\n", some_point);                  // {x = 3, y = 4}
 /// ```
@@ -410,7 +593,8 @@ STDERR :: 2;
 /// what follows it. That is the whole reason a `printf`-shaped `%d` is wrong here — a `%d` handed a
 /// float is undefined behaviour in C and unrepresentable here.
 ///
-/// `%%` is a literal `%`. That is the only escape.
+/// `%1`, `%2`, … select arguments one-based without advancing the bare-`%` cursor. `%%` is a
+/// literal `%`.
 ///
 /// # What a wrong argument count does
 ///
@@ -506,6 +690,16 @@ NO_FD :: -1;
 /// `out_byte` flushes when full, so a longer `print` costs more than one `write` and still completes.
 OUT_CAPACITY :: 4096;
 
+/// First private builder-buffer capacity. Later ordinary buffers double.
+STRING_BUILDER_FIRST_CAPACITY :: 256;
+
+/// A private builder allocation header. Its bytes begin immediately after this value.
+String_Builder_Buffer :: struct {
+    next: *u8;
+    used: s64;
+    capacity: s64;
+}
+
 /// The output buffer.
 ///
 /// A file-scope global, which ADR-0186 made possible and which is where Jai keeps its equivalent. Before
@@ -521,6 +715,12 @@ out_fd: s64 = NO_FD;
 
 /// How many bytes this `print` has produced, flushes included.
 out_written: s64 = 0;
+
+/// Non-null while the formatter is writing directly to a builder.
+out_builder: *String_Builder = null;
+
+/// Whether every byte reached the active destination.
+out_ok: bool = true;
 
 /// ASCII codes, named because a bare `48` in the middle of digit arithmetic reads as a magic number.
 ZERO_DIGIT :: 48;
@@ -540,6 +740,17 @@ out_reset :: (fd: s64) {
     out_count = 0;
     out_fd = fd;
     out_written = 0;
+    out_builder = null;
+    out_ok = true;
+}
+
+/// Starts a formatting run whose destination is a string builder.
+out_reset_builder :: (builder: *String_Builder) {
+    out_count = 0;
+    out_fd = NO_FD;
+    out_written = 0;
+    out_builder = builder;
+    out_ok = true;
 }
 
 /// Writes the buffer out and returns the total bytes this run produced.
@@ -553,6 +764,15 @@ out_flush :: () -> s64 {
 
 /// Appends one byte, flushing first when the buffer is full.
 out_byte :: (b: u8) {
+    if out_builder != null {
+        if out_ok {
+            out_ok = append_byte(out_builder, b);
+            if out_ok {
+                out_written = out_written + 1;
+            }
+        }
+        return;
+    }
     if out_count >= OUT_CAPACITY {
         if out_fd == NO_FD {
             // Nowhere to flush to, so a `format` longer than the buffer stops here. The caller learns
@@ -565,6 +785,78 @@ out_byte :: (b: u8) {
     out_bytes[out_count] = b;
     out_count = out_count + 1;
     out_written = out_written + 1;
+}
+
+/// Captures the active allocator for a zero-value builder.
+string_builder_ensure_initialized :: (builder: *String_Builder) {
+    if builder.initialized {
+        return;
+    }
+    builder.first_buffer = null;
+    builder.last_buffer = null;
+    builder.byte_count = 0;
+    builder.next_buffer_capacity = STRING_BUILDER_FIRST_CAPACITY;
+    builder.allocator = context.allocator;
+    builder.allocator_free = context.allocator_free;
+    builder.allocator_data = context.allocator_data;
+    builder.initialized = true;
+}
+
+/// Allocates through the builder's captured allocator and preserves its mutated state word.
+string_builder_allocate :: (builder: *String_Builder, size: s64) -> *u8 {
+    string_builder_ensure_initialized(builder);
+    result: *u8 = null;
+    updated_data := builder.allocator_data;
+    push_context {
+        context.allocator = builder.allocator;
+        context.allocator_free = builder.allocator_free;
+        context.allocator_data = builder.allocator_data;
+        result = context.allocator(size);
+        updated_data = context.allocator_data;
+    }
+    builder.allocator_data = updated_data;
+    return result;
+}
+
+/// Releases through the builder's captured allocator and preserves its mutated state word.
+string_builder_release :: (builder: *String_Builder, allocation: *u8) {
+    updated_data := builder.allocator_data;
+    push_context {
+        context.allocator = builder.allocator;
+        context.allocator_free = builder.allocator_free;
+        context.allocator_data = builder.allocator_data;
+        context.allocator_free(allocation);
+        updated_data = context.allocator_data;
+    }
+    builder.allocator_data = updated_data;
+}
+
+/// Adds one private buffer, large enough for `minimum_capacity`.
+string_builder_add_buffer :: (builder: *String_Builder, minimum_capacity: s64) -> bool {
+    string_builder_ensure_initialized(builder);
+    capacity := builder.next_buffer_capacity;
+    if capacity < minimum_capacity {
+        capacity = minimum_capacity;
+    }
+    raw := string_builder_allocate(builder, size_of(String_Builder_Buffer) + capacity);
+    if raw == null {
+        return false;
+    }
+
+    buffer := typed(String_Builder_Buffer, raw);
+    buffer.next = null;
+    buffer.used = 0;
+    buffer.capacity = capacity;
+
+    if builder.last_buffer == null {
+        builder.first_buffer = raw;
+    } else {
+        last := typed(String_Builder_Buffer, builder.last_buffer);
+        last.next = raw;
+    }
+    builder.last_buffer = raw;
+    builder.next_buffer_capacity = capacity * 2;
+    return true;
 }
 
 /// Appends every byte of a string.
@@ -1043,7 +1335,69 @@ format_field :: (p: *u8, ty: s64) {
     out_str("..");
 }
 
-/// Walks `fmt`, emitting literal bytes and substituting each `%`.
+/// Parses a one-based decimal argument index beginning at `start`.
+///
+/// `found` distinguishes `%1` from a sequential `%` followed by a non-digit. An index too large for
+/// `s64` is returned as -1 after all its digits are consumed, so hostile format text cannot overflow.
+parse_format_index :: (fmt: string, start: s64) -> (s64, s64, bool) {
+    at := start;
+    value := 0;
+    found := false;
+    overflowed := false;
+    while at < fmt.count {
+        byte := (fmt.data + at).*;
+        if byte < 48 || byte > 57 {
+            break;
+        }
+        found = true;
+        digit := cast(s64, byte - 48);
+        if !overflowed {
+            if value > 922337203685477580 {
+                overflowed = true;
+                value = -1;
+            } else {
+                if value == 922337203685477580 && digit > 7 {
+                    overflowed = true;
+                    value = -1;
+                } else {
+                    value = value * 10 + digit;
+                }
+            }
+        }
+        at = at + 1;
+    }
+    return value, at, found;
+}
+
+/// Whether argument `index` was consumed by a sequential or indexed placeholder.
+format_argument_was_used :: (fmt: string, index: s64, sequential_count: s64) -> bool {
+    if index < sequential_count {
+        return true;
+    }
+    i := 0;
+    while i < fmt.count {
+        if (fmt.data + i).* != cast(u8, PERCENT) {
+            i = i + 1;
+            continue;
+        }
+        if i + 1 < fmt.count && (fmt.data + i + 1).* == cast(u8, PERCENT) {
+            i = i + 2;
+            continue;
+        }
+        selected, after, indexed := parse_format_index(fmt, i + 1);
+        if indexed {
+            if selected == index + 1 {
+                return true;
+            }
+            i = after;
+        } else {
+            i = i + 1;
+        }
+    }
+    return false;
+}
+
+/// Walks `fmt`, emitting literal bytes and substituting sequential `%` or one-based `%1`, `%2`, ….
 format_into_out :: (fmt: string, args: []Any) {
     i := 0;
     next := 0;
@@ -1061,6 +1415,16 @@ format_into_out :: (fmt: string, args: []Any) {
             i = i + 2;
             continue;
         }
+        selected, after, indexed := parse_format_index(fmt, i + 1);
+        if indexed {
+            if selected > 0 && selected <= args.count {
+                format_any(args[selected - 1]);
+            } else {
+                out_str("%!(MISSING)");
+            }
+            i = after;
+            continue;
+        }
         if next < args.count {
             format_any(args[next]);
             next = next + 1;
@@ -1071,19 +1435,21 @@ format_into_out :: (fmt: string, args: []Any) {
     }
     // Extra arguments are reported in the output rather than dropped. A dropped argument is a bug that
     // leaves no trace, and this is a procedure with nowhere to return an error to.
-    if next < args.count {
-        out_str("%!(EXTRA ");
-        // Compared against the **first extra's** index, not against zero. `next > 0` was true for the
-        // very first extra whenever the format string consumed any argument at all, so a one-`%` format
-        // with two spare arguments printed a leading comma.
-        first := next;
-        while next < args.count {
-            if next > first {
+    argument := 0;
+    extras_started := false;
+    while argument < args.count {
+        if !format_argument_was_used(fmt, argument, next) {
+            if !extras_started {
+                out_str("%!(EXTRA ");
+                extras_started = true;
+            } else {
                 out_str(", ");
             }
-            format_any(args[next]);
-            next = next + 1;
+            format_any(args[argument]);
         }
+        argument = argument + 1;
+    }
+    if extras_started {
         out_byte(cast(u8, 41));
     }
 }

@@ -56,7 +56,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0216.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0217.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -84,6 +84,12 @@ Every fresh Jairs context now has a working allocator/free pair in the VM, Crane
 assigning a custom pair and copying one through `push_context` remain unchanged. Whole-file
 read/write/append operations live in `File`, and every successful read — including an empty file —
 returns owned storage that may be released with `String.free_string`.
+
+`Basic.String_Builder` now grows through a captured allocator, appends strings, bytes and formatted
+values, and converts to independently owned text. Formatted builder output shares `print`'s renderer,
+supports `%1`/`%2` argument selection, and is not capped by `format`'s 4096-byte staging buffer.
+The compatibility source used to plan it is pinned locally under `references/The_Way_to_Jai`; that
+submodule is research-only and normal builds do not need it.
 
 **A project can be built by a Jairs program.** `jr build build.jr` compiles the script, runs it, and
 performs the compilations it asked for — no flag, because importing `modules/Compiler` is what makes a
@@ -144,7 +150,7 @@ Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
 - **1280** workspace tests (**1291** under gate 7), all six required gates and gate 7 green.
-- **290** `.jr` corpus files, **216** accepted ADRs, **25** standard library
+- **291** `.jr` corpus files, **217** accepted ADRs, **25** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative

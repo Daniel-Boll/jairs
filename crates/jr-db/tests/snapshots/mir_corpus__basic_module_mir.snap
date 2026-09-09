@@ -194,6 +194,296 @@ proc reset_temporary_storage -> void {
     store (v0).*.4 <- 0_s64
     return
 }
+proc init_string_builder -> void {
+  params: v0: *Context, v1: *String_Builder
+  bb0(v0: *Context, v1: *String_Builder):
+    v2: bool = load (v1).*.7
+    branch v2 ? bb1() : bb2()
+  bb1():
+    discard call proc22(v0, v1)
+    goto bb3()
+  bb2():
+    goto bb3()
+  bb3():
+    store (v1).*.0 <- 0_*u8
+    store (v1).*.1 <- 0_*u8
+    store (v1).*.2 <- 0_s64
+    store (v1).*.3 <- 256_s64
+    v3: (s64) -> *u8 = load (v0).*.0
+    store (v1).*.4 <- v3
+    v4: (*u8) -> void = load (v0).*.1
+    store (v1).*.5 <- v4
+    v5: s64 = load (v0).*.2
+    store (v1).*.6 <- v5
+    store (v1).*.7 <- true
+    return
+}
+proc append -> bool {
+  params: v0: *Context, v1: *String_Builder, v2: string
+  slots:
+    s0: string  // temporary
+  bb0(v0: *Context, v1: *String_Builder, v2: string):
+    store s0 <- v2
+    v3: *u8 = load s0.data
+    v4: s64 = load s0.count
+    v5: bool = call proc17(v0, v1, v3, v4)
+    return v5
+}
+proc append_bytes -> bool {
+  params: v0: *Context, v1: *String_Builder, v2: *u8, v3: s64
+  slots:
+    s0: *String_Builder_Buffer  // temporary
+    s1: *String_Builder_Buffer  // temporary
+    s2: *u8  // temporary
+    s3: *u8  // temporary
+    s4: *u8  // temporary
+    s5: *u8  // temporary
+    s6: *u8  // temporary
+  bb0(v0: *Context, v1: *String_Builder, v2: *u8, v3: s64):
+    v4: bool = v3 <= 0_s64
+    branch v4 ? bb1() : bb2()
+  bb1():
+    v5: bool = v3 == 0_s64
+    return v5
+  bb2():
+    goto bb3()
+  bb3():
+    goto bb4(0_s64)
+  bb4(v6: s64):
+    v7: bool = v6 < v3
+    branch v7 ? bb5() : bb6()
+  bb5():
+    v8: *u8 = load (v1).*.1
+    v9: bool = v8 == 0_*u8
+    branch v9 ? bb8() : bb9()
+  bb8():
+    v10: s64 = v3 - v6
+    v11: bool = call proc34(v0, v1, v10)
+    v12: bool = !v11
+    branch v12 ? bb11() : bb12()
+  bb11():
+    return false
+  bb12():
+    goto bb13()
+  bb13():
+    goto bb10()
+  bb9():
+    goto bb10()
+  bb10():
+    v13: *u8 = load (v1).*.1
+    store s0 <- v13
+    v14: *String_Builder_Buffer = load s0
+    v15: s64 = load (v14).*.2
+    v16: s64 = load (v14).*.1
+    v17: s64 = v15 - v16
+    v18: bool = v17 == 0_s64
+    branch v18 ? bb14() : bb15()
+  bb14():
+    v20: s64 = v3 - v6
+    v21: bool = call proc34(v0, v1, v20)
+    v22: bool = !v21
+    branch v22 ? bb17() : bb18()
+  bb17():
+    return false
+  bb18():
+    goto bb19()
+  bb19():
+    v23: *u8 = load (v1).*.1
+    store s1 <- v23
+    v24: *String_Builder_Buffer = load s1
+    v25: s64 = load (v24).*.2
+    v26: s64 = load (v24).*.1
+    v27: s64 = v25 - v26
+    goto bb16(v27, v24)
+  bb15():
+    goto bb16(v17, v14)
+  bb16(v30: s64, v35: *String_Builder_Buffer):
+    v29: s64 = v3 - v6
+    v31: bool = v29 > v30
+    branch v31 ? bb20() : bb21()
+  bb20():
+    goto bb22(v30)
+  bb21():
+    goto bb22(v29)
+  bb22(v48: s64):
+    v32: *u8 = load (v1).*.1
+    store s2 <- v32
+    v33: *u8 = addr s2[24_s64]
+    v36: s64 = load (v35).*.1
+    store s3 <- v33
+    v37: *u8 = addr s3[v36]
+    goto bb23(0_s64)
+  bb23(v38: s64):
+    v40: bool = v38 < v48
+    branch v40 ? bb24() : bb25()
+  bb24():
+    store s4 <- v37
+    v42: *u8 = addr s4[v38]
+    store s5 <- v2
+    v44: *u8 = addr s5[v6]
+    store s6 <- v44
+    v45: *u8 = addr s6[v38]
+    v46: u8 = load (v45).*
+    store (v42).* <- v46
+    v47: s64 = v38 + 1_s64
+    goto bb23(v47)
+  bb25():
+    goto bb26()
+  bb26():
+    v51: s64 = load (v35).*.1
+    v52: s64 = v51 + v48
+    store (v35).*.1 <- v52
+    v53: s64 = load (v1).*.2
+    v54: s64 = v53 + v48
+    store (v1).*.2 <- v54
+    v55: s64 = v6 + v48
+    goto bb4(v55)
+  bb6():
+    goto bb7()
+  bb7():
+    return true
+}
+proc append_byte -> bool {
+  params: v0: *Context, v1: *String_Builder, v2: u8
+  slots:
+    s0: u8  // local 0
+  bb0(v0: *Context, v1: *String_Builder, v2: u8):
+    store s0 <- v2
+    v3: *u8 = addr s0
+    v4: bool = call proc17(v0, v1, v3, 1_s64)
+    return v4
+}
+proc print_to_builder -> bool {
+  params: v0: *Context, v1: *String_Builder, v2: string, v3: []Any
+  slots:
+    s0: string  // temporary
+    s1: []Any  // temporary
+  bb0(v0: *Context, v1: *String_Builder, v2: string, v3: []Any):
+    store s0 <- v2
+    store s1 <- v3
+    discard call proc28(v0, v1)
+    discard call proc52(v0, v2, v3)
+    v4: bool = load g48
+    store g47 <- 0_*String_Builder
+    store g44 <- 0_s64
+    return v4
+}
+proc builder_string_length -> s64 {
+  params: v0: *Context, v1: *String_Builder
+  bb0(v0: *Context, v1: *String_Builder):
+    v2: s64 = load (v1).*.2
+    return v2
+}
+proc builder_to_string -> string {
+  params: v0: *Context, v1: *String_Builder
+  slots:
+    s0: string  // local 0
+    s1: *String_Builder_Buffer  // temporary
+    s2: *u8  // temporary
+    s3: *u8  // temporary
+    s4: *u8  // temporary
+    s5: *u8  // temporary
+  bb0(v0: *Context, v1: *String_Builder):
+    zero s0
+    store s0.data <- 0_*u8
+    store s0.count <- 0_s64
+    v2: s64 = load (v1).*.2
+    v3: bool = v2 == 0_s64
+    branch v3 ? bb1() : bb2()
+  bb1():
+    v4: string = load s0
+    return v4
+  bb2():
+    goto bb3()
+  bb3():
+    v5: (s64) -> *u8 = load (v0).*.0
+    v6: s64 = load (v1).*.2
+    v7: *u8 = call (v5)(v0, v6)
+    store s0.data <- v7
+    v8: *u8 = load s0.data
+    v9: bool = v8 == 0_*u8
+    branch v9 ? bb4() : bb5()
+  bb4():
+    v10: string = load s0
+    return v10
+  bb5():
+    goto bb6()
+  bb6():
+    v11: s64 = load (v1).*.2
+    store s0.count <- v11
+    v12: *u8 = load (v1).*.0
+    goto bb7(v12, 0_s64)
+  bb7(v13: *u8, v29: s64):
+    v14: bool = v13 != 0_*u8
+    branch v14 ? bb8() : bb9()
+  bb8():
+    store s1 <- v13
+    v15: *String_Builder_Buffer = load s1
+    store s2 <- v13
+    v16: *u8 = addr s2[24_s64]
+    goto bb11(0_s64)
+  bb11(v17: s64):
+    v19: s64 = load (v15).*.1
+    v20: bool = v17 < v19
+    branch v20 ? bb12() : bb13()
+  bb12():
+    v21: *u8 = load s0.data
+    store s3 <- v21
+    v23: *u8 = addr s3[v29]
+    store s4 <- v23
+    v24: *u8 = addr s4[v17]
+    store s5 <- v16
+    v26: *u8 = addr s5[v17]
+    v27: u8 = load (v26).*
+    store (v24).* <- v27
+    v28: s64 = v17 + 1_s64
+    goto bb11(v28)
+  bb13():
+    goto bb14()
+  bb14():
+    v30: s64 = load (v15).*.1
+    v31: s64 = v29 + v30
+    v32: *u8 = load (v15).*.0
+    goto bb7(v32, v31)
+  bb9():
+    goto bb10()
+  bb10():
+    v33: string = load s0
+    return v33
+}
+proc free_buffers -> void {
+  params: v0: *Context, v1: *String_Builder
+  slots:
+    s0: *String_Builder_Buffer  // temporary
+  bb0(v0: *Context, v1: *String_Builder):
+    v2: bool = load (v1).*.7
+    v3: bool = !v2
+    branch v3 ? bb1() : bb2()
+  bb1():
+    return
+  bb2():
+    goto bb3()
+  bb3():
+    v4: *u8 = load (v1).*.0
+    goto bb4(v4)
+  bb4(v5: *u8):
+    v6: bool = v5 != 0_*u8
+    branch v6 ? bb5() : bb6()
+  bb5():
+    store s0 <- v5
+    v7: *String_Builder_Buffer = load s0
+    v8: *u8 = load (v7).*.0
+    discard call proc33(v0, v1, v5)
+    goto bb4(v8)
+  bb6():
+    goto bb7()
+  bb7():
+    store (v1).*.0 <- 0_*u8
+    store (v1).*.1 <- 0_*u8
+    store (v1).*.2 <- 0_s64
+    store (v1).*.3 <- 256_s64
+    return
+}
 proc print -> s64 {
   params: v0: *Context, v1: string, v2: []Any
   slots:
@@ -202,9 +492,9 @@ proc print -> s64 {
   bb0(v0: *Context, v1: string, v2: []Any):
     store s0 <- v1
     store s1 <- v2
-    discard call proc19(v0, 1_s64)
-    discard call proc37(v0, v1, v2)
-    v3: s64 = call proc20(v0)
+    discard call proc27(v0, 1_s64)
+    discard call proc52(v0, v1, v2)
+    v3: s64 = call proc29(v0)
     return v3
 }
 proc print_error -> s64 {
@@ -215,9 +505,9 @@ proc print_error -> s64 {
   bb0(v0: *Context, v1: string, v2: []Any):
     store s0 <- v1
     store s1 <- v2
-    discard call proc19(v0, 2_s64)
-    discard call proc37(v0, v1, v2)
-    v3: s64 = call proc20(v0)
+    discard call proc27(v0, 2_s64)
+    discard call proc52(v0, v1, v2)
+    v3: s64 = call proc29(v0)
     return v3
 }
 proc print_line -> s64 {
@@ -228,11 +518,11 @@ proc print_line -> s64 {
   bb0(v0: *Context, v1: string, v2: []Any):
     store s0 <- v1
     store s1 <- v2
-    discard call proc19(v0, 1_s64)
-    discard call proc37(v0, v1, v2)
+    discard call proc27(v0, 1_s64)
+    discard call proc52(v0, v1, v2)
     v3: u8 = convert 10_s64 from s64
-    discard call proc21(v0, v3)
-    v4: s64 = call proc20(v0)
+    discard call proc30(v0, v3)
+    v4: s64 = call proc29(v0)
     return v4
 }
 proc format -> s64 {
@@ -245,9 +535,9 @@ proc format -> s64 {
     store s0 <- v1
     store s1 <- v2
     store s2 <- v3
-    discard call proc19(v0, -1_s64)
-    discard call proc37(v0, v2, v3)
-    v4: s64 = load g33
+    discard call proc27(v0, -1_s64)
+    discard call proc52(v0, v2, v3)
+    v4: s64 = load g44
     v5: s64 = load s0.view_count
     v6: bool = v4 > v5
     branch v6 ? bb1() : bb2()
@@ -265,32 +555,44 @@ proc format -> s64 {
     v11: s64 = load s0.view_count
     bounds_check v8 < v11
     bounds_check v8 < 4096_s64
-    v12: u8 = load g32[v8]
+    v12: u8 = load g43[v8]
     store s0.view_data[v8] <- v12
     v13: s64 = v8 + 1_s64
     goto bb4(v13)
   bb6():
     goto bb7()
   bb7():
-    store g33 <- 0_s64
+    store g44 <- 0_s64
     return v14
 }
 proc out_reset -> void {
   params: v0: *Context, v1: s64
   bb0(v0: *Context, v1: s64):
-    store g33 <- 0_s64
-    store g34 <- v1
-    store g35 <- 0_s64
+    store g44 <- 0_s64
+    store g45 <- v1
+    store g46 <- 0_s64
+    store g47 <- 0_*String_Builder
+    store g48 <- true
+    return
+}
+proc out_reset_builder -> void {
+  params: v0: *Context, v1: *String_Builder
+  bb0(v0: *Context, v1: *String_Builder):
+    store g44 <- 0_s64
+    store g45 <- -1_s64
+    store g46 <- 0_s64
+    store g47 <- v1
+    store g48 <- true
     return
 }
 proc out_flush -> s64 {
   params: v0: *Context
   bb0(v0: *Context):
-    v1: s64 = load g33
+    v1: s64 = load g44
     v2: bool = v1 > 0_s64
     branch v2 ? bb1() : bb2()
   bb1():
-    v4: s64 = load g34
+    v4: s64 = load g45
     v5: bool = v4 != -1_s64
     goto bb3(v5)
   bb2():
@@ -298,54 +600,195 @@ proc out_flush -> s64 {
   bb3(v3: bool):
     branch v3 ? bb4() : bb5()
   bb4():
-    v6: s64 = load g34
+    v6: s64 = load g45
     bounds_check 0_s64 < 4096_s64
-    v7: *u8 = addr g32[0_s64]
-    v8: s64 = load g33
+    v7: *u8 = addr g43[0_s64]
+    v8: s64 = load g44
     discard call proc0(v6, v7, v8)
-    store g33 <- 0_s64
+    store g44 <- 0_s64
     goto bb6()
   bb5():
     goto bb6()
   bb6():
-    v9: s64 = load g35
+    v9: s64 = load g46
     return v9
 }
 proc out_byte -> void {
   params: v0: *Context, v1: u8
   bb0(v0: *Context, v1: u8):
-    v2: s64 = load g33
-    v3: bool = v2 >= 4096_s64
+    v2: *String_Builder = load g47
+    v3: bool = v2 != 0_*String_Builder
     branch v3 ? bb1() : bb2()
   bb1():
-    v4: s64 = load g34
-    v5: bool = v4 == -1_s64
-    branch v5 ? bb4() : bb5()
+    v4: bool = load g48
+    branch v4 ? bb4() : bb5()
   bb4():
-    return
+    v5: *String_Builder = load g47
+    v6: bool = call proc18(v0, v5, v1)
+    store g48 <- v6
+    v7: bool = load g48
+    branch v7 ? bb7() : bb8()
+  bb7():
+    v8: s64 = load g46
+    v9: s64 = v8 + 1_s64
+    store g46 <- v9
+    goto bb9()
+  bb8():
+    goto bb9()
+  bb9():
+    goto bb6()
   bb5():
     goto bb6()
   bb6():
-    v6: s64 = load g34
-    bounds_check 0_s64 < 4096_s64
-    v7: *u8 = addr g32[0_s64]
-    v8: s64 = load g33
-    discard call proc0(v6, v7, v8)
-    store g33 <- 0_s64
-    goto bb3()
+    return
   bb2():
     goto bb3()
   bb3():
-    v9: s64 = load g33
-    bounds_check v9 < 4096_s64
-    store g32[v9] <- v1
-    v10: s64 = load g33
-    v11: s64 = v10 + 1_s64
-    store g33 <- v11
-    v12: s64 = load g35
-    v13: s64 = v12 + 1_s64
-    store g35 <- v13
+    v10: s64 = load g44
+    v11: bool = v10 >= 4096_s64
+    branch v11 ? bb10() : bb11()
+  bb10():
+    v12: s64 = load g45
+    v13: bool = v12 == -1_s64
+    branch v13 ? bb13() : bb14()
+  bb13():
     return
+  bb14():
+    goto bb15()
+  bb15():
+    v14: s64 = load g45
+    bounds_check 0_s64 < 4096_s64
+    v15: *u8 = addr g43[0_s64]
+    v16: s64 = load g44
+    discard call proc0(v14, v15, v16)
+    store g44 <- 0_s64
+    goto bb12()
+  bb11():
+    goto bb12()
+  bb12():
+    v17: s64 = load g44
+    bounds_check v17 < 4096_s64
+    store g43[v17] <- v1
+    v18: s64 = load g44
+    v19: s64 = v18 + 1_s64
+    store g44 <- v19
+    v20: s64 = load g46
+    v21: s64 = v20 + 1_s64
+    store g46 <- v21
+    return
+}
+proc string_builder_ensure_initialized -> void {
+  params: v0: *Context, v1: *String_Builder
+  bb0(v0: *Context, v1: *String_Builder):
+    v2: bool = load (v1).*.7
+    branch v2 ? bb1() : bb2()
+  bb1():
+    return
+  bb2():
+    goto bb3()
+  bb3():
+    store (v1).*.0 <- 0_*u8
+    store (v1).*.1 <- 0_*u8
+    store (v1).*.2 <- 0_s64
+    store (v1).*.3 <- 256_s64
+    v3: (s64) -> *u8 = load (v0).*.0
+    store (v1).*.4 <- v3
+    v4: (*u8) -> void = load (v0).*.1
+    store (v1).*.5 <- v4
+    v5: s64 = load (v0).*.2
+    store (v1).*.6 <- v5
+    store (v1).*.7 <- true
+    return
+}
+proc string_builder_allocate -> *u8 {
+  params: v0: *Context, v1: *String_Builder, v2: s64
+  slots:
+    s0: Context  // temporary
+  bb0(v0: *Context, v1: *String_Builder, v2: s64):
+    discard call proc31(v0, v1)
+    v3: s64 = load (v1).*.6
+    v4: Context = load (v0).*
+    store s0 <- v4
+    v5: *Context = addr s0
+    v6: (s64) -> *u8 = load (v1).*.4
+    store (v5).*.0 <- v6
+    v7: (*u8) -> void = load (v1).*.5
+    store (v5).*.1 <- v7
+    v8: s64 = load (v1).*.6
+    store (v5).*.2 <- v8
+    v9: (s64) -> *u8 = load (v5).*.0
+    v10: *u8 = call (v9)(v5, v2)
+    v11: s64 = load (v5).*.2
+    store (v1).*.6 <- v11
+    return v10
+}
+proc string_builder_release -> void {
+  params: v0: *Context, v1: *String_Builder, v2: *u8
+  slots:
+    s0: Context  // temporary
+  bb0(v0: *Context, v1: *String_Builder, v2: *u8):
+    v3: s64 = load (v1).*.6
+    v4: Context = load (v0).*
+    store s0 <- v4
+    v5: *Context = addr s0
+    v6: (s64) -> *u8 = load (v1).*.4
+    store (v5).*.0 <- v6
+    v7: (*u8) -> void = load (v1).*.5
+    store (v5).*.1 <- v7
+    v8: s64 = load (v1).*.6
+    store (v5).*.2 <- v8
+    v9: (*u8) -> void = load (v5).*.1
+    discard call (v9)(v5, v2)
+    v10: s64 = load (v5).*.2
+    store (v1).*.6 <- v10
+    return
+}
+proc string_builder_add_buffer -> bool {
+  params: v0: *Context, v1: *String_Builder, v2: s64
+  slots:
+    s0: *String_Builder_Buffer  // temporary
+    s1: *String_Builder_Buffer  // temporary
+  bb0(v0: *Context, v1: *String_Builder, v2: s64):
+    discard call proc31(v0, v1)
+    v3: s64 = load (v1).*.3
+    v4: bool = v3 < v2
+    branch v4 ? bb1() : bb2()
+  bb1():
+    goto bb3(v2)
+  bb2():
+    goto bb3(v3)
+  bb3(v5: s64):
+    v6: s64 = 24_s64 + v5
+    v7: *u8 = call proc32(v0, v1, v6)
+    v8: bool = v7 == 0_*u8
+    branch v8 ? bb4() : bb5()
+  bb4():
+    return false
+  bb5():
+    goto bb6()
+  bb6():
+    store s0 <- v7
+    v9: *String_Builder_Buffer = load s0
+    store (v9).*.0 <- 0_*u8
+    store (v9).*.1 <- 0_s64
+    store (v9).*.2 <- v5
+    v10: *u8 = load (v1).*.1
+    v11: bool = v10 == 0_*u8
+    branch v11 ? bb7() : bb8()
+  bb7():
+    store (v1).*.0 <- v7
+    goto bb9()
+  bb8():
+    v12: *u8 = load (v1).*.1
+    store s1 <- v12
+    v13: *String_Builder_Buffer = load s1
+    store (v13).*.0 <- v7
+    goto bb9()
+  bb9():
+    store (v1).*.1 <- v7
+    v16: s64 = v5 * 2_s64
+    store (v1).*.3 <- v16
+    return true
 }
 proc out_str -> void {
   params: v0: *Context, v1: string
@@ -364,7 +807,7 @@ proc out_str -> void {
     store s1 <- v5
     v6: *u8 = addr s1[v2]
     v7: u8 = load (v6).*
-    discard call proc21(v0, v7)
+    discard call proc30(v0, v7)
     v8: s64 = v2 + 1_s64
     goto bb1(v8)
   bb3():
@@ -381,7 +824,7 @@ proc out_u64 -> void {
     branch v2 ? bb1() : bb2()
   bb1():
     v3: u8 = convert 48_s64 from s64
-    discard call proc21(v0, v3)
+    discard call proc30(v0, v3)
     return
   bb2():
     goto bb3()
@@ -411,7 +854,7 @@ proc out_u64 -> void {
     v15: s64 = v13 - 1_s64
     bounds_check v15 < 20_s64
     v16: u8 = load s0[v15]
-    discard call proc21(v0, v16)
+    discard call proc30(v0, v16)
     goto bb8(v15)
   bb10():
     goto bb11()
@@ -425,16 +868,16 @@ proc out_s64 -> void {
     branch v2 ? bb1() : bb2()
   bb1():
     v3: u8 = convert 45_s64 from s64
-    discard call proc21(v0, v3)
+    discard call proc30(v0, v3)
     v4: u64 = convert v1 from s64
     v5: u64 = 0_u64 -% v4
-    discard call proc23(v0, v5)
+    discard call proc36(v0, v5)
     return
   bb2():
     goto bb3()
   bb3():
     v6: u64 = convert v1 from s64
-    discard call proc23(v0, v6)
+    discard call proc36(v0, v6)
     return
 }
 proc out_hex -> void {
@@ -442,12 +885,12 @@ proc out_hex -> void {
   slots:
     s0: [16]u8  // local 0
   bb0(v0: *Context, v1: u64):
-    discard call proc22(v0, "0x")
+    discard call proc35(v0, "0x")
     v2: bool = v1 == 0_u64
     branch v2 ? bb1() : bb2()
   bb1():
     v3: u8 = convert 48_s64 from s64
-    discard call proc21(v0, v3)
+    discard call proc30(v0, v3)
     return
   bb2():
     goto bb3()
@@ -489,7 +932,7 @@ proc out_hex -> void {
     v21: s64 = v19 - 1_s64
     bounds_check v21 < 16_s64
     v22: u8 = load s0[v21]
-    discard call proc21(v0, v22)
+    discard call proc30(v0, v22)
     goto bb11(v21)
   bb13():
     goto bb14()
@@ -502,7 +945,7 @@ proc out_float -> void {
     v2: bool = v1 != v1
     branch v2 ? bb1() : bb2()
   bb1():
-    discard call proc22(v0, "NaN")
+    discard call proc35(v0, "NaN")
     return
   bb2():
     goto bb3()
@@ -511,7 +954,7 @@ proc out_float -> void {
     branch v3 ? bb4() : bb5()
   bb4():
     v4: u8 = convert 45_s64 from s64
-    discard call proc21(v0, v4)
+    discard call proc30(v0, v4)
     v5: float64 = 0.0_float64 - v1
     goto bb6(v5)
   bb5():
@@ -520,7 +963,7 @@ proc out_float -> void {
     v7: bool = v6 > 1e308_float64
     branch v7 ? bb7() : bb8()
   bb7():
-    discard call proc22(v0, "Infinity")
+    discard call proc35(v0, "Infinity")
     return
   bb8():
     goto bb9()
@@ -528,13 +971,13 @@ proc out_float -> void {
     v8: bool = v6 >= 1e17_float64
     branch v8 ? bb10() : bb11()
   bb10():
-    discard call proc28(v0, v6)
+    discard call proc41(v0, v6)
     return
   bb11():
     goto bb12()
   bb12():
     v9: u64 = convert v6 from float64
-    discard call proc23(v0, v9)
+    discard call proc36(v0, v9)
     v10: float64 = convert v9 from u64
     v11: float64 = v6 - v10
     v12: float64 = convert 1000000000_s64 from s64
@@ -559,8 +1002,8 @@ proc out_float -> void {
     goto bb18()
   bb18():
     v22: u8 = convert 46_s64 from s64
-    discard call proc21(v0, v22)
-    discard call proc27(v0, v20)
+    discard call proc30(v0, v22)
+    discard call proc40(v0, v20)
     return
 }
 proc out_fraction -> void {
@@ -613,7 +1056,7 @@ proc out_fraction -> void {
   bb13():
     bounds_check v20 < 9_s64
     v23: u8 = load s0[v20]
-    discard call proc21(v0, v23)
+    discard call proc30(v0, v23)
     v24: s64 = v20 + 1_s64
     goto bb12(v24)
   bb14():
@@ -636,7 +1079,7 @@ proc out_scientific -> void {
     goto bb4()
   bb4():
     v7: u64 = convert v2 from float64
-    discard call proc23(v0, v7)
+    discard call proc36(v0, v7)
     v8: float64 = convert v7 from u64
     v9: float64 = v2 - v8
     v10: float64 = convert 1000000000_s64 from s64
@@ -655,15 +1098,15 @@ proc out_scientific -> void {
     branch v15 ? bb8() : bb9()
   bb8():
     v18: u8 = convert 46_s64 from s64
-    discard call proc21(v0, v18)
-    discard call proc27(v0, v13)
+    discard call proc30(v0, v18)
+    discard call proc40(v0, v13)
     goto bb10()
   bb9():
     goto bb10()
   bb10():
-    discard call proc22(v0, "e+")
+    discard call proc35(v0, "e+")
     v22: u64 = convert v5 from s64
-    discard call proc23(v0, v22)
+    discard call proc36(v0, v22)
     return
 }
 proc read_signed -> s64 {
@@ -776,15 +1219,15 @@ proc format_any -> void {
     v7: *u8 = load s0.1
     v8: *Type_Info = load s0.0
     v9: s64 = load (v8).*.3
-    v10: s64 = call proc29(v0, v7, v9)
-    discard call proc24(v0, v10)
+    v10: s64 = call proc42(v0, v7, v9)
+    discard call proc37(v0, v10)
     goto bb6()
   bb5():
     v11: *u8 = load s0.1
     v12: *Type_Info = load s0.0
     v13: s64 = load (v12).*.3
-    v14: u64 = call proc30(v0, v11, v13)
-    discard call proc23(v0, v14)
+    v14: u64 = call proc43(v0, v11, v13)
+    discard call proc36(v0, v14)
     goto bb6()
   bb6():
     return
@@ -799,10 +1242,10 @@ proc format_any -> void {
     v18: bool = v17 != 0_u8
     branch v18 ? bb10() : bb11()
   bb10():
-    discard call proc22(v0, "true")
+    discard call proc35(v0, "true")
     goto bb12()
   bb11():
-    discard call proc22(v0, "false")
+    discard call proc35(v0, "false")
     goto bb12()
   bb12():
     return
@@ -816,7 +1259,7 @@ proc format_any -> void {
     store s1 <- v20
     v21: *string = load s1
     v22: string = load (v21).*
-    discard call proc22(v0, v22)
+    discard call proc35(v0, v22)
     return
   bb14():
     goto bb15()
@@ -834,14 +1277,14 @@ proc format_any -> void {
     v28: *float32 = load s2
     v29: float32 = load (v28).*
     v30: float64 = convert v29 from float32
-    discard call proc26(v0, v30)
+    discard call proc39(v0, v30)
     goto bb21()
   bb20():
     v31: *u8 = load s0.1
     store s3 <- v31
     v32: *float64 = load s3
     v33: float64 = load (v32).*
-    discard call proc26(v0, v33)
+    discard call proc39(v0, v33)
     goto bb21()
   bb21():
     return
@@ -854,8 +1297,8 @@ proc format_any -> void {
     v35: *u8 = load s0.1
     v36: *Type_Info = load s0.0
     v37: s64 = load (v36).*.3
-    v38: u64 = call proc30(v0, v35, v37)
-    discard call proc25(v0, v38)
+    v38: u64 = call proc43(v0, v35, v37)
+    discard call proc38(v0, v38)
     return
   bb23():
     goto bb24()
@@ -863,7 +1306,7 @@ proc format_any -> void {
     v39: bool = v3 == 11_Type_Info_Kind
     branch v39 ? bb25() : bb26()
   bb25():
-    discard call proc32(v0, v1)
+    discard call proc45(v0, v1)
     return
   bb26():
     goto bb27()
@@ -885,7 +1328,7 @@ proc format_any -> void {
   bb33(v43: bool):
     branch v43 ? bb34() : bb35()
   bb34():
-    discard call proc35(v0, v1)
+    discard call proc48(v0, v1)
     return
   bb35():
     goto bb36()
@@ -893,7 +1336,7 @@ proc format_any -> void {
     v47: bool = v3 == 6_Type_Info_Kind
     branch v47 ? bb37() : bb38()
   bb37():
-    discard call proc34(v0, v1)
+    discard call proc47(v0, v1)
     return
   bb38():
     goto bb39()
@@ -908,18 +1351,18 @@ proc format_any -> void {
   bb42(v49: bool):
     branch v49 ? bb43() : bb44()
   bb43():
-    discard call proc33(v0, v1)
+    discard call proc46(v0, v1)
     return
   bb44():
     goto bb45()
   bb45():
     v51: u8 = convert 60_u8 from u8
-    discard call proc21(v0, v51)
+    discard call proc30(v0, v51)
     v52: *Type_Info = load s0.0
     v53: string = load (v52).*.2
-    discard call proc22(v0, v53)
+    discard call proc35(v0, v53)
     v54: u8 = convert 62_u8 from u8
-    discard call proc21(v0, v54)
+    discard call proc30(v0, v54)
     return
 }
 proc format_enum -> void {
@@ -932,7 +1375,7 @@ proc format_enum -> void {
     v2: *u8 = load s0.1
     v3: *Type_Info = load s0.0
     v4: s64 = load (v3).*.3
-    v5: s64 = call proc29(v0, v2, v4)
+    v5: s64 = call proc42(v0, v2, v4)
     v6: *Type_Info = load s0.0
     v7: []Type_Info_Member = load (v6).*.9
     store s1 <- v7
@@ -951,7 +1394,7 @@ proc format_enum -> void {
     v15: s64 = load s1.view_count
     bounds_check v8 < v15
     v16: string = load s1.view_data[v8].0
-    discard call proc22(v0, v16)
+    discard call proc35(v0, v16)
     return
   bb6():
     goto bb7()
@@ -961,7 +1404,7 @@ proc format_enum -> void {
   bb3():
     goto bb4()
   bb4():
-    discard call proc24(v0, v5)
+    discard call proc37(v0, v5)
     return
 }
 proc format_sequence -> void {
@@ -980,16 +1423,16 @@ proc format_sequence -> void {
     v5: *u8 = load s0.1
     store s2 <- v5
     v6: *u8 = addr s2[8_s64]
-    v7: s64 = call proc29(v0, v6, 8_s64)
+    v7: s64 = call proc42(v0, v6, 8_s64)
     v8: *Type_Info = load s0.0
     v9: s64 = load (v8).*.10
     v10: u8 = convert 91_u8 from u8
-    discard call proc21(v0, v10)
+    discard call proc30(v0, v10)
     v11: bool = v9 == 0_s64
     branch v11 ? bb1() : bb2()
   bb1():
     v12: u8 = convert 63_u8 from u8
-    discard call proc21(v0, v12)
+    discard call proc30(v0, v12)
     goto bb3()
   bb2():
     goto bb4(0_s64)
@@ -1000,7 +1443,7 @@ proc format_sequence -> void {
     v16: bool = v13 > 0_s64
     branch v16 ? bb8() : bb9()
   bb8():
-    discard call proc22(v0, ", ")
+    discard call proc35(v0, ", ")
     goto bb10()
   bb9():
     goto bb10()
@@ -1010,7 +1453,7 @@ proc format_sequence -> void {
     v23: *u8 = addr s3[v22]
     v24: *Type_Info = load s0.0
     v25: s64 = load (v24).*.6
-    discard call proc36(v0, v23, v25)
+    discard call proc49(v0, v23, v25)
     v26: s64 = v13 + 1_s64
     goto bb4(v26)
   bb6():
@@ -1019,7 +1462,7 @@ proc format_sequence -> void {
     goto bb3()
   bb3():
     v28: u8 = convert 93_u8 from u8
-    discard call proc21(v0, v28)
+    discard call proc30(v0, v28)
     return
 }
 proc format_array -> void {
@@ -1030,7 +1473,7 @@ proc format_array -> void {
   bb0(v0: *Context, v1: Any):
     store s0 <- v1
     v2: u8 = convert 91_u8 from u8
-    discard call proc21(v0, v2)
+    discard call proc30(v0, v2)
     v3: *Type_Info = load s0.0
     v4: s64 = load (v3).*.5
     v5: bool = v4 > 0_s64
@@ -1047,7 +1490,7 @@ proc format_array -> void {
     v12: bool = v9 > 0_s64
     branch v12 ? bb8() : bb9()
   bb8():
-    discard call proc22(v0, ", ")
+    discard call proc35(v0, ", ")
     goto bb10()
   bb9():
     goto bb10()
@@ -1058,7 +1501,7 @@ proc format_array -> void {
     v18: *u8 = addr s1[v17]
     v19: *Type_Info = load s0.0
     v20: s64 = load (v19).*.6
-    discard call proc36(v0, v18, v20)
+    discard call proc49(v0, v18, v20)
     v21: s64 = v9 + 1_s64
     goto bb4(v21)
   bb6():
@@ -1069,7 +1512,7 @@ proc format_array -> void {
     goto bb3()
   bb3():
     v23: u8 = convert 93_u8 from u8
-    discard call proc21(v0, v23)
+    discard call proc30(v0, v23)
     return
 }
 proc format_aggregate -> void {
@@ -1081,7 +1524,7 @@ proc format_aggregate -> void {
   bb0(v0: *Context, v1: Any):
     store s0 <- v1
     v2: u8 = convert 123_u8 from u8
-    discard call proc21(v0, v2)
+    discard call proc30(v0, v2)
     v3: *Type_Info = load s0.0
     v4: []Type_Info_Field = load (v3).*.7
     store s1 <- v4
@@ -1094,7 +1537,7 @@ proc format_aggregate -> void {
     v8: bool = v5 > 0_s64
     branch v8 ? bb5() : bb6()
   bb5():
-    discard call proc22(v0, ", ")
+    discard call proc35(v0, ", ")
     goto bb7()
   bb6():
     goto bb7()
@@ -1102,8 +1545,8 @@ proc format_aggregate -> void {
     v9: s64 = load s1.view_count
     bounds_check v5 < v9
     v11: string = load s1.view_data[v5].0
-    discard call proc22(v0, v11)
-    discard call proc22(v0, " = ")
+    discard call proc35(v0, v11)
+    discard call proc35(v0, " = ")
     v12: *u8 = load s0.1
     v13: s64 = load s1.view_count
     bounds_check v5 < v13
@@ -1113,14 +1556,14 @@ proc format_aggregate -> void {
     v16: s64 = load s1.view_count
     bounds_check v5 < v16
     v17: s64 = load s1.view_data[v5].1
-    discard call proc36(v0, v15, v17)
+    discard call proc49(v0, v15, v17)
     v18: s64 = v5 + 1_s64
     goto bb1(v18)
   bb3():
     goto bb4()
   bb4():
     v19: u8 = convert 125_u8 from u8
-    discard call proc21(v0, v19)
+    discard call proc30(v0, v19)
     return
 }
 proc format_field -> void {
@@ -1157,12 +1600,12 @@ proc format_field -> void {
     store s1 <- v1
     v5: *s64 = load s1
     v6: s64 = load (v5).*
-    discard call proc24(v0, v6)
+    discard call proc37(v0, v6)
     return
   bb2():
     goto bb3()
   bb3():
-    store s2 <- {62_s64, 2_Type_Info_Kind, "s32", 4_s64, 4_s64, 0_s64, 0_s64, static[0], true, static[0], 0_s64}
+    store s2 <- {80_s64, 2_Type_Info_Kind, "s32", 4_s64, 4_s64, 0_s64, 0_s64, static[0], true, static[0], 0_s64}
     v7: s64 = load s2.0
     v8: bool = v2 == v7
     branch v8 ? bb4() : bb5()
@@ -1171,12 +1614,12 @@ proc format_field -> void {
     v9: *s32 = load s3
     v10: s32 = load (v9).*
     v11: s64 = convert v10 from s32
-    discard call proc24(v0, v11)
+    discard call proc37(v0, v11)
     return
   bb5():
     goto bb6()
   bb6():
-    store s4 <- {60_s64, 2_Type_Info_Kind, "s16", 2_s64, 2_s64, 0_s64, 0_s64, static[0], true, static[0], 0_s64}
+    store s4 <- {78_s64, 2_Type_Info_Kind, "s16", 2_s64, 2_s64, 0_s64, 0_s64, static[0], true, static[0], 0_s64}
     v12: s64 = load s4.0
     v13: bool = v2 == v12
     branch v13 ? bb7() : bb8()
@@ -1185,12 +1628,12 @@ proc format_field -> void {
     v14: *s16 = load s5
     v15: s16 = load (v14).*
     v16: s64 = convert v15 from s16
-    discard call proc24(v0, v16)
+    discard call proc37(v0, v16)
     return
   bb8():
     goto bb9()
   bb9():
-    store s6 <- {58_s64, 2_Type_Info_Kind, "s8", 1_s64, 1_s64, 0_s64, 0_s64, static[0], true, static[0], 0_s64}
+    store s6 <- {76_s64, 2_Type_Info_Kind, "s8", 1_s64, 1_s64, 0_s64, 0_s64, static[0], true, static[0], 0_s64}
     v17: s64 = load s6.0
     v18: bool = v2 == v17
     branch v18 ? bb10() : bb11()
@@ -1199,12 +1642,12 @@ proc format_field -> void {
     v19: *s8 = load s7
     v20: s8 = load (v19).*
     v21: s64 = convert v20 from s8
-    discard call proc24(v0, v21)
+    discard call proc37(v0, v21)
     return
   bb11():
     goto bb12()
   bb12():
-    store s8 <- {44_s64, 2_Type_Info_Kind, "u64", 8_s64, 8_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
+    store s8 <- {57_s64, 2_Type_Info_Kind, "u64", 8_s64, 8_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
     v22: s64 = load s8.0
     v23: bool = v2 == v22
     branch v23 ? bb13() : bb14()
@@ -1212,12 +1655,12 @@ proc format_field -> void {
     store s9 <- v1
     v24: *u64 = load s9
     v25: u64 = load (v24).*
-    discard call proc23(v0, v25)
+    discard call proc36(v0, v25)
     return
   bb14():
     goto bb15()
   bb15():
-    store s10 <- {67_s64, 2_Type_Info_Kind, "u32", 4_s64, 4_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
+    store s10 <- {85_s64, 2_Type_Info_Kind, "u32", 4_s64, 4_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
     v26: s64 = load s10.0
     v27: bool = v2 == v26
     branch v27 ? bb16() : bb17()
@@ -1226,12 +1669,12 @@ proc format_field -> void {
     v28: *u32 = load s11
     v29: u32 = load (v28).*
     v30: u64 = convert v29 from u32
-    discard call proc23(v0, v30)
+    discard call proc36(v0, v30)
     return
   bb17():
     goto bb18()
   bb18():
-    store s12 <- {65_s64, 2_Type_Info_Kind, "u16", 2_s64, 2_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
+    store s12 <- {83_s64, 2_Type_Info_Kind, "u16", 2_s64, 2_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
     v31: s64 = load s12.0
     v32: bool = v2 == v31
     branch v32 ? bb19() : bb20()
@@ -1240,7 +1683,7 @@ proc format_field -> void {
     v33: *u16 = load s13
     v34: u16 = load (v33).*
     v35: u64 = convert v34 from u16
-    discard call proc23(v0, v35)
+    discard call proc36(v0, v35)
     return
   bb20():
     goto bb21()
@@ -1252,12 +1695,12 @@ proc format_field -> void {
   bb22():
     v38: u8 = load (v1).*
     v39: u64 = convert v38 from u8
-    discard call proc23(v0, v39)
+    discard call proc36(v0, v39)
     return
   bb23():
     goto bb24()
   bb24():
-    store s15 <- {46_s64, 3_Type_Info_Kind, "float64", 8_s64, 8_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
+    store s15 <- {59_s64, 3_Type_Info_Kind, "float64", 8_s64, 8_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
     v40: s64 = load s15.0
     v41: bool = v2 == v40
     branch v41 ? bb25() : bb26()
@@ -1265,12 +1708,12 @@ proc format_field -> void {
     store s16 <- v1
     v42: *float64 = load s16
     v43: float64 = load (v42).*
-    discard call proc26(v0, v43)
+    discard call proc39(v0, v43)
     return
   bb26():
     goto bb27()
   bb27():
-    store s17 <- {71_s64, 3_Type_Info_Kind, "float32", 4_s64, 4_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
+    store s17 <- {89_s64, 3_Type_Info_Kind, "float32", 4_s64, 4_s64, 0_s64, 0_s64, static[0], false, static[0], 0_s64}
     v44: s64 = load s17.0
     v45: bool = v2 == v44
     branch v45 ? bb28() : bb29()
@@ -1279,7 +1722,7 @@ proc format_field -> void {
     v46: *float32 = load s18
     v47: float32 = load (v46).*
     v48: float64 = convert v47 from float32
-    discard call proc26(v0, v48)
+    discard call proc39(v0, v48)
     return
   bb29():
     goto bb30()
@@ -1293,10 +1736,10 @@ proc format_field -> void {
     v52: bool = v51 != 0_u8
     branch v52 ? bb34() : bb35()
   bb34():
-    discard call proc22(v0, "true")
+    discard call proc35(v0, "true")
     goto bb36()
   bb35():
-    discard call proc22(v0, "false")
+    discard call proc35(v0, "false")
     goto bb36()
   bb36():
     return
@@ -1311,13 +1754,175 @@ proc format_field -> void {
     store s21 <- v1
     v55: *string = load s21
     v56: string = load (v55).*
-    discard call proc22(v0, v56)
+    discard call proc35(v0, v56)
     return
   bb38():
     goto bb39()
   bb39():
-    discard call proc22(v0, "..")
+    discard call proc35(v0, "..")
     return
+}
+proc parse_format_index -> (s64, s64, bool) {
+  params: v0: *Context, v1: string, v2: s64
+  slots:
+    s0: string  // temporary
+    s1: *u8  // temporary
+    s2: (s64, s64, bool)  // temporary
+  bb0(v0: *Context, v1: string, v2: s64):
+    store s0 <- v1
+    goto bb1(v2, false, 0_s64, false)
+  bb1(v3: s64, v16: bool, v19: s64, v44: bool):
+    v4: s64 = load s0.count
+    v5: bool = v3 < v4
+    branch v5 ? bb2() : bb3()
+  bb2():
+    v6: *u8 = load s0.data
+    store s1 <- v6
+    v7: *u8 = addr s1[v3]
+    v8: u8 = load (v7).*
+    v9: bool = v8 < 48_u8
+    branch v9 ? bb6() : bb5()
+  bb6():
+    goto bb7(true)
+  bb5():
+    v11: bool = v8 > 57_u8
+    goto bb7(v11)
+  bb7(v10: bool):
+    branch v10 ? bb8() : bb9()
+  bb8():
+    goto bb4()
+  bb9():
+    goto bb10()
+  bb10():
+    v13: u8 = v8 - 48_u8
+    v14: s64 = convert v13 from u8
+    v17: bool = !v16
+    branch v17 ? bb11() : bb12()
+  bb11():
+    v20: bool = v19 > 922337203685477580_s64
+    branch v20 ? bb14() : bb15()
+  bb14():
+    goto bb16(true, -1_s64)
+  bb15():
+    v21: bool = v19 == 922337203685477580_s64
+    branch v21 ? bb17() : bb18()
+  bb17():
+    v23: bool = v14 > 7_s64
+    goto bb19(v23)
+  bb18():
+    goto bb19(false)
+  bb19(v22: bool):
+    branch v22 ? bb20() : bb21()
+  bb20():
+    goto bb22(true, -1_s64)
+  bb21():
+    v25: s64 = v19 * 10_s64
+    v27: s64 = v25 + v14
+    goto bb22(v16, v27)
+  bb22(v36: bool, v40: s64):
+    goto bb16(v36, v40)
+  bb16(v35: bool, v39: s64):
+    goto bb13(v35, v39)
+  bb12():
+    goto bb13(v16, v19)
+  bb13(v34: bool, v38: s64):
+    v33: s64 = v3 + 1_s64
+    goto bb1(v33, v34, v38, true)
+  bb3():
+    goto bb4()
+  bb4():
+    store s2.0 <- v19
+    store s2.1 <- v3
+    store s2.2 <- v44
+    v50: (s64, s64, bool) = load s2
+    return v50
+}
+proc format_argument_was_used -> bool {
+  params: v0: *Context, v1: string, v2: s64, v3: s64
+  slots:
+    s0: string  // temporary
+    s1: *u8  // temporary
+    s2: *u8  // temporary
+    s3: *u8  // temporary
+    s4: (s64, s64, bool)  // temporary
+  bb0(v0: *Context, v1: string, v2: s64, v3: s64):
+    store s0 <- v1
+    v4: bool = v2 < v3
+    branch v4 ? bb1() : bb2()
+  bb1():
+    return true
+  bb2():
+    goto bb3()
+  bb3():
+    goto bb4(0_s64)
+  bb4(v5: s64):
+    v6: s64 = load s0.count
+    v7: bool = v5 < v6
+    branch v7 ? bb5() : bb6()
+  bb5():
+    v8: *u8 = load s0.data
+    store s1 <- v8
+    v9: *u8 = addr s1[v5]
+    v10: u8 = load (v9).*
+    v11: u8 = convert 37_s64 from s64
+    v12: bool = v10 != v11
+    branch v12 ? bb8() : bb9()
+  bb8():
+    v13: s64 = v5 + 1_s64
+    goto bb4(v13)
+  bb9():
+    goto bb10()
+  bb10():
+    v14: s64 = v5 + 1_s64
+    v15: s64 = load s0.count
+    v16: bool = v14 < v15
+    branch v16 ? bb11() : bb12()
+  bb11():
+    v18: *u8 = load s0.data
+    store s2 <- v18
+    v19: *u8 = addr s2[v5]
+    store s3 <- v19
+    v20: *u8 = addr s3[1_s64]
+    v21: u8 = load (v20).*
+    v22: u8 = convert 37_s64 from s64
+    v23: bool = v21 == v22
+    goto bb13(v23)
+  bb12():
+    goto bb13(false)
+  bb13(v17: bool):
+    branch v17 ? bb14() : bb15()
+  bb14():
+    v25: s64 = v5 + 2_s64
+    goto bb4(v25)
+  bb15():
+    goto bb16()
+  bb16():
+    v26: s64 = v5 + 1_s64
+    v27: (s64, s64, bool) = call proc50(v0, v1, v26)
+    store s4 <- v27
+    v28: s64 = load s4.0
+    v29: s64 = load s4.1
+    v30: bool = load s4.2
+    branch v30 ? bb17() : bb18()
+  bb17():
+    v31: s64 = v2 + 1_s64
+    v32: bool = v28 == v31
+    branch v32 ? bb20() : bb21()
+  bb20():
+    return true
+  bb21():
+    goto bb22()
+  bb22():
+    goto bb19(v29)
+  bb18():
+    v33: s64 = v5 + 1_s64
+    goto bb19(v33)
+  bb19(v34: s64):
+    goto bb4(v34)
+  bb6():
+    goto bb7()
+  bb7():
+    return false
 }
 proc format_into_out -> void {
   params: v0: *Context, v1: string, v2: []Any
@@ -1327,11 +1932,12 @@ proc format_into_out -> void {
     s2: *u8  // temporary
     s3: *u8  // temporary
     s4: *u8  // temporary
+    s5: (s64, s64, bool)  // temporary
   bb0(v0: *Context, v1: string, v2: []Any):
     store s0 <- v1
     store s1 <- v2
     goto bb1(0_s64, 0_s64)
-  bb1(v3: s64, v26: s64):
+  bb1(v3: s64, v41: s64):
     v4: s64 = load s0.count
     v5: bool = v3 < v4
     branch v5 ? bb2() : bb3()
@@ -1344,9 +1950,9 @@ proc format_into_out -> void {
     v10: bool = v8 != v9
     branch v10 ? bb5() : bb6()
   bb5():
-    discard call proc21(v0, v8)
+    discard call proc30(v0, v8)
     v11: s64 = v3 + 1_s64
-    goto bb1(v11, v26)
+    goto bb1(v11, v41)
   bb6():
     goto bb7()
   bb7():
@@ -1370,65 +1976,104 @@ proc format_into_out -> void {
     branch v15 ? bb11() : bb12()
   bb11():
     v22: u8 = convert 37_s64 from s64
-    discard call proc21(v0, v22)
+    discard call proc30(v0, v22)
     v24: s64 = v3 + 2_s64
-    goto bb1(v24, v26)
+    goto bb1(v24, v41)
   bb12():
     goto bb13()
   bb13():
-    v27: s64 = load s1.view_count
-    v28: bool = v26 < v27
-    branch v28 ? bb14() : bb15()
+    v25: s64 = v3 + 1_s64
+    v26: (s64, s64, bool) = call proc50(v0, v1, v25)
+    store s5 <- v26
+    v27: s64 = load s5.0
+    v28: s64 = load s5.1
+    v29: bool = load s5.2
+    branch v29 ? bb14() : bb15()
   bb14():
-    v29: s64 = load s1.view_count
-    bounds_check v26 < v29
-    v30: Any = load s1.view_data[v26]
-    discard call proc31(v0, v30)
-    v31: s64 = v26 + 1_s64
-    goto bb16(v31)
+    v30: bool = v27 > 0_s64
+    branch v30 ? bb17() : bb18()
+  bb17():
+    v32: s64 = load s1.view_count
+    v33: bool = v27 <= v32
+    goto bb19(v33)
+  bb18():
+    goto bb19(false)
+  bb19(v31: bool):
+    branch v31 ? bb20() : bb21()
+  bb20():
+    v34: s64 = load s1.view_count
+    v36: s64 = v27 - 1_s64
+    bounds_check v36 < v34
+    v37: Any = load s1.view_data[v36]
+    discard call proc44(v0, v37)
+    goto bb22()
+  bb21():
+    discard call proc35(v0, "%!(MISSING)")
+    goto bb22()
+  bb22():
+    goto bb1(v28, v41)
   bb15():
-    discard call proc22(v0, "%!(MISSING)")
-    goto bb16(v26)
-  bb16(v34: s64):
-    v33: s64 = v3 + 1_s64
-    goto bb1(v33, v34)
+    goto bb16()
+  bb16():
+    v42: s64 = load s1.view_count
+    v43: bool = v41 < v42
+    branch v43 ? bb23() : bb24()
+  bb23():
+    v44: s64 = load s1.view_count
+    bounds_check v41 < v44
+    v45: Any = load s1.view_data[v41]
+    discard call proc44(v0, v45)
+    v46: s64 = v41 + 1_s64
+    goto bb25(v46)
+  bb24():
+    discard call proc35(v0, "%!(MISSING)")
+    goto bb25(v41)
+  bb25(v51: s64):
+    v48: s64 = v3 + 1_s64
+    goto bb1(v48, v51)
   bb3():
     goto bb4()
   bb4():
-    v35: s64 = load s1.view_count
-    v36: bool = v26 < v35
-    branch v36 ? bb17() : bb18()
-  bb17():
-    discard call proc22(v0, "%!(EXTRA ")
-    goto bb20(v26)
-  bb20(v37: s64):
-    v38: s64 = load s1.view_count
-    v39: bool = v37 < v38
-    branch v39 ? bb21() : bb22()
-  bb21():
-    v41: bool = v37 > v26
-    branch v41 ? bb24() : bb25()
-  bb24():
-    discard call proc22(v0, ", ")
-    goto bb26()
-  bb25():
-    goto bb26()
-  bb26():
-    v42: s64 = load s1.view_count
-    bounds_check v37 < v42
-    v44: Any = load s1.view_data[v37]
-    discard call proc31(v0, v44)
-    v45: s64 = v37 + 1_s64
-    goto bb20(v45)
-  bb22():
-    goto bb23()
-  bb23():
-    v47: u8 = convert 41_u8 from u8
-    discard call proc21(v0, v47)
-    goto bb19()
-  bb18():
-    goto bb19()
-  bb19():
+    goto bb26(0_s64, false)
+  bb26(v52: s64, v58: bool):
+    v53: s64 = load s1.view_count
+    v54: bool = v52 < v53
+    branch v54 ? bb27() : bb28()
+  bb27():
+    v56: bool = call proc51(v0, v1, v52, v41)
+    v57: bool = !v56
+    branch v57 ? bb30() : bb31()
+  bb30():
+    v59: bool = !v58
+    branch v59 ? bb33() : bb34()
+  bb33():
+    discard call proc35(v0, "%!(EXTRA ")
+    goto bb35(true)
+  bb34():
+    discard call proc35(v0, ", ")
+    goto bb35(v58)
+  bb35(v68: bool):
+    v60: s64 = load s1.view_count
+    bounds_check v52 < v60
+    v62: Any = load s1.view_data[v52]
+    discard call proc44(v0, v62)
+    goto bb32(v68)
+  bb31():
+    goto bb32(v58)
+  bb32(v67: bool):
+    v64: s64 = v52 + 1_s64
+    goto bb26(v64, v67)
+  bb28():
+    goto bb29()
+  bb29():
+    branch v58 ? bb36() : bb37()
+  bb36():
+    v69: u8 = convert 41_u8 from u8
+    discard call proc30(v0, v69)
+    goto bb38()
+  bb37():
+    goto bb38()
+  bb38():
     return
 }
 proc print_int -> void {
@@ -1455,6 +2100,6 @@ proc print_int -> void {
     store s4.view_data <- v5
     store s4.view_count <- 1_s64
     v6: []Any = load s4
-    discard call proc15(v0, "%", v6)
+    discard call proc23(v0, "%", v6)
     return
 }

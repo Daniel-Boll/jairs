@@ -1,6 +1,11 @@
 # Jai parity: what real Jai code uses that Jairs lacks
 
-**Status:** research, not a plan. Nothing here is scheduled; `PLAN.md` §7 owns the order.
+**Status:** primary-source gap research. `PLAN.md` §7 owns the order.
+
+The broader chapter-by-chapter comparison against the pinned local
+`references/The_Way_to_Jai` submodule, including the P0–P7 compatibility roadmap, is
+[`docs/research/way-to-jai-compatibility.md`](research/way-to-jai-compatibility.md). That guide is
+secondary evidence; this document keeps the narrower primary-source and executable-probe findings.
 
 **The games-facing view is `docs-site/src/content/docs/games/not-implemented.md`; the commit-pinned
 source audit and facade proposal are `docs/research/jai-games-primary-sources.md` and
