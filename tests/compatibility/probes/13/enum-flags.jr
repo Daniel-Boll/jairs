@@ -1,20 +1,20 @@
 #import "Basic";
 
 Direction :: enum_flags {
-    EAST;
-    NORTH;
-    WEST;
-    SOUTH;
+  EAST;
+  NORTH;
+  WEST;
+  SOUTH;
 }
 
 main :: () -> s64 {
-    active := Direction.EAST | Direction.NORTH | Direction.WEST | Direction.SOUTH;
-    active = active & ~Direction.SOUTH;
-    value := cast(s64, active);
-    print("flags:%\n", value);
+  active := Direction.EAST | Direction.NORTH | Direction.WEST | Direction.SOUTH;
+  active = active & ~Direction.SOUTH;
+  value := cast(s64, active);
+  print("flags:%\n", value);
 
-    if value == 7 && (active & Direction.WEST) == Direction.WEST {
-        return 0;
-    }
-    return 1;
+  if value == 7 && (active & Direction.WEST) == Direction.WEST {
+    return 0;
+  }
+  return 1;
 }

@@ -23,15 +23,15 @@
 // caller — including callers in other files, because the marker lives in the procedure's **type**
 // (ADR-0008's reserved effect-row slot, finally filled) rather than in a side table.
 try_divide :: (a: s64, b: s64) -> (s64, bool) #must {
-    if b == 0 {
-        return 0, false;
-    }
-    return a / b, true;
+  if b == 0 {
+    return 0, false;
+  }
+  return a / b, true;
 }
 
 // `#must` does not require several returns. A single value can be one a caller must look at.
 only_one :: (n: s64) -> s64 #must {
-    return n * 2;
+  return n * 2;
 }
 
 // Writes through a pointer, so the discard below can be *seen* to have run the call rather than
@@ -42,36 +42,36 @@ only_one :: (n: s64) -> s64 #must {
 // still leaks an internal error — the eighth occurrence in PLAN's known-defects list, and it wants
 // W6's static-data mechanism rather than a guess.
 bump_and_fail :: (counter: *s64) -> (s64, bool) #must {
-    counter.* = 4;
-    return 0, false;
+  counter.* = 4;
+  return 0, false;
 }
 
 main :: () {
-    total := 0;
+  total := 0;
 
-    // Received, both positions. The flag is an ordinary value: this is the whole error model.
-    quotient, ok := try_divide(10, 2);
-    total = total + quotient;
-    if ok {
-        total = total + 1;
-    }
+  // Received, both positions. The flag is an ordinary value: this is the whole error model.
+  quotient, ok := try_divide(10, 2);
+  total = total + quotient;
+  if ok {
+    total = total + 1;
+  }
 
-    // A single-value `#must`, received.
-    total = total + only_one(3);
+  // A single-value `#must`, received.
+  total = total + only_one(3);
 
-    // **The deliberate discard**, and the reason it is allowed (ADR-0151 §2): an unbypassable check is
-    // one people route around with a wrapper procedure, which hides the decision instead of recording
-    // it. `_ = …` is visible in the source, greppable, and reviewable — the same trade `#no_abc`
-    // already makes for bounds checks.
-    counter := 0;
-    _ = bump_and_fail(*counter);
-    total = total + counter;
+  // **The deliberate discard**, and the reason it is allowed (ADR-0151 §2): an unbypassable check is
+  // one people route around with a wrapper procedure, which hides the decision instead of recording
+  // it. `_ = …` is visible in the source, greppable, and reviewable — the same trade `#no_abc`
+  // already makes for bounds checks.
+  counter := 0;
+  _ = bump_and_fail(*counter);
+  total = total + counter;
 
-    // **Through a procedure pointer**, which is what putting the marker in the *type* buys: the
-    // pointer and the procedure have the same type, so the obligation survives being taken as a value.
-    // A side table keyed on the declaration would have lost it here.
-    f := only_one;
-    total = total + f(10);
+  // **Through a procedure pointer**, which is what putting the marker in the *type* buys: the
+  // pointer and the procedure have the same type, so the obligation survives being taken as a value.
+  // A side table keyed on the declaration would have lost it here.
+  f := only_one;
+  total = total + f(10);
 
-    exit(total);
+  exit(total);
 }

@@ -121,8 +121,8 @@ GL :: #import "GL";
 /// module reads. Only `format`, the `SDL_PixelFormatEnum` value at offset 0, is read: it is what decides
 /// whether `texture_from` must convert before uploading.
 Pixel_Format_Data :: struct {
-    /// The `SDL_PixelFormatEnum` value. Compare against `GL_UPLOAD_FORMAT`.
-    format: u32 #place 0;
+  /// The `SDL_PixelFormatEnum` value. Compare against `GL_UPLOAD_FORMAT`.
+  format: u32 #place 0;
 }
 
 /// An `SDL_Surface` — pixels in ordinary memory — as a `#place` overlay of the fields worth reading.
@@ -133,26 +133,26 @@ Pixel_Format_Data :: struct {
 /// The offsets are SDL2's ABI rather than a documented contract — see the module docs, which is where that
 /// distinction is argued.
 Surface_Data :: struct {
-    /// The surface's pixel format — `SDL_PixelFormat *`. Offset 8: `flags` is a `Uint32` at offset 0, padded
-    /// to 8 for this pointer, exactly the gap `width` at 16 already implied existed and nothing before this
-    /// module named.
-    pixel_format: *Pixel_Format_Data #place 8;
-    /// Width in pixels.
-    width: s32 #place 16;
-    /// Height in pixels.
-    height: s32 #place 20;
-    /// Bytes per row, which is **not** `width * bytes_per_pixel`: SDL pads rows for alignment.
-    ///
-    /// Exposed because a caller who ever does read pixels needs it, and because its absence is the single most
-    /// common source of a skewed image.
-    pitch: s32 #place 24;
-    /// The pixels. Nothing exported here reads them — see the module docs.
-    pixels: *u8 #place 32;
-    /// The rest of the struct, so the overlay is the 96 bytes SDL allocated.
-    ///
-    /// Never read. It exists so the size check below has something to check, and so no future field lands
-    /// outside the struct.
-    tail: [56]u8 #place 40;
+  /// The surface's pixel format — `SDL_PixelFormat *`. Offset 8: `flags` is a `Uint32` at offset 0, padded
+  /// to 8 for this pointer, exactly the gap `width` at 16 already implied existed and nothing before this
+  /// module named.
+  pixel_format: *Pixel_Format_Data #place 8;
+  /// Width in pixels.
+  width: s32 #place 16;
+  /// Height in pixels.
+  height: s32 #place 20;
+  /// Bytes per row, which is **not** `width * bytes_per_pixel`: SDL pads rows for alignment.
+  ///
+  /// Exposed because a caller who ever does read pixels needs it, and because its absence is the single most
+  /// common source of a skewed image.
+  pitch: s32 #place 24;
+  /// The pixels. Nothing exported here reads them — see the module docs.
+  pixels: *u8 #place 32;
+  /// The rest of the struct, so the overlay is the 96 bytes SDL allocated.
+  ///
+  /// Never read. It exists so the size check below has something to check, and so no future field lands
+  /// outside the struct.
+  tail: [56]u8 #place 40;
 }
 
 // **This module no longer declares a `Texture`** (ADR-0182 §4). It had a one-field
@@ -166,8 +166,8 @@ Surface_Data :: struct {
 
 /// A loaded image's pixels, before it becomes a texture.
 Surface :: struct {
-    /// The `SDL_Surface *`. Null when the surface is not loaded.
-    handle: *Surface_Data;
+  /// The `SDL_Surface *`. Null when the surface is not loaded.
+  handle: *Surface_Data;
 }
 
 /// `SDL_PIXELFORMAT_RGBA32`'s value on a little-endian host (`SDL_PIXELFORMAT_ABGR8888`) — the format this
@@ -200,17 +200,17 @@ SURFACE_LAYOUT_IS_SDL2 :: size_of(Surface_Data) == 96;
 /// rejected deferring images entirely. A caller who ignores the flag gets a null handle and a null texture and
 /// draws nothing, with no clue which of the three steps failed.
 load_bmp :: (path: *u8) -> (Surface, bool) #must {
-    s: Surface;
-    mode := "rb\0";
-    source := sdl_rw_from_file(path, mode.data);
-    if source == null {
-        s.handle = null;
-        return s, false;
-    }
-    // `1` frees the `SDL_RWops` whether the decode succeeds or fails, which is why there is no leak on the
-    // failure path below and no second cleanup call anywhere in this module.
-    s.handle = sdl_load_bmp_rw(source, 1);
-    return s, s.handle != null;
+  s: Surface;
+  mode := "rb\0";
+  source := sdl_rw_from_file(path, mode.data);
+  if source == null {
+    s.handle = null;
+    return s, false;
+  }
+  // `1` frees the `SDL_RWops` whether the decode succeeds or fails, which is why there is no leak on the
+  // failure path below and no second cleanup call anywhere in this module.
+  s.handle = sdl_load_bmp_rw(source, 1);
+  return s, s.handle != null;
 }
 
 /// Creates an empty RGBA surface `width` by `height`.
@@ -218,15 +218,15 @@ load_bmp :: (path: *u8) -> (Surface, bool) #must {
 /// Here because the *test* for this module needs one: an image can then be built, saved and loaded back, so
 /// nothing binary lives in the repository. A caller building an image procedurally wants it too.
 create_surface :: (width: s64, height: s64) -> (Surface, bool) #must {
-    s: Surface;
-    s.handle = sdl_create_surface(
-        0,
-        cast(s32, width),
-        cast(s32, height),
-        32,
-        cast(u32, GL_UPLOAD_FORMAT),
-    );
-    return s, s.handle != null;
+  s: Surface;
+  s.handle = sdl_create_surface(
+    0,
+    cast(s32, width),
+    cast(s32, height),
+    32,
+    cast(u32, GL_UPLOAD_FORMAT),
+  );
+  return s, s.handle != null;
 }
 
 /// Fills `area` of `surface` with a packed 32-bit colour.
@@ -237,12 +237,12 @@ create_surface :: (width: s64, height: s64) -> (Surface, bool) #must {
 /// opaque red. A caller mixing this with a surface loaded from a file must know that file's format, which
 /// is the honest reason this module has no `set_pixel`.
 fill_surface :: (surface: *Surface, area: *Window.Rect, colour: s64) -> bool #must {
-    if surface.handle == null {
-        return false;
-    }
-    // Narrowed at the boundary: SDL's `Uint32` is the surface's packed pixel, and a `s64` caller-facing
-    // parameter is what lets `0xFF0000FF` be written without a cast at every call site.
-    return sdl_fill_surface(surface.handle, area, cast(u32, colour)) == 0;
+  if surface.handle == null {
+    return false;
+  }
+  // Narrowed at the boundary: SDL's `Uint32` is the surface's packed pixel, and a `s64` caller-facing
+  // parameter is what lets `0xFF0000FF` be written without a cast at every call site.
+  return sdl_fill_surface(surface.handle, area, cast(u32, colour)) == 0;
 }
 
 /// Writes `surface` to `path` as a BMP.
@@ -250,49 +250,49 @@ fill_surface :: (surface: *Surface, area: *Window.Rect, colour: s64) -> bool #mu
 /// `#must`: a write can fail for every ordinary reason, and a caller who ignores it and then loads the file back
 /// gets the *load*'s failure instead, one step removed from the cause.
 save_bmp :: (surface: *Surface, path: *u8) -> bool #must {
-    if surface.handle == null {
-        return false;
-    }
-    mode := "wb\0";
-    destination := sdl_rw_from_file(path, mode.data);
-    if destination == null {
-        return false;
-    }
-    return sdl_save_bmp_rw(surface.handle, destination, 1) == 0;
+  if surface.handle == null {
+    return false;
+  }
+  mode := "wb\0";
+  destination := sdl_rw_from_file(path, mode.data);
+  if destination == null {
+    return false;
+  }
+  return sdl_save_bmp_rw(surface.handle, destination, 1) == 0;
 }
 
 /// The surface's width in pixels, or 0 when it is not loaded.
 width_of :: (surface: *Surface) -> s64 {
-    if surface.handle == null {
-        return 0;
-    }
-    return cast(s64, surface.handle.width);
+  if surface.handle == null {
+    return 0;
+  }
+  return cast(s64, surface.handle.width);
 }
 
 /// The surface's height in pixels, or 0 when it is not loaded.
 height_of :: (surface: *Surface) -> s64 {
-    if surface.handle == null {
-        return 0;
-    }
-    return cast(s64, surface.handle.height);
+  if surface.handle == null {
+    return 0;
+  }
+  return cast(s64, surface.handle.height);
 }
 
 /// The surface's row stride in bytes, or 0 when it is not loaded.
 ///
 /// **Not** `width * 4`: SDL pads rows, and assuming otherwise is what skews an image.
 pitch_of :: (surface: *Surface) -> s64 {
-    if surface.handle == null {
-        return 0;
-    }
-    return cast(s64, surface.handle.pitch);
+  if surface.handle == null {
+    return 0;
+  }
+  return cast(s64, surface.handle.pitch);
 }
 
 /// Frees `surface` and marks it freed. Safe on an already-freed one.
 free_surface :: (surface: *Surface) {
-    if surface.handle != null {
-        sdl_free_surface(surface.handle);
-    }
-    surface.handle = null;
+  if surface.handle != null {
+    sdl_free_surface(surface.handle);
+  }
+  surface.handle = null;
 }
 
 /// Uploads `surface` to a GL texture `Simp` can draw from.
@@ -305,77 +305,77 @@ free_surface :: (surface: *Surface) {
 /// `pitch` still is not `width * 4` — see the module docs for why both exist and why `GL.set_unpack_alignment`
 /// does not.
 texture_from :: (surface: *Surface) -> (Simp.Texture, bool) #must {
-    t: Simp.Texture;
-    t.handle = 0;
-    t.width = 0;
-    t.height = 0;
-    if surface.handle == null {
-        return t, false;
+  t: Simp.Texture;
+  t.handle = 0;
+  t.width = 0;
+  t.height = 0;
+  if surface.handle == null {
+    return t, false;
+  }
+
+  // Step 1: make sure the pixels are RGBA8888. `converted` is this procedure's own temporary — never the
+  // caller's surface — and is freed before returning on every path once it exists.
+  working := surface.handle;
+  converted: *Surface_Data = null;
+  if working.pixel_format == null || working.pixel_format.format != cast(u32, GL_UPLOAD_FORMAT) {
+    converted = sdl_convert_surface_format(working, cast(u32, GL_UPLOAD_FORMAT), 0);
+    if converted == null {
+      return t, false;
     }
+    working = converted;
+  }
 
-    // Step 1: make sure the pixels are RGBA8888. `converted` is this procedure's own temporary — never the
-    // caller's surface — and is freed before returning on every path once it exists.
-    working := surface.handle;
-    converted: *Surface_Data = null;
-    if working.pixel_format == null || working.pixel_format.format != cast(u32, GL_UPLOAD_FORMAT) {
-        converted = sdl_convert_surface_format(working, cast(u32, GL_UPLOAD_FORMAT), 0);
-        if converted == null {
-            return t, false;
-        }
-        working = converted;
-    }
+  width := cast(s64, working.width);
+  height := cast(s64, working.height);
+  pitch := cast(s64, working.pitch);
+  tight_pitch := width * 4;
 
-    width := cast(s64, working.width);
-    height := cast(s64, working.height);
-    pitch := cast(s64, working.pitch);
-    tight_pitch := width * 4;
-
-    // Step 2: get a tightly-packed RGBA buffer. Already tight is the common case — measured, see the module
-    // docs — so the repack only runs for a surface this module did not build itself.
-    pixels := working.pixels;
-    if pitch != tight_pitch {
-        scratch := talloc(tight_pitch * height);
-        if scratch == null {
-            if converted != null {
-                sdl_free_surface(converted);
-            }
-            return t, false;
-        }
-        source := view(working.pixels, pitch * height);
-        dest := view(scratch, tight_pitch * height);
-        row := 0;
-        while row < height {
-            column := 0;
-            while column < tight_pitch {
-                dest[row * tight_pitch + column] = source[row * pitch + column];
-                column = column + 1;
-            }
-            row = row + 1;
-        }
-        pixels = scratch;
-    }
-
-    // Step 3: upload. `GL.set_unpack_alignment` is not called — `pixels` is tightly-packed RGBA by this point
-    // on every path, and `width * 4` is always a multiple of GL's default 4-byte alignment, so the knob that
-    // exists for a 3-channel row has nothing to correct here.
-    handle := GL.create_texture();
-    if handle == 0 {
-        if converted != null {
-            sdl_free_surface(converted);
-        }
-        return t, false;
-    }
-    GL.bind_texture_unit_0(handle);
-    GL.upload_texture_rgba(width, height, pixels);
-
-    if converted != null {
+  // Step 2: get a tightly-packed RGBA buffer. Already tight is the common case — measured, see the module
+  // docs — so the repack only runs for a surface this module did not build itself.
+  pixels := working.pixels;
+  if pitch != tight_pitch {
+    scratch := talloc(tight_pitch * height);
+    if scratch == null {
+      if converted != null {
         sdl_free_surface(converted);
+      }
+      return t, false;
     }
+    source := view(working.pixels, pitch * height);
+    dest := view(scratch, tight_pitch * height);
+    row := 0;
+    while row < height {
+      column := 0;
+      while column < tight_pitch {
+        dest[row * tight_pitch + column] = source[row * pitch + column];
+        column = column + 1;
+      }
+      row = row + 1;
+    }
+    pixels = scratch;
+  }
 
-    t.handle = handle;
-    t.width = width;
-    t.height = height;
-    return t, true;
+  // Step 3: upload. `GL.set_unpack_alignment` is not called — `pixels` is tightly-packed RGBA by this point
+  // on every path, and `width * 4` is always a multiple of GL's default 4-byte alignment, so the knob that
+  // exists for a 3-channel row has nothing to correct here.
+  handle := GL.create_texture();
+  if handle == 0 {
+    if converted != null {
+      sdl_free_surface(converted);
+    }
+    return t, false;
+  }
+  GL.bind_texture_unit_0(handle);
+  GL.upload_texture_rgba(width, height, pixels);
+
+  if converted != null {
+    sdl_free_surface(converted);
+  }
+
+  t.handle = handle;
+  t.width = width;
+  t.height = height;
+  return t, true;
 }
 
 /// Loads a BMP straight to a texture, freeing the intermediate surface.
@@ -385,17 +385,17 @@ texture_from :: (surface: *Surface) -> (Simp.Texture, bool) #must {
 ///
 /// Needs a GL context already current — see the module docs.
 load_texture :: (path: *u8) -> (Simp.Texture, bool) #must {
-    t: Simp.Texture;
-    s, ok := load_bmp(path);
-    if !ok {
-        t.handle = 0;
-        t.width = 0;
-        t.height = 0;
-        return t, false;
-    }
-    t, uploaded := texture_from(*s);
-    free_surface(*s);
-    return t, uploaded;
+  t: Simp.Texture;
+  s, ok := load_bmp(path);
+  if !ok {
+    t.handle = 0;
+    t.width = 0;
+    t.height = 0;
+    return t, false;
+  }
+  t, uploaded := texture_from(*s);
+  free_surface(*s);
+  return t, uploaded;
 }
 
 /// Destroys `texture` and marks it destroyed. Safe on an already-destroyed one.
@@ -403,10 +403,10 @@ load_texture :: (path: *u8) -> (Simp.Texture, bool) #must {
 /// Deletes the **GL** texture (`GL.delete_texture`, which is itself safe on the zero handle a destroyed or
 /// never-loaded texture carries) — there is no SDL texture any more to destroy instead.
 destroy_texture :: (texture: *Simp.Texture) {
-    GL.delete_texture(texture.handle);
-    texture.handle = 0;
-    texture.width = 0;
-    texture.height = 0;
+  GL.delete_texture(texture.handle);
+  texture.handle = 0;
+  texture.width = 0;
+  texture.height = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -434,11 +434,11 @@ sdl_save_bmp_rw :: (surface: *Surface_Data, destination: *u8, free_destination: 
 
 /// `SDL_CreateRGBSurfaceWithFormat(Uint32 flags, int w, int h, int depth, Uint32 format)`.
 sdl_create_surface :: (
-    flags: u32,
-    width: s32,
-    height: s32,
-    depth: s32,
-    format: u32,
+  flags: u32,
+  width: s32,
+  height: s32,
+  depth: s32,
+  format: u32,
 ) -> *Surface_Data #foreign sdl "SDL_CreateRGBSurfaceWithFormat";
 
 /// `SDL_FreeSurface`.

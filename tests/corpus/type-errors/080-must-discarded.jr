@@ -21,12 +21,12 @@
 // returning nothing, refused at the declaration because the marker could never be violated there and
 // a reader who wrote it believes a check is running (ADR-0058 §3's rule).
 try_divide :: (a: s64, b: s64) -> (s64, bool) #must {
-    if b == 0 {
-        return 0, false;
-    }
-    return a / b, true;
+  if b == 0 {
+    return 0, false;
+  }
+  return a / b, true;
 }
 
 main :: () {
-    try_divide(3, 4);
+  try_divide(3, 4);
 }

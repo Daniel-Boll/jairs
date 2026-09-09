@@ -1,6 +1,6 @@
 Point :: struct {
-    x: s64;
-    y: s64;
+  x: s64;
+  y: s64;
 }
 
 // An empty struct is legal and occupies zero bytes.
@@ -8,7 +8,7 @@ Marker :: struct {
 }
 
 Entity :: struct {
-    position: Point;
-    health: s64;
-    alive: bool;
+  position: Point;
+  health: s64;
+  alive: bool;
 }

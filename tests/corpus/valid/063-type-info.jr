@@ -44,87 +44,87 @@
 
 /// Two `s64` fields: size 16, alignment 8. A one-field struct would not distinguish size from alignment.
 Point :: struct {
-    x: s64;
-    y: s64;
+  x: s64;
+  y: s64;
 }
 
 /// An enum, so the `ENUM` kind has something to report and a named type's name is not always a struct's.
 Colour :: enum {
-    RED;
-    GREEN;
-    BLUE;
+  RED;
+  GREEN;
+  BLUE;
 }
 
 /// Compares two strings by contents, since `name` is text rather than a pointer to compare.
 same :: (a: string, b: string) -> bool {
-    if a.count != b.count {
-        return false;
+  if a.count != b.count {
+    return false;
+  }
+  i := 0;
+  while i < a.count {
+    p := a.data + i;
+    q := b.data + i;
+    if p.* != q.* {
+      return false;
     }
-    i := 0;
-    while i < a.count {
-        p := a.data + i;
-        q := b.data + i;
-        if p.* != q.* {
-            return false;
-        }
-        i = i + 1;
-    }
-    return true;
+    i = i + 1;
+  }
+  return true;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // A **declared struct**: name from its declaration, size and alignment from the layout the rest of
-    // the compiler uses, so a disagreement here would be a disagreement about every `Point` ever laid out.
-    p := type_info(Point);
-    if same(p.name, "Point") {
-        n = n + 1;
-    }
-    if p.size == 16 {
-        n = n + 2;
-    }
-    if p.alignment == 8 {
-        n = n + 4;
-    }
-    if p.kind == Type_Info_Kind.STRUCT {
-        n = n + 8;
-    }
+  // A **declared struct**: name from its declaration, size and alignment from the layout the rest of
+  // the compiler uses, so a disagreement here would be a disagreement about every `Point` ever laid out.
+  p := type_info(Point);
+  if same(p.name, "Point") {
+    n = n + 1;
+  }
+  if p.size == 16 {
+    n = n + 2;
+  }
+  if p.alignment == 8 {
+    n = n + 4;
+  }
+  if p.kind == Type_Info_Kind.STRUCT {
+    n = n + 8;
+  }
 
-    // A **builtin**, which has no declaration at all — the case that needed E0201 withheld twice.
-    i := type_info(s64);
-    if same(i.name, "s64") {
-        n = n + 16;
-    }
-    if i.size == 8 {
-        n = n + 32;
-    }
+  // A **builtin**, which has no declaration at all — the case that needed E0201 withheld twice.
+  i := type_info(s64);
+  if same(i.name, "s64") {
+    n = n + 16;
+  }
+  if i.size == 8 {
+    n = n + 32;
+  }
 
-    // An **enum**, so `kind` distinguishes two named types rather than only naming them.
-    c := type_info(Colour);
-    if c.kind == Type_Info_Kind.ENUM {
-        n = n + 64;
-    }
+  // An **enum**, so `kind` distinguishes two named types rather than only naming them.
+  c := type_info(Colour);
+  if c.kind == Type_Info_Kind.ENUM {
+    n = n + 64;
+  }
 
-    // A `Type_Info` is an ordinary value: it copies, and a copy reads the same. This is the part that
-    // would fail if it were a pointer into a dead frame, which is why it is worth an assertion.
-    q := p;
-    if q.size == 16 {
-        n = n + 128;
-    }
+  // A `Type_Info` is an ordinary value: it copies, and a copy reads the same. This is the part that
+  // would fail if it were a pointer into a dead frame, which is why it is worth an assertion.
+  q := p;
+  if q.size == 16 {
+    n = n + 128;
+  }
 
-    // **Per-kind detail** (ADR-0078): a struct's field count, and a scalar's absence of one. `Point` has
-    // two fields, `s64` has none — 0 is a real answer, not a sentinel.
-    if p.count == 2 {
-        n = n + 256;
-    }
-    if i.count == 0 {
-        n = n + 512;
-    }
+  // **Per-kind detail** (ADR-0078): a struct's field count, and a scalar's absence of one. `Point` has
+  // two fields, `s64` has none — 0 is a real answer, not a sentinel.
+  if p.count == 2 {
+    n = n + 256;
+  }
+  if i.count == 0 {
+    n = n + 512;
+  }
 
-    // Every assertion: 1023.
-    if n == 1023 {
-        exit(0);
-    }
-    exit(1);
+  // Every assertion: 1023.
+  if n == 1023 {
+    exit(0);
+  }
+  exit(1);
 }

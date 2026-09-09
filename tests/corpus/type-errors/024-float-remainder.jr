@@ -3,6 +3,6 @@
 // truncates toward zero, Python's `%` follows the divisor, and they disagree on
 // `-1.0 % 3.0`. Refused with the reason rather than a bare "unsupported".
 main :: () {
-    a := 1.5;
-    b := a % a;
+  a := 1.5;
+  b := a % a;
 }

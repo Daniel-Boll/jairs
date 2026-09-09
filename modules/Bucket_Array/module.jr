@@ -67,8 +67,8 @@ BUCKET_SIZE :: 16;
 /// false**: `size_of(*s64)` is 8 and `typed(*s64, p)` works, both probed. The name is kept because it
 /// reads better and costs nothing: the spine is a list of buckets, not a list of pointers-to-integers.
 Bucket :: struct {
-    /// The bucket's sixteen slots.
-    slots: *s64;
+  /// The bucket's sixteen slots.
+  slots: *s64;
 }
 
 /// A growable sequence of `s64` whose element addresses never move.
@@ -76,10 +76,10 @@ Bucket :: struct {
 /// `count` is the logical length; the last bucket is partly filled. Storage is `count` rounded up to a
 /// bucket, which is the only overhead a caller pays for stability.
 Bucket_Array :: struct {
-    /// One pointer per bucket. **This** may move when it grows; the buckets it points at may not.
-    spine: [..]Bucket;
-    /// How many elements have been pushed.
-    count: s64;
+  /// One pointer per bucket. **This** may move when it grows; the buckets it points at may not.
+  spine: [..]Bucket;
+  /// How many elements have been pushed.
+  count: s64;
 }
 
 /// An empty bucket array, allocating nothing.
@@ -88,9 +88,9 @@ Bucket_Array :: struct {
 /// same property `List` has and for the same reason: a struct field of this type must not force an
 /// allocation on its owner's construction.
 make :: () -> Bucket_Array {
-    b: Bucket_Array;
-    b.count = 0;
-    return b;
+  b: Bucket_Array;
+  b.count = 0;
+  return b;
 }
 
 /// Appends `value` and returns a **stable pointer** to where it now lives.
@@ -102,29 +102,29 @@ make :: () -> Bucket_Array {
 /// `null` if a bucket cannot be allocated, which is the one failure a caller might reasonably handle by
 /// giving up rather than trapping.
 push :: (b: *Bucket_Array, value: s64) -> *s64 {
-    slot := b.count % BUCKET_SIZE;
-    if slot == 0 {
-        // A new bucket. `malloc` rather than a growable region, because a bucket's whole purpose is that
-        // its address never changes, and only a fresh allocation can promise that.
-        fresh := typed(s64, malloc(BUCKET_SIZE * size_of(s64)));
-        if fresh == null {
-            return null;
-        }
-        entry: Bucket;
-        entry.slots = fresh;
-        if !push_bucket(*b.spine, entry) {
-            // The bucket was allocated and the spine could not record it, so it would leak. Released
-            // here rather than left, because a failure path that leaks is a failure path nobody tests.
-            free(untyped(fresh));
-            return null;
-        }
+  slot := b.count % BUCKET_SIZE;
+  if slot == 0 {
+    // A new bucket. `malloc` rather than a growable region, because a bucket's whole purpose is that
+    // its address never changes, and only a fresh allocation can promise that.
+    fresh := typed(s64, malloc(BUCKET_SIZE * size_of(s64)));
+    if fresh == null {
+      return null;
     }
-    spine := view(b.spine.data, b.spine.count);
-    bucket := spine[b.count / BUCKET_SIZE].slots;
-    target := bucket + slot;
-    target.* = value;
-    b.count = b.count + 1;
-    return target;
+    entry: Bucket;
+    entry.slots = fresh;
+    if !push_bucket(*b.spine, entry) {
+      // The bucket was allocated and the spine could not record it, so it would leak. Released
+      // here rather than left, because a failure path that leaks is a failure path nobody tests.
+      free(untyped(fresh));
+      return null;
+    }
+  }
+  spine := view(b.spine.data, b.spine.count);
+  bucket := spine[b.count / BUCKET_SIZE].slots;
+  target := bucket + slot;
+  target.* = value;
+  b.count = b.count + 1;
+  return target;
 }
 
 /// A pointer to element `index`, or `null` when it is out of range.
@@ -134,15 +134,15 @@ push :: (b: *Bucket_Array, value: s64) -> *s64 {
 /// trap is what indexing a `[N]T` does, and that is the right behaviour for a construct with a known length
 /// (ADR-0003) — this one's length is data.
 get :: (b: *Bucket_Array, index: s64) -> *s64 {
-    if index < 0 {
-        return null;
-    }
-    if index >= b.count {
-        return null;
-    }
-    spine := view(b.spine.data, b.spine.count);
-    bucket := spine[index / BUCKET_SIZE].slots;
-    return bucket + index % BUCKET_SIZE;
+  if index < 0 {
+    return null;
+  }
+  if index >= b.count {
+    return null;
+  }
+  spine := view(b.spine.data, b.spine.count);
+  bucket := spine[index / BUCKET_SIZE].slots;
+  return bucket + index % BUCKET_SIZE;
 }
 
 /// Element `index`, or 0 when it is out of range.
@@ -151,11 +151,11 @@ get :: (b: *Bucket_Array, index: s64) -> *s64 {
 /// rather than a sentinel only because this array holds `s64` — when it becomes generic, this returns
 /// whatever the element type's zero is, which is the same thing a default-initialised local gets.
 value_at :: (b: *Bucket_Array, index: s64) -> s64 {
-    p := get(b, index);
-    if p == null {
-        return 0;
-    }
-    return p.*;
+  p := get(b, index);
+  if p == null {
+    return 0;
+  }
+  return p.*;
 }
 
 /// How many buckets are allocated — `count` rounded up to a bucket.
@@ -163,10 +163,10 @@ value_at :: (b: *Bucket_Array, index: s64) -> s64 {
 /// Exposed because it is the overhead a caller pays for stability, and a caller choosing between this and
 /// `List` should be able to measure it rather than reason about it.
 bucket_count :: (b: *Bucket_Array) -> s64 {
-    if b.count == 0 {
-        return 0;
-    }
-    return (b.count - 1) / BUCKET_SIZE + 1;
+  if b.count == 0 {
+    return 0;
+  }
+  return (b.count - 1) / BUCKET_SIZE + 1;
 }
 
 /// Frees every bucket and the spine.
@@ -174,19 +174,19 @@ bucket_count :: (b: *Bucket_Array) -> s64 {
 /// The array is empty afterwards and may be pushed to again, which is what makes this safe to call in a
 /// `defer` beside the `make`.
 free_all :: (b: *Bucket_Array) {
-    spine := view(b.spine.data, b.spine.count);
-    i := 0;
-    while i < b.spine.count {
-        free(untyped(spine[i].slots));
-        i = i + 1;
-    }
-    if b.spine.data != null {
-        free(untyped(b.spine.data));
-    }
-    b.spine.data = null;
-    b.spine.count = 0;
-    b.spine.capacity = 0;
-    b.count = 0;
+  spine := view(b.spine.data, b.spine.count);
+  i := 0;
+  while i < b.spine.count {
+    free(untyped(spine[i].slots));
+    i = i + 1;
+  }
+  if b.spine.data != null {
+    free(untyped(b.spine.data));
+  }
+  b.spine.data = null;
+  b.spine.count = 0;
+  b.spine.capacity = 0;
+  b.count = 0;
 }
 
 /// Appends one bucket pointer to the spine, doubling its storage when full.
@@ -198,30 +198,30 @@ free_all :: (b: *Bucket_Array) {
 /// Doubling from four, matching `List` (ADR-0107): a fixed increment makes a sequence of appends `O(n²)`.
 /// `false` when the spine cannot grow, which the caller turns into a `null` push.
 push_bucket :: (spine: *[..]Bucket, bucket: Bucket) -> bool {
-    if spine.count == spine.capacity {
-        grown := 4;
-        if spine.capacity > 0 {
-            grown = spine.capacity * 2;
-        }
-        fresh := typed(Bucket, malloc(grown * size_of(Bucket)));
-        if fresh == null {
-            return false;
-        }
-        old := view(spine.data, spine.count);
-        new := view(fresh, spine.count);
-        i := 0;
-        while i < spine.count {
-            new[i] = old[i];
-            i = i + 1;
-        }
-        if spine.data != null {
-            free(untyped(spine.data));
-        }
-        spine.data = fresh;
-        spine.capacity = grown;
+  if spine.count == spine.capacity {
+    grown := 4;
+    if spine.capacity > 0 {
+      grown = spine.capacity * 2;
     }
-    slots := view(spine.data, spine.capacity);
-    slots[spine.count] = bucket;
-    spine.count = spine.count + 1;
-    return true;
+    fresh := typed(Bucket, malloc(grown * size_of(Bucket)));
+    if fresh == null {
+      return false;
+    }
+    old := view(spine.data, spine.count);
+    new := view(fresh, spine.count);
+    i := 0;
+    while i < spine.count {
+      new[i] = old[i];
+      i = i + 1;
+    }
+    if spine.data != null {
+      free(untyped(spine.data));
+    }
+    spine.data = fresh;
+    spine.capacity = grown;
+  }
+  slots := view(spine.data, spine.capacity);
+  slots[spine.count] = bucket;
+  spine.count = spine.count + 1;
+  return true;
 }

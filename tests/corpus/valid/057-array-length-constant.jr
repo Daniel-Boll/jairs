@@ -33,49 +33,49 @@ M :: 2;
 /// Sums an `[N]s64` **by name**, so the parameter type also resolves through the constant — a length is
 /// not only usable on a local.
 total :: (xs: [N]s64) -> s64 {
-    t := 0;
-    for x: xs {
-        t = t + x;
-    }
-    return t;
+  t := 0;
+  for x: xs {
+    t = t + x;
+  }
+  return t;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // Four elements, filled to the last index the length allows.
-    buf: [N]s64;
-    buf[0] = 1;
-    buf[1] = 2;
-    buf[2] = 3;
-    buf[3] = 4;
-    if total(buf) == 10 {
-        n = n + 1;
-    }
+  // Four elements, filled to the last index the length allows.
+  buf: [N]s64;
+  buf[0] = 1;
+  buf[1] = 2;
+  buf[2] = 3;
+  buf[3] = 4;
+  if total(buf) == 10 {
+    n = n + 1;
+  }
 
-    // `.count` is the constant, exactly as for a literal length.
-    if buf.count == 4 {
-        n = n + 2;
-    }
+  // `.count` is the constant, exactly as for a literal length.
+  if buf.count == 4 {
+    n = n + 2;
+  }
 
-    // The same constant naming the length of a **different element type**, so the length is resolved per
-    // use rather than tied to the first type that used it.
-    flags: [N]bool;
-    flags[3] = true;
-    if flags[3] {
-        n = n + 4;
-    }
+  // The same constant naming the length of a **different element type**, so the length is resolved per
+  // use rather than tied to the first type that used it.
+  flags: [N]bool;
+  flags[3] = true;
+  if flags[3] {
+    n = n + 4;
+  }
 
-    // Nested, with two different constants: a transposed index would put 7 somewhere else.
-    grid: [N][M]s64;
-    grid[3][1] = 7;
-    if grid[3][1] == 7 {
-        n = n + 8;
-    }
+  // Nested, with two different constants: a transposed index would put 7 somewhere else.
+  grid: [N][M]s64;
+  grid[3][1] = 7;
+  if grid[3][1] == 7 {
+    n = n + 8;
+  }
 
-    // Every assertion: 15.
-    if n == 15 {
-        exit(0);
-    }
-    exit(1);
+  // Every assertion: 15.
+  if n == 15 {
+    exit(0);
+  }
+  exit(1);
 }

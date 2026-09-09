@@ -4,10 +4,10 @@
 #import "Colors";
 
 blend :: (a: s64, b: s64) -> s64 {
-    return a - b;
+  return a - b;
 }
 
 main :: () {
-    // Resolves to the LOCAL `blend`, not the one from `Colors`.
-    x := blend(10, 4);
+  // Resolves to the LOCAL `blend`, not the one from `Colors`.
+  x := blend(10, 4);
 }

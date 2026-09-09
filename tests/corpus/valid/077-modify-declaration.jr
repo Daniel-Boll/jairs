@@ -31,26 +31,26 @@
 
 /// A predicate over the bound type's identity: this template is meant for `s64` only.
 is_s64 :: (x: $T) -> T #modify {
-    return type_info(T).id == type_info(s64).id;
+  return type_info(T).id == type_info(s64).id;
 } {
-    return x;
+  return x;
 }
 
 /// A predicate reading a reflected field count, so a guard can be structural rather than nominal.
 needs_fields :: (x: $T) -> s64 #modify {
-    return type_info(T).count > 1;
+  return type_info(T).count > 1;
 } {
-    return type_info(T).count;
+  return type_info(T).count;
 }
 
 /// `#modify` beside another attribute — the loop takes them in any order.
 guarded :: (x: $T) -> T #no_abc #modify {
-    return true;
+  return true;
 } {
-    return x;
+  return x;
 }
 
 main :: () {
-    n := 5;
-    exit(n);
+  n := 5;
+  exit(n);
 }

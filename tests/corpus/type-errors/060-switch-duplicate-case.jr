@@ -6,22 +6,22 @@
 // Every member is named here — `RED` twice, `GREEN`, `BLUE` — so this file isolates the duplicate rather
 // than also tripping E0258's exhaustiveness check.
 Colour :: enum {
-    RED;
-    GREEN;
-    BLUE;
+  RED;
+  GREEN;
+  BLUE;
 }
 
 pick :: (c: Colour) -> s64 {
-    r := 0;
-    switch c {
-        case .RED;
-            r = 1;
-        case .RED;
-            r = 2;
-        case .GREEN;
-            r = 3;
-        case .BLUE;
-            r = 4;
-    }
-    return r;
+  r := 0;
+  switch c {
+    case .RED;
+      r = 1;
+    case .RED;
+      r = 2;
+    case .GREEN;
+      r = 3;
+    case .BLUE;
+      r = 4;
+  }
+  return r;
 }

@@ -86,7 +86,7 @@ helper :: () { … }
 
 `modules/Basic` uses exactly this to hide its internal helpers (`out_byte`, `out_u64`,
 `format_any`, `format_into_out`, and the rest of the formatter)
-while exporting `print` and `print_int`. A finer `#scope_file` is
+while exporting `print` and its compatibility wrappers. A finer `#scope_file` is
 <span class="jairs-status absent">absent</span> — indistinguishable from `#scope_module`
 while a module is a single file — as is re-export.
 

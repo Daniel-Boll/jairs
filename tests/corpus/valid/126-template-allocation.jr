@@ -17,42 +17,42 @@
 
 /// Sums a view. A template, and the *callee* of the template below.
 sum :: (xs: []$T) -> s64 {
-    total := 0;
-    i := 0;
-    while i < xs.count {
-        total = total + xs[i];
-        i = i + 1;
-    }
-    return total;
+  total := 0;
+  i := 0;
+  while i < xs.count {
+    total = total + xs[i];
+    i = i + 1;
+  }
+  return total;
 }
 
 /// Doubles every element through a scratch buffer it allocates itself, then returns the doubled sum plus
 /// the original — so the answer depends on both the allocation and the nested template call.
 scale :: (xs: []$T) -> s64 {
-    // The original, through another template. `T` is bound here, so nothing needs inferring from scratch —
-    // which is exactly what the old refusal could not see.
-    original := sum(xs);
+  // The original, through another template. `T` is bound here, so nothing needs inferring from scratch —
+  // which is exactly what the old refusal could not see.
+  original := sum(xs);
 
-    // The template allocates. `size_of(T)` was already legal; `typed(T, …)` beside it was not.
-    scratch := typed(T, talloc(xs.count * size_of(T)));
-    if scratch == null {
-        return original;
-    }
-    buffer := view(scratch, xs.count);
+  // The template allocates. `size_of(T)` was already legal; `typed(T, …)` beside it was not.
+  scratch := typed(T, talloc(xs.count * size_of(T)));
+  if scratch == null {
+    return original;
+  }
+  buffer := view(scratch, xs.count);
 
-    i := 0;
-    while i < xs.count {
-        buffer[i] = xs[i] * 2;
-        i = i + 1;
-    }
-    // Read back through the view, so the scratch is genuinely written and read rather than merely allocated.
-    return sum(buffer) + original;
+  i := 0;
+  while i < xs.count {
+    buffer[i] = xs[i] * 2;
+    i = i + 1;
+  }
+  // Read back through the view, so the scratch is genuinely written and read rather than merely allocated.
+  return sum(buffer) + original;
 }
 
 main :: () {
-    xs: [3]s64;
-    xs[0] = 2;
-    xs[1] = 4;
-    xs[2] = 6;
-    exit(scale(view(*xs[0], 3)));
+  xs: [3]s64;
+  xs[0] = 2;
+  xs[1] = 4;
+  xs[2] = 6;
+  exit(scale(view(*xs[0], 3)));
 }

@@ -14,17 +14,17 @@
 #import "Basic";
 
 same :: (actual: string, expected: string) -> bool {
-    if actual.count != expected.count {
-        return false;
+  if actual.count != expected.count {
+    return false;
+  }
+  i := 0;
+  while i < actual.count {
+    if (actual.data + i).* != (expected.data + i).* {
+      return false;
     }
-    i := 0;
-    while i < actual.count {
-        if (actual.data + i).* != (expected.data + i).* {
-            return false;
-        }
-        i = i + 1;
-    }
-    return true;
+    i = i + 1;
+  }
+  return true;
 }
 
 captured_expected_data: s64 = 0;
@@ -33,215 +33,215 @@ captured_free_calls: s64 = 0;
 captured_state_mismatch: bool = false;
 
 captured_alloc :: (size: s64) -> *u8 {
-    if context.allocator_data != captured_expected_data {
-        captured_state_mismatch = true;
-    }
-    captured_expected_data = captured_expected_data + size;
-    context.allocator_data = captured_expected_data;
-    captured_alloc_calls = captured_alloc_calls + 1;
-    return malloc(size);
+  if context.allocator_data != captured_expected_data {
+    captured_state_mismatch = true;
+  }
+  captured_expected_data = captured_expected_data + size;
+  context.allocator_data = captured_expected_data;
+  captured_alloc_calls = captured_alloc_calls + 1;
+  return malloc(size);
 }
 
 captured_free :: (allocation: *u8) {
-    if context.allocator_data != captured_expected_data {
-        captured_state_mismatch = true;
-    }
-    captured_expected_data = captured_expected_data + 100000;
-    context.allocator_data = captured_expected_data;
-    captured_free_calls = captured_free_calls + 1;
-    free(allocation);
+  if context.allocator_data != captured_expected_data {
+    captured_state_mismatch = true;
+  }
+  captured_expected_data = captured_expected_data + 100000;
+  context.allocator_data = captured_expected_data;
+  captured_free_calls = captured_free_calls + 1;
+  free(allocation);
 }
 
 destination_alloc :: (size: s64) -> *u8 {
-    context.allocator_data = context.allocator_data + size;
-    return malloc(size);
+  context.allocator_data = context.allocator_data + size;
+  return malloc(size);
 }
 
 destination_free :: (allocation: *u8) {
-    free(allocation);
+  free(allocation);
 }
 
 failing_alloc :: (size: s64) -> *u8 {
-    _ = size;
-    return null;
+  _ = size;
+  return null;
 }
 
 failing_free :: (allocation: *u8) {
-    _ = allocation;
+  _ = allocation;
 }
 
 comptime_builder_probe :: () -> s64 {
-    builder: String_Builder;
-    if !append(*builder, "ct:") {
-        return 1;
-    }
-    if !print_to_builder(*builder, "%2/%1/%2/%%", 7, "x") {
-        free_buffers(*builder);
-        return 2;
-    }
-    result := builder_to_string(*builder);
+  builder: String_Builder;
+  if !append(*builder, "ct:") {
+    return 1;
+  }
+  if !print_to_builder(*builder, "%2/%1/%2/%%", 7, "x") {
     free_buffers(*builder);
-    ok := same(result, "ct:x/7/x/%");
-    if result.data != null {
-        context.allocator_free(result.data);
-    }
-    if !ok {
-        return 3;
-    }
-    return 42;
+    return 2;
+  }
+  result := builder_to_string(*builder);
+  free_buffers(*builder);
+  ok := same(result, "ct:x/7/x/%");
+  if result.data != null {
+    context.allocator_free(result.data);
+  }
+  if !ok {
+    return 3;
+  }
+  return 42;
 }
 
 COMPTIME_BUILDER :: #run comptime_builder_probe();
 
 main :: () -> s64 {
-    if COMPTIME_BUILDER != 42 {
-        return 1;
-    }
+  if COMPTIME_BUILDER != 42 {
+    return 1;
+  }
 
-    // Lazy zero-value initialization and all three append spellings.
-    lazy: String_Builder;
-    if builder_string_length(*lazy) != 0 {
-        return 2;
-    }
-    if !append(*lazy, "A") {
-        return 3;
-    }
-    bytes := "BC";
-    if !append_bytes(*lazy, bytes.data, bytes.count) {
-        return 4;
-    }
-    if !append_byte(*lazy, cast(u8, 68)) {
-        return 5;
-    }
-    if !print_to_builder(*lazy, ":%2-%1-%2:%%", "one", "two") {
-        return 6;
-    }
-    if !print_to_builder(*lazy, ":%-%", 3, 4) {
-        return 6;
-    }
-    if builder_string_length(*lazy) != 22 {
-        return 7;
-    }
-    small := builder_to_string(*lazy);
-    if !same(small, "ABCD:two-one-two:%:3-4") {
-        return 8;
-    }
-    free_buffers(*lazy);
-    free_buffers(*lazy);
-    if !same(small, "ABCD:two-one-two:%:3-4") {
-        return 9;
-    }
-    if !append(*lazy, "reused") {
-        return 10;
-    }
-    reused := builder_to_string(*lazy);
-    if !same(reused, "reused") {
-        return 11;
-    }
-    free_buffers(*lazy);
-    context.allocator_free(small.data);
-    context.allocator_free(reused.data);
+  // Lazy zero-value initialization and all three append spellings.
+  lazy: String_Builder;
+  if builder_string_length(*lazy) != 0 {
+    return 2;
+  }
+  if !append(*lazy, "A") {
+    return 3;
+  }
+  bytes := "BC";
+  if !append_bytes(*lazy, bytes.data, bytes.count) {
+    return 4;
+  }
+  if !append_byte(*lazy, cast(u8, 68)) {
+    return 5;
+  }
+  if !print_to_builder(*lazy, ":%2-%1-%2:%%", "one", "two") {
+    return 6;
+  }
+  if !print_to_builder(*lazy, ":%-%", 3, 4) {
+    return 6;
+  }
+  if builder_string_length(*lazy) != 22 {
+    return 7;
+  }
+  small := builder_to_string(*lazy);
+  if !same(small, "ABCD:two-one-two:%:3-4") {
+    return 8;
+  }
+  free_buffers(*lazy);
+  free_buffers(*lazy);
+  if !same(small, "ABCD:two-one-two:%:3-4") {
+    return 9;
+  }
+  if !append(*lazy, "reused") {
+    return 10;
+  }
+  reused := builder_to_string(*lazy);
+  if !same(reused, "reused") {
+    return 11;
+  }
+  free_buffers(*lazy);
+  context.allocator_free(small.data);
+  context.allocator_free(reused.data);
 
-    // A required allocation that fails is observable as false and leaves the builder empty.
-    original_allocator := context.allocator;
-    original_free := context.allocator_free;
-    original_data := context.allocator_data;
-    context.allocator = failing_alloc;
-    context.allocator_free = failing_free;
-    failed: String_Builder;
-    init_string_builder(*failed);
-    if append(*failed, "cannot fit") {
-        return 12;
-    }
-    if builder_string_length(*failed) != 0 {
-        return 13;
-    }
-    free_buffers(*failed);
+  // A required allocation that fails is observable as false and leaves the builder empty.
+  original_allocator := context.allocator;
+  original_free := context.allocator_free;
+  original_data := context.allocator_data;
+  context.allocator = failing_alloc;
+  context.allocator_free = failing_free;
+  failed: String_Builder;
+  init_string_builder(*failed);
+  if append(*failed, "cannot fit") {
+    return 12;
+  }
+  if builder_string_length(*failed) != 0 {
+    return 13;
+  }
+  free_buffers(*failed);
 
-    // Explicit initialization captures this allocator triple. The caller then switches to another
-    // allocator before any builder allocation, so success and the builder's state word prove that
-    // appends use the capture rather than the active context.
-    context.allocator = captured_alloc;
-    context.allocator_free = captured_free;
-    context.allocator_data = 5;
-    captured_expected_data = 5;
-    captured_alloc_calls = 0;
-    captured_free_calls = 0;
-    captured_state_mismatch = false;
-    captured: String_Builder;
-    init_string_builder(*captured);
+  // Explicit initialization captures this allocator triple. The caller then switches to another
+  // allocator before any builder allocation, so success and the builder's state word prove that
+  // appends use the capture rather than the active context.
+  context.allocator = captured_alloc;
+  context.allocator_free = captured_free;
+  context.allocator_data = 5;
+  captured_expected_data = 5;
+  captured_alloc_calls = 0;
+  captured_free_calls = 0;
+  captured_state_mismatch = false;
+  captured: String_Builder;
+  init_string_builder(*captured);
 
-    context.allocator = destination_alloc;
-    context.allocator_free = destination_free;
-    context.allocator_data = 1000;
+  context.allocator = destination_alloc;
+  context.allocator_free = destination_free;
+  context.allocator_data = 1000;
 
-    i := 0;
-    while i < 5000 {
-        if !append_byte(*captured, cast(u8, 97 + i % 26)) {
-            return 14;
-        }
-        i = i + 1;
+  i := 0;
+  while i < 5000 {
+    if !append_byte(*captured, cast(u8, 97 + i % 26)) {
+      return 14;
     }
-    if builder_string_length(*captured) != 5000 {
-        return 15;
-    }
-    // More than one call makes this a round-trip proof: each call checks that it received the state
-    // the preceding call wrote, even though the caller's active context belongs to another allocator.
-    if captured_alloc_calls < 2 || captured_expected_data <= 5 || captured_state_mismatch {
-        return 16;
-    }
-    if context.allocator_data != 1000 {
-        return 17;
-    }
+    i = i + 1;
+  }
+  if builder_string_length(*captured) != 5000 {
+    return 15;
+  }
+  // More than one call makes this a round-trip proof: each call checks that it received the state
+  // the preceding call wrote, even though the caller's active context belongs to another allocator.
+  if captured_alloc_calls < 2 || captured_expected_data <= 5 || captured_state_mismatch {
+    return 16;
+  }
+  if context.allocator_data != 1000 {
+    return 17;
+  }
 
-    large := builder_to_string(*captured);
-    if large.count != 5000 {
-        return 18;
-    }
-    if context.allocator_data != 6000 {
-        return 19;
-    }
-    if large.data.* != cast(u8, 97) || (large.data + 4999).* != cast(u8, 104) {
-        return 20;
-    }
+  large := builder_to_string(*captured);
+  if large.count != 5000 {
+    return 18;
+  }
+  if context.allocator_data != 6000 {
+    return 19;
+  }
+  if large.data.* != cast(u8, 97) || (large.data + 4999).* != cast(u8, 104) {
+    return 20;
+  }
 
-    // The shared formatter writes the whole 5000-byte argument directly to chained buffers.
-    formatted: String_Builder;
-    if !print_to_builder(*formatted, "[%]", large) {
-        return 21;
-    }
-    if builder_string_length(*formatted) != 5002 {
-        return 22;
-    }
-    formatted_string := builder_to_string(*formatted);
-    if formatted_string.count != 5002 {
-        return 23;
-    }
-    if formatted_string.data.* != cast(u8, 91) {
-        return 24;
-    }
-    if (formatted_string.data + 5001).* != cast(u8, 93) {
-        return 25;
-    }
+  // The shared formatter writes the whole 5000-byte argument directly to chained buffers.
+  formatted: String_Builder;
+  if !print_to_builder(*formatted, "[%]", large) {
+    return 21;
+  }
+  if builder_string_length(*formatted) != 5002 {
+    return 22;
+  }
+  formatted_string := builder_to_string(*formatted);
+  if formatted_string.count != 5002 {
+    return 23;
+  }
+  if formatted_string.data.* != cast(u8, 91) {
+    return 24;
+  }
+  if (formatted_string.data + 5001).* != cast(u8, 93) {
+    return 25;
+  }
 
-    captured_before_free := captured_expected_data;
-    free_buffers(*captured);
-    if captured_free_calls != captured_alloc_calls {
-        return 26;
-    }
-    if captured_expected_data <= captured_before_free || captured_state_mismatch {
-        return 27;
-    }
-    // The converted result is current-context storage and remains readable after builder cleanup.
-    if large.data.* != cast(u8, 97) || (large.data + 4999).* != cast(u8, 104) {
-        return 28;
-    }
-    free_buffers(*formatted);
-    context.allocator_free(large.data);
-    context.allocator_free(formatted_string.data);
+  captured_before_free := captured_expected_data;
+  free_buffers(*captured);
+  if captured_free_calls != captured_alloc_calls {
+    return 26;
+  }
+  if captured_expected_data <= captured_before_free || captured_state_mismatch {
+    return 27;
+  }
+  // The converted result is current-context storage and remains readable after builder cleanup.
+  if large.data.* != cast(u8, 97) || (large.data + 4999).* != cast(u8, 104) {
+    return 28;
+  }
+  free_buffers(*formatted);
+  context.allocator_free(large.data);
+  context.allocator_free(formatted_string.data);
 
-    context.allocator = original_allocator;
-    context.allocator_free = original_free;
-    context.allocator_data = original_data;
-    return 0;
+  context.allocator = original_allocator;
+  context.allocator_free = original_free;
+  context.allocator_data = original_data;
+  return 0;
 }

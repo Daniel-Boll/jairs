@@ -352,7 +352,7 @@ fn a_relative_module_path_still_resolves_across_an_import() {
     let _ = server.initialize(serde_json::json!(["utf-8"]));
     server.did_open(&uri, &source);
 
-    // Line 30 is `        print(MESSAGE);`; character 8 is the `p` of `print`, which
+    // Zero-based line 29 is `    print(MESSAGE);`; character 4 is the `p` of `print`, which
     // resolves through the `#import` into `modules/Basic`.
     server.send(&serde_json::json!({
         "jsonrpc": "2.0",
@@ -360,7 +360,7 @@ fn a_relative_module_path_still_resolves_across_an_import() {
         "method": "textDocument/definition",
         "params": {
             "textDocument": { "uri": uri },
-            "position": { "line": 30, "character": 8 }
+            "position": { "line": 29, "character": 4 }
         }
     }));
     let found = server.response(2);

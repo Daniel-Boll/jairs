@@ -7,6 +7,6 @@
 // there isn't one". The message names `push_context` rather than `context` so the diagnostic points
 // at what was written.
 raw :: () #c_call {
-    push_context {
-    }
+  push_context {
+  }
 }

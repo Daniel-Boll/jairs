@@ -89,14 +89,14 @@ FIRST_CAPACITY :: 4;
 ///
 /// Amortised `O(1)`: the capacity doubles, so `n` pushes copy `O(n)` elements in total.
 push :: (a: *[..]s64, v: s64) -> bool {
-    if a.count >= a.capacity {
-        if !grow(a) {
-            return false;
-        }
+  if a.count >= a.capacity {
+    if !grow(a) {
+      return false;
     }
-    (a.data + a.count).* = v;
-    a.count = a.count + 1;
-    return true;
+  }
+  (a.data + a.count).* = v;
+  a.count = a.count + 1;
+  return true;
 }
 
 /// Removes and returns the last element, plus whether there was one.
@@ -107,11 +107,11 @@ push :: (a: *[..]s64, v: s64) -> bool {
 /// **The capacity is not reduced.** A caller who pops and pushes would otherwise thrash the allocator, and
 /// nothing has asked for the memory back — `free_data` is how a caller says they are finished.
 pop :: (a: *[..]s64) -> (s64, bool) {
-    if a.count == 0 {
-        return 0, false;
-    }
-    a.count = a.count - 1;
-    return (a.data + a.count).*, true;
+  if a.count == 0 {
+    return 0, false;
+  }
+  a.count = a.count - 1;
+  return (a.data + a.count).*, true;
 }
 
 /// The element at `index`, plus whether the index was in the **used** range.
@@ -121,13 +121,13 @@ pop :: (a: *[..]s64) -> (s64, bool) {
 /// slots were zeroed and therefore only *indistinguishable* from real elements — and it is why this bound is not
 /// a matter of taste.
 get :: (a: *[..]s64, index: s64) -> (s64, bool) {
-    if index < 0 {
-        return 0, false;
-    }
-    if index >= a.count {
-        return 0, false;
-    }
-    return (a.data + index).*, true;
+  if index < 0 {
+    return 0, false;
+  }
+  if index >= a.count {
+    return 0, false;
+  }
+  return (a.data + index).*, true;
 }
 
 /// Replaces the element at `index`, answering `false` when the index is outside the used range.
@@ -135,14 +135,14 @@ get :: (a: *[..]s64, index: s64) -> (s64, bool) {
 /// It will not extend the list — `set(a, a.count, v)` is `false`, not a push — because growth through
 /// assignment would make the length depend on which indices a caller happened to touch.
 set :: (a: *[..]s64, index: s64, v: s64) -> bool {
-    if index < 0 {
-        return false;
-    }
-    if index >= a.count {
-        return false;
-    }
-    (a.data + index).* = v;
-    return true;
+  if index < 0 {
+    return false;
+  }
+  if index >= a.count {
+    return false;
+  }
+  (a.data + index).* = v;
+  return true;
 }
 
 /// Forgets the elements, keeping the allocation.
@@ -150,7 +150,7 @@ set :: (a: *[..]s64, index: s64, v: s64) -> bool {
 /// Deliberately **not** the same as `free_data`: reusing a buffer a caller has already paid for is a real thing
 /// to want, and naming both makes the choice visible. A reader who wants the memory back wants `free_data`.
 clear :: (a: *[..]s64) {
-    a.count = 0;
+  a.count = 0;
 }
 
 /// Releases the storage and empties the list.
@@ -159,17 +159,17 @@ clear :: (a: *[..]s64) {
 /// memory. Safe to call on a list that never grew (`data` is null and `free` of null is a no-op) and safe to
 /// call twice, because it resets `data` — a second call frees nothing rather than freeing again.
 free_data :: (a: *[..]s64) {
-    if a.data != null {
-        free(untyped(a.data));
-    }
-    a.data = null;
-    a.count = 0;
-    a.capacity = 0;
+  if a.data != null {
+    free(untyped(a.data));
+  }
+  a.data = null;
+  a.count = 0;
+  a.capacity = 0;
 }
 
 /// Whether the list holds nothing.
 is_empty :: (a: *[..]s64) -> bool {
-    return a.count == 0;
+  return a.count == 0;
 }
 
 /// A view over the list's **used prefix** — `[]s64` of exactly `count` elements.
@@ -188,7 +188,7 @@ is_empty :: (a: *[..]s64) -> bool {
 /// A view over an **empty** list is `view(null, 0)`, which is well-formed: a zero-count view is never indexed,
 /// and every routine that takes one loops `while i < count`.
 elements :: (a: *[..]s64) -> []s64 {
-    return view(a.data, a.count);
+  return view(a.data, a.count);
 }
 
 #scope_module
@@ -203,24 +203,24 @@ elements :: (a: *[..]s64) -> []s64 {
 /// differ in *timing*. Not in results, but a divergence worth not introducing casually in a project whose whole
 /// test strategy is comparing them.
 grow :: (a: *[..]s64) -> bool {
-    wanted := FIRST_CAPACITY;
-    if a.capacity > 0 {
-        wanted = a.capacity * 2;
-    }
-    raw := malloc(wanted * size_of(s64));
-    if raw == null {
-        return false;
-    }
-    fresh := typed(s64, raw);
-    i := 0;
-    while i < a.count {
-        (fresh + i).* = (a.data + i).*;
-        i = i + 1;
-    }
-    if a.data != null {
-        free(untyped(a.data));
-    }
-    a.data = fresh;
-    a.capacity = wanted;
-    return true;
+  wanted := FIRST_CAPACITY;
+  if a.capacity > 0 {
+    wanted = a.capacity * 2;
+  }
+  raw := malloc(wanted * size_of(s64));
+  if raw == null {
+    return false;
+  }
+  fresh := typed(s64, raw);
+  i := 0;
+  while i < a.count {
+    (fresh + i).* = (a.data + i).*;
+    i = i + 1;
+  }
+  if a.data != null {
+    free(untyped(a.data));
+  }
+  a.data = fresh;
+  a.capacity = wanted;
+  return true;
 }

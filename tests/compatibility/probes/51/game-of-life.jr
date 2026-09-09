@@ -4,49 +4,49 @@ WIDTH :: 5;
 HEIGHT :: 5;
 
 index_of :: (x: s64, y: s64) -> s64 {
-    return y * WIDTH + x;
+  return y * WIDTH + x;
 }
 
 main :: () {
-    cells := s64.[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    next := s64.[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  cells := s64.[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  next := s64.[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
-    y := 0;
-    while y < HEIGHT {
-        x := 0;
-        while x < WIDTH {
-            neighbours := 0;
-            dy := -1;
-            while dy <= 1 {
-                dx := -1;
-                while dx <= 1 {
-                    nx := x + dx;
-                    ny := y + dy;
-                    if (dx != 0 || dy != 0) && nx >= 0 && nx < WIDTH && ny >= 0 && ny < HEIGHT {
-                        neighbours = neighbours + cells[index_of(nx, ny)];
-                    }
-                    dx = dx + 1;
-                }
-                dy = dy + 1;
-            }
-
-            alive := cells[index_of(x, y)] == 1;
-            if neighbours == 3 || (alive && neighbours == 2) {
-                next[index_of(x, y)] = 1;
-            }
-            x = x + 1;
+  y := 0;
+  while y < HEIGHT {
+    x := 0;
+    while x < WIDTH {
+      neighbours := 0;
+      dy := -1;
+      while dy <= 1 {
+        dx := -1;
+        while dx <= 1 {
+          nx := x + dx;
+          ny := y + dy;
+          if (dx != 0 || dy != 0) && nx >= 0 && nx < WIDTH && ny >= 0 && ny < HEIGHT {
+            neighbours = neighbours + cells[index_of(nx, ny)];
+          }
+          dx = dx + 1;
         }
-        y = y + 1;
-    }
+        dy = dy + 1;
+      }
 
-    y = 0;
-    while y < HEIGHT {
-        x := 0;
-        while x < WIDTH {
-            print("%", next[index_of(x, y)]);
-            x = x + 1;
-        }
-        print("\n");
-        y = y + 1;
+      alive := cells[index_of(x, y)] == 1;
+      if neighbours == 3 || (alive && neighbours == 2) {
+        next[index_of(x, y)] = 1;
+      }
+      x = x + 1;
     }
+    y = y + 1;
+  }
+
+  y = 0;
+  while y < HEIGHT {
+    x := 0;
+    while x < WIDTH {
+      print("%", next[index_of(x, y)]);
+      x = x + 1;
+    }
+    print("\n");
+    y = y + 1;
+  }
 }

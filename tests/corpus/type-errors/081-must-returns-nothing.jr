@@ -7,9 +7,9 @@
 // Reported at the **declaration**, which is the mistake's own site, and the call-site check
 // deliberately stays quiet for a `void` callee so that one error is not also reported at every call.
 log_it :: (n: s64) #must {
-    ignored := n;
+  ignored := n;
 }
 
 main :: () {
-    log_it(0);
+  log_it(0);
 }

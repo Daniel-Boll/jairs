@@ -5,5 +5,5 @@
 // same error `x: u8 = 300;` raises, reusing the same code — the cast's fit check
 // is not a second implementation.
 main :: () {
-    n := cast(u8, 300);
+  n := cast(u8, 300);
 }

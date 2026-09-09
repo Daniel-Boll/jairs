@@ -2,6 +2,6 @@
 // Only `[N]T` is indexable in this wave. A pointer is deliberately *not*: allowing
 // `p[i]` would be pointer arithmetic, which is in no wave's list.
 main :: () {
-    n: s64 = 3;
-    x := n[0];
+  n: s64 = 3;
+  x := n[0];
 }

@@ -17,6 +17,6 @@
 // No `#import "Basic"`: an unused import is E0231, a second diagnostic this directory does not allow.
 
 compares_two_strings :: () -> bool {
-    a := "x";
-    return a == "x";
+  a := "x";
+  return a == "x";
 }

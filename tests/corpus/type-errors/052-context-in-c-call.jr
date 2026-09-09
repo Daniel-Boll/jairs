@@ -11,5 +11,5 @@
 // has none) is covered by the same rule; that half is unobservable without a body, so only the
 // explicit `#c_call` is exercised.
 raw :: () -> s64 #c_call {
-    return context.allocator;
+  return context.allocator;
 }

@@ -4,22 +4,22 @@
 // could end in `else` and the exhaustiveness check would never fire. So an `else` is the way to make a
 // *partial* match total, not a habit to add to a complete one.
 Colour :: enum {
-    RED;
-    GREEN;
-    BLUE;
+  RED;
+  GREEN;
+  BLUE;
 }
 
 pick :: (c: Colour) -> s64 {
-    r := 0;
-    switch c {
-        case .RED;
-            r = 1;
-        case .GREEN;
-            r = 2;
-        case .BLUE;
-            r = 4;
-        else;
-            r = 8;
-    }
-    return r;
+  r := 0;
+  switch c {
+    case .RED;
+      r = 1;
+    case .GREEN;
+      r = 2;
+    case .BLUE;
+      r = 4;
+    else;
+      r = 8;
+  }
+  return r;
 }

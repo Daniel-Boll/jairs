@@ -16,74 +16,74 @@ Snake :: #import "Snake";
 SEED : u64 : 20260906;
 
 main :: () {
-    // The one thing a grid game must check before anything else: that its cell count really is its
-    // area. `Snake.GRID_CELLS` has to be a literal (an array length cannot be a computed constant),
-    // so this comparison is what stops the three numbers drifting apart.
-    if !Snake.GRID_CELLS_IS_CONSISTENT {
-        print("GRID_CELLS is not GRID_WIDTH * GRID_HEIGHT\n");
-        exit(3);
-    }
+  // The one thing a grid game must check before anything else: that its cell count really is its
+  // area. `Snake.GRID_CELLS` has to be a literal (an array length cannot be a computed constant),
+  // so this comparison is what stops the three numbers drifting apart.
+  if !Snake.GRID_CELLS_IS_CONSISTENT {
+    print("GRID_CELLS is not GRID_WIDTH * GRID_HEIGHT\n");
+    exit(3);
+  }
 
-    first_score, first_ticks, first_end := play(SEED);
-    second_score, second_ticks, second_end := play(SEED);
+  first_score, first_ticks, first_end := play(SEED);
+  second_score, second_ticks, second_end := play(SEED);
 
-    print(
-        "seed % scored % over % ticks, ending %\n",
-        SEED,
-        first_score,
-        first_ticks,
-        describe(first_end),
-    );
+  print(
+    "seed % scored % over % ticks, ending %\n",
+    SEED,
+    first_score,
+    first_ticks,
+    describe(first_end),
+  );
 
-    if first_score != second_score || first_ticks != second_ticks || first_end != second_end {
-        print("the same seed gave two different games\n");
-        exit(1);
-    }
-    print("replayed identically from the same seed\n");
+  if first_score != second_score || first_ticks != second_ticks || first_end != second_end {
+    print("the same seed gave two different games\n");
+    exit(1);
+  }
+  print("replayed identically from the same seed\n");
 
-    // This second seed is a smoke check that the seed influences this particular deterministic run. Two
-    // different seeds are allowed to converge on the same aggregate result, so this is evidence rather than
-    // a general theorem about the generator.
-    other_score, other_ticks, other_end := play(SEED + 1);
-    print(
-        "seed % scored % over % ticks, ending %\n",
-        SEED + 1,
-        other_score,
-        other_ticks,
-        describe(other_end),
-    );
-    if other_ticks == first_ticks && other_score == first_score {
-        print("the alternate seed produced the same observed result\n");
-        exit(2);
-    }
+  // This second seed is a smoke check that the seed influences this particular deterministic run. Two
+  // different seeds are allowed to converge on the same aggregate result, so this is evidence rather than
+  // a general theorem about the generator.
+  other_score, other_ticks, other_end := play(SEED + 1);
+  print(
+    "seed % scored % over % ticks, ending %\n",
+    SEED + 1,
+    other_score,
+    other_ticks,
+    describe(other_end),
+  );
+  if other_ticks == first_ticks && other_score == first_score {
+    print("the alternate seed produced the same observed result\n");
+    exit(2);
+  }
 }
 
 // Plays one game to its end and reports the score, the tick count, and the event that ended it.
 play :: (seed: u64) -> (s64, s64, s64) {
-    state := Snake.make(seed);
-    ticks := 0;
-    last := Snake.EVENT_NONE;
+  state := Snake.make(seed);
+  ticks := 0;
+  last := Snake.EVENT_NONE;
 
-    // Bounded, for the reason `sim.jr` in the Pong example is bounded: a rule that stops the game
-    // advancing would otherwise run until the comptime step budget stopped it, and a budget message
-    // says nothing about which rule broke.
-    while ticks < 100000 && !Snake.is_over(*state) {
-        Snake.turn(*state, Snake.autopilot(*state));
-        last = Snake.step(*state);
-        ticks = ticks + 1;
-    }
-    return state.score, ticks, last;
+  // Bounded, for the reason `sim.jr` in the Pong example is bounded: a rule that stops the game
+  // advancing would otherwise run until the comptime step budget stopped it, and a budget message
+  // says nothing about which rule broke.
+  while ticks < 100000 && !Snake.is_over(*state) {
+    Snake.turn(*state, Snake.autopilot(*state));
+    last = Snake.step(*state);
+    ticks = ticks + 1;
+  }
+  return state.score, ticks, last;
 }
 
 describe :: (event: s64) -> string {
-    if event == Snake.EVENT_DEAD {
-        return "dead";
-    }
-    if event == Snake.EVENT_WON {
-        return "with a full grid";
-    }
-    if event == Snake.EVENT_APPLE {
-        return "on an apple";
-    }
-    return "still alive";
+  if event == Snake.EVENT_DEAD {
+    return "dead";
+  }
+  if event == Snake.EVENT_WON {
+    return "with a full grid";
+  }
+  if event == Snake.EVENT_APPLE {
+    return "on an apple";
+  }
+  return "still alive";
 }

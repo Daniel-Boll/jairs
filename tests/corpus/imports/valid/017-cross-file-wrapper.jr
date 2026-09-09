@@ -18,8 +18,8 @@
 #import "Generic";
 
 main :: () {
-    // The wrapper, instantiated inside `Generic` where that is possible. Its result is bound rather than
-    // returned, since a corpus file in this directory is checked rather than executed.
-    n := identity_int(6);
-    m := n + 1;
+  // The wrapper, instantiated inside `Generic` where that is possible. Its result is bound rather than
+  // returned, since a corpus file in this directory is checked rather than executed.
+  n := identity_int(6);
+  m := n + 1;
 }

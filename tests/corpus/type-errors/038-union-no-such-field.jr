@@ -4,11 +4,11 @@
 // exists to prove the sharing rather than to test a new rule — a union that reported a
 // *different* message here would mean the two paths had diverged.
 Value :: union {
-    signed: s64;
-    unsigned: u64;
+  signed: s64;
+  unsigned: u64;
 }
 
 main :: () {
-    v: Value;
-    n := v.singed;
+  v: Value;
+  n := v.singed;
 }

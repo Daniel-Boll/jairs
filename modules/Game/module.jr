@@ -45,18 +45,18 @@ Time :: #import "Time";
 /// The value owns `native_window` and `events`. Keep it in one place and pass `*App`; copying an open
 /// value duplicates ownership without duplicating the SDL window or GL context.
 App :: struct {
-    /// The SDL window owned by this application.
-    native_window: Window.Window;
-    /// The events drained by the most recent [`begin_frame`].
-    events: Input.Events;
-    /// Whether this application has latched a close request.
-    closing: bool;
-    /// The previous monotonic reading, in nanoseconds.
-    previous_ns: s64;
-    /// The most recent non-negative, unclamped frame duration, in seconds.
-    delta_seconds: float64;
-    /// Whether startup completed and this value owns the process-wide game lifecycle.
-    open: bool;
+  /// The SDL window owned by this application.
+  native_window: Window.Window;
+  /// The events drained by the most recent [`begin_frame`].
+  events: Input.Events;
+  /// Whether this application has latched a close request.
+  closing: bool;
+  /// The previous monotonic reading, in nanoseconds.
+  previous_ns: s64;
+  /// The most recent non-negative, unclamped frame duration, in seconds.
+  delta_seconds: float64;
+  /// Whether startup completed and this value owns the process-wide game lifecycle.
+  open: bool;
 }
 
 /// Opens one game application.
@@ -70,34 +70,34 @@ App :: struct {
 /// context behind while `Simp.is_ready()` is false, so the render target is destroyed on that path
 /// before the window and SDL.
 open :: (width: s64, height: s64, title: string) -> (App, bool) #must {
-    app: App;
-    if app_is_active {
-        return app, false;
-    }
-    if !Window.start() {
-        return app, false;
-    }
+  app: App;
+  if app_is_active {
+    return app, false;
+  }
+  if !Window.start() {
+    return app, false;
+  }
 
-    app.native_window = Window.create_window(width, height, title);
-    if !Window.is_open(*app.native_window) {
-        Window.stop();
-        return app, false;
-    }
+  app.native_window = Window.create_window(width, height, title);
+  if !Window.is_open(*app.native_window) {
+    Window.stop();
+    return app, false;
+  }
 
-    Simp.set_render_target(*app.native_window, Simp.LEFT_HANDED);
-    if !Simp.is_ready() {
-        Simp.destroy_render_target();
-        Window.close(*app.native_window);
-        Window.stop();
-        return app, false;
-    }
+  Simp.set_render_target(*app.native_window, Simp.LEFT_HANDED);
+  if !Simp.is_ready() {
+    Simp.destroy_render_target();
+    Window.close(*app.native_window);
+    Window.stop();
+    return app, false;
+  }
 
-    app.previous_ns = Time.monotonic();
-    app.delta_seconds = 0.0;
-    app.closing = false;
-    app.open = true;
-    app_is_active = true;
-    return app, true;
+  app.previous_ns = Time.monotonic();
+  app.delta_seconds = 0.0;
+  app.closing = false;
+  app.open = true;
+  app_is_active = true;
+  return app, true;
 }
 
 /// Closes `app`.
@@ -105,19 +105,19 @@ open :: (width: s64, height: s64, title: string) -> (App, bool) #must {
 /// Idempotent: closing an already-closed or never-opened value is safe. Teardown follows dependency
 /// order — Simp target, window, then SDL — and releases the private one-active-App guard last.
 close :: (app: *App) {
-    if !app.open {
-        return;
-    }
+  if !app.open {
+    return;
+  }
 
-    Simp.destroy_render_target();
-    Window.close(*app.native_window);
-    Window.stop();
+  Simp.destroy_render_target();
+  Window.close(*app.native_window);
+  Window.stop();
 
-    app.open = false;
-    app.closing = true;
-    app.previous_ns = 0;
-    app.delta_seconds = 0.0;
-    app_is_active = false;
+  app.open = false;
+  app.closing = true;
+  app.previous_ns = 0;
+  app.delta_seconds = 0.0;
+  app_is_active = false;
 }
 
 /// Starts one frame and reports whether the caller should continue.
@@ -126,28 +126,28 @@ close :: (app: *App) {
 /// unclamped duration from the monotonic clock. A closed app returns false without touching global
 /// input or renderer state.
 begin_frame :: (app: *App) -> bool {
-    if !app.open {
-        return false;
-    }
+  if !app.open {
+    return false;
+  }
 
-    _ = Input.update_window_events(*app.events, Input.MAX_EVENTS_PER_FRAME);
-    if Input.frame_wants_to_close(*app.events) {
-        app.closing = true;
-    }
+  _ = Input.update_window_events(*app.events, Input.MAX_EVENTS_PER_FRAME);
+  if Input.frame_wants_to_close(*app.events) {
+    app.closing = true;
+  }
 
-    now := Time.monotonic();
-    if now == 0 {
-        app.delta_seconds = 0.0;
-        return !app.closing;
-    }
-    elapsed := now - app.previous_ns;
-    if app.previous_ns == 0 || elapsed < 0 {
-        elapsed = 0;
-    }
-    app.previous_ns = now;
-    app.delta_seconds = cast(float64, elapsed) / cast(float64, Time.NANOSECONDS_PER_SECOND);
-
+  now := Time.monotonic();
+  if now == 0 {
+    app.delta_seconds = 0.0;
     return !app.closing;
+  }
+  elapsed := now - app.previous_ns;
+  if app.previous_ns == 0 || elapsed < 0 {
+    elapsed = 0;
+  }
+  app.previous_ns = now;
+  app.delta_seconds = cast(float64, elapsed) / cast(float64, Time.NANOSECONDS_PER_SECOND);
+
+  return !app.closing;
 }
 
 /// Presents the current frame with vertical synchronization.
@@ -155,22 +155,22 @@ begin_frame :: (app: *App) -> bool {
 /// Safe on a closed app. Drawing belongs to later slices and happens between [`begin_frame`] and this
 /// call through lower-level Simp operations for now.
 end_frame :: (app: *App) {
-    if !app.open {
-        return;
-    }
-    Simp.swap_buffers(*app.native_window, true);
+  if !app.open {
+    return;
+  }
+  Simp.swap_buffers(*app.native_window, true);
 }
 
 /// Whether this application has latched a close request.
 should_close :: (app: *App) -> bool {
-    return app.closing;
+  return app.closing;
 }
 
 /// The most recent non-negative, unclamped frame duration, in seconds.
 ///
 /// Zero before the first frame and after [`close`].
 delta_time :: (app: *App) -> float64 {
-    return app.delta_seconds;
+  return app.delta_seconds;
 }
 
 /// The underlying window.
@@ -178,7 +178,7 @@ delta_time :: (app: *App) -> float64 {
 /// This is an escape hatch for lower-level APIs. The `App` retains ownership: callers must not close
 /// the returned window or destroy its Simp target.
 window :: (app: *App) -> *Window.Window {
-    return *app.native_window;
+  return *app.native_window;
 }
 
 #scope_module

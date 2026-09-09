@@ -38,30 +38,30 @@ WIDE :: #run area(make(10, 2));
 /// Local, because a `#run` cannot use a struct literal yet: the aggregate is assembled by a procedure in
 /// *this* file and handed to the imported one, which exercises the cross-file argument path.
 make :: (w: s64, h: s64) -> Rect {
-    r: Rect;
-    r.w = w;
-    r.h = h;
-    return r;
+  r: Rect;
+  r.w = w;
+  r.h = h;
+  return r;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // 3 * 4, computed while compiling.
-    if AREA == 12 {
-        n = n + 1;
-    }
-    // 10 * 2, likewise.
-    if WIDE == 20 {
-        n = n + 2;
-    }
-    // And the module's own constant still crosses, so this file does not accidentally test only `#run`.
-    if SHAPES_VERSION == 1 {
-        n = n + 4;
-    }
+  // 3 * 4, computed while compiling.
+  if AREA == 12 {
+    n = n + 1;
+  }
+  // 10 * 2, likewise.
+  if WIDE == 20 {
+    n = n + 2;
+  }
+  // And the module's own constant still crosses, so this file does not accidentally test only `#run`.
+  if SHAPES_VERSION == 1 {
+    n = n + 4;
+  }
 
-    // Accumulated rather than exited on, per the directory's convention above.
-    if n == 7 {
-        return;
-    }
+  // Accumulated rather than exited on, per the directory's convention above.
+  if n == 7 {
+    return;
+  }
 }

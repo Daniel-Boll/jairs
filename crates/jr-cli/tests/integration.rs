@@ -2884,7 +2884,7 @@ fn a_built_object_carries_a_dwarf_line_table() {
     assert!(!lines.is_empty(), "the line program must produce rows");
 
     // Real statements in valid/024-hello.jr, spread through the file: a `return`, a `while` and an `if`.
-    for expected in [21u64, 35, 40] {
+    for expected in [20u64, 35, 40] {
         assert!(
             lines.contains(&expected),
             "line {expected} is a statement in the program and must appear in the table; got {lines:?}"

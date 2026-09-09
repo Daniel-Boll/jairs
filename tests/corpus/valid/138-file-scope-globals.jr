@@ -45,70 +45,70 @@ origin: Point;
 untouched: s64 = ---;
 
 Point :: struct {
-    x: s64;
-    y: s64;
+  x: s64;
+  y: s64;
 }
 
 triple :: (n: s64) -> s64 {
-    return n * 3;
+  return n * 3;
 }
 
 // A *different* procedure from the one that reads it below. That separation is the test: a global
 // exists so that two procedures share storage.
 bump :: () {
-    counter = counter + 1;
+  counter = counter + 1;
 }
 
 read_counter :: () -> s64 {
-    return counter;
+  return counter;
 }
 
 // Mutation in a loop, through a procedure call each time. An engine that caches the global in a
 // register across the call, or an optimiser that forwards the store past it, gives the wrong total.
 accumulate :: (times: s64) {
-    i := 0;
-    while i < times {
-        bump();
-        i = i + 1;
-    }
+  i := 0;
+  while i < times {
+    bump();
+    i = i + 1;
+  }
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // The initial value, read before any write.
-    if read_counter() == 5 {
-        n = n + 1;
-    }
+  // The initial value, read before any write.
+  if read_counter() == 5 {
+    n = n + 1;
+  }
 
-    // A write in one procedure, observed by another.
-    bump();
-    if read_counter() == 6 {
-        n = n + 2;
-    }
+  // A write in one procedure, observed by another.
+  bump();
+  if read_counter() == 6 {
+    n = n + 2;
+  }
 
-    // The compile-time call initialiser.
-    if computed == 21 {
-        n = n + 4;
-    }
+  // The compile-time call initialiser.
+  if computed == 21 {
+    n = n + 4;
+  }
 
-    // An aggregate global, field-assigned then field-read.
-    origin.x = 3;
-    origin.y = 4;
-    if origin.x * origin.y == 12 {
-        n = n + 8;
-    }
+  // An aggregate global, field-assigned then field-read.
+  origin.x = 3;
+  origin.y = 4;
+  if origin.x * origin.y == 12 {
+    n = n + 8;
+  }
 
-    // `---` reads as zero.
-    if untouched == 0 {
-        n = n + 16;
-    }
+  // `---` reads as zero.
+  if untouched == 0 {
+    n = n + 16;
+  }
 
-    // Ten more increments, each through a call.
-    accumulate(10);
-    if read_counter() == 16 {
-        n = n + 32;
-    }
+  // Ten more increments, each through a call.
+  accumulate(10);
+  if read_counter() == 16 {
+    n = n + 32;
+  }
 
-    exit(n);
+  exit(n);
 }

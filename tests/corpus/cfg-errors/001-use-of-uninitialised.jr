@@ -5,6 +5,6 @@
 // from an assignment is a question about paths, which is why `jr-sema` deferred it
 // to MIR's CFG rather than answering it with a syntax walk.
 main :: () -> s64 {
-    c: s64 = ---;
-    return c;
+  c: s64 = ---;
+  return c;
 }

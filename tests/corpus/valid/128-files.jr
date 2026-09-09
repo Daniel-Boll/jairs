@@ -47,10 +47,10 @@
 /// `bit` when `got` equals `want`, and nothing otherwise. `got` is **borrowed** — a slice of its argument —
 /// so it is not freed.
 same :: (got: string, want: string, bit: s64) -> s64 {
-    if equal(got, want) {
-        return bit;
-    }
-    return 0;
+  if equal(got, want) {
+    return bit;
+  }
+  return 0;
 }
 
 /// `same`, for a `got` the caller **owns**: freed here, so the check site stays one line.
@@ -58,171 +58,171 @@ same :: (got: string, want: string, bit: s64) -> s64 {
 /// Two helpers rather than one because the ownership genuinely differs — `base_name` borrows and `path_join`
 /// allocates — and ADR-0157 §4's whole argument is that the call site should say which.
 owned :: (got: string, want: string, bit: s64) -> s64 {
-    r := same(got, want, bit);
-    free_string(got);
-    return r;
+  r := same(got, want, bit);
+  free_string(got);
+  return r;
 }
 
 main :: () {
-    total := 0;
+  total := 0;
 
-    // --- File ------------------------------------------------------------------------------------------
-    w, w_ok := open_write("/tmp/jr-corpus-file.txt");
-    if !w_ok {
-        exit(1);
-    }
-    if write_string(*w, "one") {
-        total = total + 1;
-    }
-    _ = close(*w);
+  // --- File ------------------------------------------------------------------------------------------
+  w, w_ok := open_write("/tmp/jr-corpus-file.txt");
+  if !w_ok {
+    exit(1);
+  }
+  if write_string(*w, "one") {
+    total = total + 1;
+  }
+  _ = close(*w);
 
-    a, a_ok := open_append("/tmp/jr-corpus-file.txt");
-    if !a_ok {
-        exit(2);
-    }
-    // Appending must not truncate — the bug a create-and-truncate `open_append` would have, invisible until
-    // somebody's log file lost its history.
-    if write_string(*a, "two") {
-        total = total + 16;
-    }
-    _ = close(*a);
+  a, a_ok := open_append("/tmp/jr-corpus-file.txt");
+  if !a_ok {
+    exit(2);
+  }
+  // Appending must not truncate — the bug a create-and-truncate `open_append` would have, invisible until
+  // somebody's log file lost its history.
+  if write_string(*a, "two") {
+    total = total + 16;
+  }
+  _ = close(*a);
 
-    r, r_ok := open_read("/tmp/jr-corpus-file.txt");
-    if !r_ok {
-        exit(3);
+  r, r_ok := open_read("/tmp/jr-corpus-file.txt");
+  if !r_ok {
+    exit(3);
+  }
+  n, n_ok := size(*r);
+  if n_ok {
+    if n == 6 {
+      total = total + 2;
     }
-    n, n_ok := size(*r);
-    if n_ok {
-        if n == 6 {
-            total = total + 2;
-        }
+  }
+  buffer: [32]u8;
+  got, got_ok := read_all(*r, view(*buffer[0], 32));
+  if got_ok {
+    if got == 6 {
+      total = total + 4;
     }
-    buffer: [32]u8;
-    got, got_ok := read_all(*r, view(*buffer[0], 32));
-    if got_ok {
-        if got == 6 {
-            total = total + 4;
-        }
+  }
+  // `onetwo` — byte 3 is `t`, which is only true if the append landed after the write rather than over it.
+  if cast(s64, buffer[3]) == 116 {
+    total = total + 8;
+  }
+  _, seek_ok := seek(*r, 0, SEEK_SET);
+  if seek_ok {
+    total = total + 32;
+  }
+  again, again_ok := read(*r, view(*buffer[0], 3));
+  if again_ok {
+    if again == 3 {
+      total = total + 64;
     }
-    // `onetwo` — byte 3 is `t`, which is only true if the append landed after the write rather than over it.
-    if cast(s64, buffer[3]) == 116 {
-        total = total + 8;
-    }
-    _, seek_ok := seek(*r, 0, SEEK_SET);
-    if seek_ok {
-        total = total + 32;
-    }
-    again, again_ok := read(*r, view(*buffer[0], 3));
-    if again_ok {
-        if again == 3 {
-            total = total + 64;
-        }
-    }
-    _ = close(*r);
+  }
+  _ = close(*r);
 
-    // `READ_WRITE` with no `CREATE` must leave the contents alone. This is the case the `creat` workaround
-    // could plausibly break, because `creat` truncates and the create path has to avoid reaching it.
-    rw, rw_ok := open("/tmp/jr-corpus-file.txt", READ_WRITE);
-    if rw_ok {
-        kept, kept_ok := size(*rw);
-        if kept_ok {
-            if kept == 6 {
-                total = total + 128;
-            }
-        }
-        _ = close(*rw);
+  // `READ_WRITE` with no `CREATE` must leave the contents alone. This is the case the `creat` workaround
+  // could plausibly break, because `creat` truncates and the create path has to avoid reaching it.
+  rw, rw_ok := open("/tmp/jr-corpus-file.txt", READ_WRITE);
+  if rw_ok {
+    kept, kept_ok := size(*rw);
+    if kept_ok {
+      if kept == 6 {
+        total = total + 128;
+      }
     }
+    _ = close(*rw);
+  }
 
-    if exists("/tmp/jr-corpus-file.txt") {
-        if remove("/tmp/jr-corpus-file.txt") {
-            if !exists("/tmp/jr-corpus-file.txt") {
-                total = total + 256;
-            }
-        }
+  if exists("/tmp/jr-corpus-file.txt") {
+    if remove("/tmp/jr-corpus-file.txt") {
+      if !exists("/tmp/jr-corpus-file.txt") {
+        total = total + 256;
+      }
     }
+  }
 
-    // A missing file fails, and closing the failed handle is safe — which is what lets a caller close on
-    // every path without tracking whether they got one.
-    missing, missing_ok := open_read("/tmp/jr-corpus-absent-file");
-    if !missing_ok {
-        if close(*missing) == 0 {
-            total = total + 512;
-        }
+  // A missing file fails, and closing the failed handle is safe — which is what lets a caller close on
+  // every path without tracking whether they got one.
+  missing, missing_ok := open_read("/tmp/jr-corpus-absent-file");
+  if !missing_ok {
+    if close(*missing) == 0 {
+      total = total + 512;
     }
+  }
 
-    // --- Paths -----------------------------------------------------------------------------------------
-    total = total + owned(path_join("a", "b"), "a/b", 1024);
-    total = total + owned(path_join("a//", "b"), "a/b", 2048);
-    total = total + owned(path_join("a/", "/b"), "/b", 4096);
-    total = total + owned(path_join("/", "a"), "/a", 8192);
+  // --- Paths -----------------------------------------------------------------------------------------
+  total = total + owned(path_join("a", "b"), "a/b", 1024);
+  total = total + owned(path_join("a//", "b"), "a/b", 2048);
+  total = total + owned(path_join("a/", "/b"), "/b", 4096);
+  total = total + owned(path_join("/", "a"), "/a", 8192);
 
-    total = total + same(base_name("/a/b/c.txt"), "c.txt", 16384);
-    // **Named locals rather than `base_name(…).count`**, because a field of a call's *result* does not lower
-    // today — "a memory reference has no place", E0245 (ADR-0156 §5, on PLAN's known-defects list). The
-    // workaround is one line and this is the file that uses it most, so it is named once here.
-    trailing := base_name("/a/b/");
-    if trailing.count == 0 {
-        total = total + 32768;
+  total = total + same(base_name("/a/b/c.txt"), "c.txt", 16384);
+  // **Named locals rather than `base_name(…).count`**, because a field of a call's *result* does not lower
+  // today — "a memory reference has no place", E0245 (ADR-0156 §5, on PLAN's known-defects list). The
+  // workaround is one line and this is the file that uses it most, so it is named once here.
+  trailing := base_name("/a/b/");
+  if trailing.count == 0 {
+    total = total + 32768;
+  }
+  total = total + same(directory_name("/a/b/c.txt"), "/a/b", 65536);
+  bare := directory_name("c.txt");
+  if bare.count == 0 {
+    if equal(directory_name("/a"), "/") {
+      total = total + 131072;
     }
-    total = total + same(directory_name("/a/b/c.txt"), "/a/b", 65536);
-    bare := directory_name("c.txt");
-    if bare.count == 0 {
-        if equal(directory_name("/a"), "/") {
-            total = total + 131072;
-        }
+  }
+  total = total + same(extension("a/b.tar.gz"), "gz", 262144);
+  dotfile := extension(".bashrc");
+  dotted_dir := extension("a.b/c");
+  if dotfile.count == 0 {
+    if dotted_dir.count == 0 {
+      total = total + 524288;
     }
-    total = total + same(extension("a/b.tar.gz"), "gz", 262144);
-    dotfile := extension(".bashrc");
-    dotted_dir := extension("a.b/c");
-    if dotfile.count == 0 {
-        if dotted_dir.count == 0 {
-            total = total + 524288;
-        }
-    }
-    total = total + same(stem("a/b.tar.gz"), "b.tar", 1048576);
+  }
+  total = total + same(stem("a/b.tar.gz"), "b.tar", 1048576);
 
-    total = total + owned(normalise("/a/./b/../c//d"), "/a/c/d", 2097152);
-    // A `..` that escapes a *relative* path is kept, because `../b` means something; `/..` is `/`, because
-    // the root has no parent; and `a/..` is `.`, not the empty string nobody can open.
-    if equal_owned(normalise("a/../../b"), "../b") {
-        if equal_owned(normalise("/.."), "/") {
-            if equal_owned(normalise("a/.."), ".") {
-                total = total + 4194304;
-            }
-        }
+  total = total + owned(normalise("/a/./b/../c//d"), "/a/c/d", 2097152);
+  // A `..` that escapes a *relative* path is kept, because `../b` means something; `/..` is `/`, because
+  // the root has no parent; and `a/..` is `.`, not the empty string nobody can open.
+  if equal_owned(normalise("a/../../b"), "../b") {
+    if equal_owned(normalise("/.."), "/") {
+      if equal_owned(normalise("a/.."), ".") {
+        total = total + 4194304;
+      }
     }
+  }
 
-    // --- Whole files -----------------------------------------------------------------------------------
-    if write_entire_file("/tmp/jr-corpus-whole.txt", "abc") {
-        contents, read_ok := read_entire_file("/tmp/jr-corpus-whole.txt");
-        if read_ok {
-            if equal(contents, "abc") {
-                if append_entire_file("/tmp/jr-corpus-whole.txt", "de") {
-                    grown, grown_ok := read_entire_file("/tmp/jr-corpus-whole.txt");
-                    if grown_ok {
-                        if equal(grown, "abcde") {
-                            if write_entire_file("/tmp/jr-corpus-empty.txt", "") {
-                                empty, empty_ok := read_entire_file("/tmp/jr-corpus-empty.txt");
-                                if empty_ok {
-                                    if empty.count == 0 {
-                                        total = total + 8388608;
-                                    }
-                                }
-                                free_string(empty);
-                                _ = remove("/tmp/jr-corpus-empty.txt");
-                            }
-                        }
-                    }
-                    free_string(grown);
+  // --- Whole files -----------------------------------------------------------------------------------
+  if write_entire_file("/tmp/jr-corpus-whole.txt", "abc") {
+    contents, read_ok := read_entire_file("/tmp/jr-corpus-whole.txt");
+    if read_ok {
+      if equal(contents, "abc") {
+        if append_entire_file("/tmp/jr-corpus-whole.txt", "de") {
+          grown, grown_ok := read_entire_file("/tmp/jr-corpus-whole.txt");
+          if grown_ok {
+            if equal(grown, "abcde") {
+              if write_entire_file("/tmp/jr-corpus-empty.txt", "") {
+                empty, empty_ok := read_entire_file("/tmp/jr-corpus-empty.txt");
+                if empty_ok {
+                  if empty.count == 0 {
+                    total = total + 8388608;
+                  }
                 }
+                free_string(empty);
+                _ = remove("/tmp/jr-corpus-empty.txt");
+              }
             }
+          }
+          free_string(grown);
         }
-        free_string(contents);
-        _ = remove("/tmp/jr-corpus-whole.txt");
+      }
     }
+    free_string(contents);
+    _ = remove("/tmp/jr-corpus-whole.txt");
+  }
 
-    print_int(total);
-    exit(total % 251);
+  print("%", total);
+  exit(total % 251);
 }
 
 /// Compares an owned string and frees it.
@@ -231,7 +231,7 @@ main :: () {
 /// condition is the only way to avoid leaking in a chain this deep — this language has no `defer` inside an
 /// expression, and a temporary per level would be four more names.
 equal_owned :: (got: string, want: string) -> bool {
-    r := equal(got, want);
-    free_string(got);
-    return r;
+  r := equal(got, want);
+  free_string(got);
+  return r;
 }

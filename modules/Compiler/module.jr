@@ -100,8 +100,8 @@ file_exists_raw :: (path: string) -> bool #foreign compiler "file_exists";
 /// Called `Target` and not `Workspace`, deliberately: Jairs declined Jai's workspace-plus-message-loop
 /// model (ADR-0154 §4), and reusing the word would claim a poll this has not got.
 Target :: struct {
-    /// The driver's handle. Opaque; a script never needs to read it.
-    id: s64;
+  /// The driver's handle. Opaque; a script never needs to read it.
+  id: s64;
 }
 
 /// What kind of artefact a target produces.
@@ -109,25 +109,25 @@ Target :: struct {
 /// Jai's `output_type`, which 13 of 23 real build scripts set — the second most-used option after the
 /// executable's name, and the largest single thing this library could not ask for.
 Output_Kind :: enum {
-    /// A runnable program. The default.
-    EXECUTABLE;
-    /// A dynamic library: `.dylib` on macOS, `.so` elsewhere. The extension is added when the output name
-    /// has none, so `o.output = "libthing"` produces the platform's own.
-    DYNAMIC_LIBRARY;
-    /// A static library, `.a`, produced by `ar`. Records objects and nothing about what they need, so a
-    /// caller linking against one still declares the same `#system_library`s itself.
-    STATIC_LIBRARY;
-    /// The object file alone, for a script that will link it itself — Jai's
-    /// `READY_FOR_CUSTOM_LINK_COMMAND`, without a message loop. Needs no C toolchain at all.
-    OBJECT;
+  /// A runnable program. The default.
+  EXECUTABLE;
+  /// A dynamic library: `.dylib` on macOS, `.so` elsewhere. The extension is added when the output name
+  /// has none, so `o.output = "libthing"` produces the platform's own.
+  DYNAMIC_LIBRARY;
+  /// A static library, `.a`, produced by `ar`. Records objects and nothing about what they need, so a
+  /// caller linking against one still declares the same `#system_library`s itself.
+  STATIC_LIBRARY;
+  /// The object file alone, for a script that will link it itself — Jai's
+  /// `READY_FOR_CUSTOM_LINK_COMMAND`, without a message loop. Needs no C toolchain at all.
+  OBJECT;
 }
 
 /// Which code generator to use.
 Backend :: enum {
-    /// Cranelift, the default and the verified back end.
-    CRANELIFT;
-    /// LLVM, available when the compiler was built with its feature on.
-    LLVM;
+  /// Cranelift, the default and the verified back end.
+  CRANELIFT;
+  /// LLVM, available when the compiler was built with its feature on.
+  LLVM;
 }
 
 /// Everything one compilation can be told.
@@ -136,24 +136,24 @@ Backend :: enum {
 /// Jai's roughly sixty: these are the ones real build scripts set, and an option nobody sets is a
 /// promise to keep working that nothing tests.
 Build_Options :: struct {
-    /// The artefact's name. Empty means "the root file's stem", which is what every other compiler
-    /// does and what a shell completion expects.
-    output: string;
-    /// A directory to write the artefact into, joined with `output`. Empty means the working
-    /// directory.
-    output_path: string;
-    /// 0 for `-O0`, 1 for `-O1`.
-    opt_level: s64;
-    /// Whether to emit bounds checks.
-    bounds_checks: bool;
-    /// Which code generator.
-    backend: Backend;
-    /// Directories to search for an `#import`.
-    module_paths: []string;
-    /// Directories to search for a `#system_library`.
-    library_paths: []string;
-    /// What kind of artefact to produce.
-    kind: Output_Kind;
+  /// The artefact's name. Empty means "the root file's stem", which is what every other compiler
+  /// does and what a shell completion expects.
+  output: string;
+  /// A directory to write the artefact into, joined with `output`. Empty means the working
+  /// directory.
+  output_path: string;
+  /// 0 for `-O0`, 1 for `-O1`.
+  opt_level: s64;
+  /// Whether to emit bounds checks.
+  bounds_checks: bool;
+  /// Which code generator.
+  backend: Backend;
+  /// Directories to search for an `#import`.
+  module_paths: []string;
+  /// Directories to search for a `#system_library`.
+  library_paths: []string;
+  /// What kind of artefact to produce.
+  kind: Output_Kind;
 }
 
 /// Which operating system the build is running on, so a script can choose per-OS sources or flags.
@@ -161,12 +161,12 @@ Build_Options :: struct {
 /// The same three `Basic.os()` reports, restated here so a build script does not have to import
 /// `Basic` to ask a build question.
 Operating_System :: enum {
-    /// macOS.
-    MACOS;
-    /// Linux.
-    LINUX;
-    /// Windows.
-    WINDOWS;
+  /// macOS.
+  MACOS;
+  /// Linux.
+  LINUX;
+  /// Windows.
+  WINDOWS;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,9 +178,9 @@ Operating_System :: enum {
 /// The name appears in the driver's report of what it built, and is not the artefact's filename —
 /// that is [`Build_Options.output`]. Two targets may share a name; the handle is the identity.
 create_target :: (name: string) -> Target {
-    t: Target;
-    t.id = create_target_raw(name);
-    return t;
+  t: Target;
+  t.id = create_target_raw(name);
+  return t;
 }
 
 /// The defaults for `t`, to mutate and write back with [`set_options`].
@@ -188,14 +188,14 @@ create_target :: (name: string) -> Target {
 /// Returns a value rather than a pointer, so that a script's edits do not act at a distance: the
 /// write-back is a separate, visible call, exactly as it is in Jai.
 options :: (t: Target) -> Build_Options {
-    o: Build_Options;
-    o.output = "";
-    o.output_path = "";
-    o.opt_level = 1;
-    o.bounds_checks = true;
-    o.backend = Backend.CRANELIFT;
-    o.kind = Output_Kind.EXECUTABLE;
-    return o;
+  o: Build_Options;
+  o.output = "";
+  o.output_path = "";
+  o.opt_level = 1;
+  o.bounds_checks = true;
+  o.backend = Backend.CRANELIFT;
+  o.kind = Output_Kind.EXECUTABLE;
+  return o;
 }
 
 /// Applies `o` to `t`.
@@ -203,18 +203,18 @@ options :: (t: Target) -> Build_Options {
 /// Decomposed into one boundary call per field here rather than passed as a struct, so that the
 /// compiler never has to know this struct's layout — see the module docs.
 set_options :: (t: Target, o: Build_Options) {
-    set_output_raw(t.id, o.output);
-    set_output_path_raw(t.id, o.output_path);
-    set_opt_level_raw(t.id, o.opt_level);
-    set_bounds_checks_raw(t.id, o.bounds_checks);
-    set_backend_raw(t.id, cast(s64, o.backend));
-    set_output_kind_raw(t.id, cast(s64, o.kind));
-    for p: o.module_paths {
-        add_module_path_raw(t.id, p);
-    }
-    for p: o.library_paths {
-        add_library_path_raw(t.id, p);
-    }
+  set_output_raw(t.id, o.output);
+  set_output_path_raw(t.id, o.output_path);
+  set_opt_level_raw(t.id, o.opt_level);
+  set_bounds_checks_raw(t.id, o.bounds_checks);
+  set_backend_raw(t.id, cast(s64, o.backend));
+  set_output_kind_raw(t.id, cast(s64, o.kind));
+  for p: o.module_paths {
+    add_module_path_raw(t.id, p);
+  }
+  for p: o.library_paths {
+    add_library_path_raw(t.id, p);
+  }
 }
 
 /// Adds a root source file to `t`.
@@ -222,7 +222,7 @@ set_options :: (t: Target, o: Build_Options) {
 /// One file is the ordinary case, because a Jairs program reaches the rest of itself through
 /// `#import`. Several are allowed and each is compiled as its own root.
 add_file :: (t: Target, path: string) {
-    add_file_raw(t.id, path);
+  add_file_raw(t.id, path);
 }
 
 /// Appends one argument for the C driver, after everything the compiler generates (ADR-0197 §2).
@@ -234,7 +234,7 @@ add_file :: (t: Target, path: string) {
 /// make a script build the whole list before it knows every entry — the same reason `add_file` is a call
 /// rather than a field.
 add_linker_argument :: (t: Target, argument: string) {
-    add_linker_argument_raw(t.id, argument);
+  add_linker_argument_raw(t.id, argument);
 }
 
 /// Adds generated source to the target, readable as `#import "Build"` (ADR-0197 §3).
@@ -252,7 +252,7 @@ add_linker_argument :: (t: Target, argument: string) {
 /// Several calls concatenate, separated by a blank line. The module lives in a temporary directory for the
 /// duration of the build, so nothing stale is left in the tree and `git status` stays clean.
 add_build_string :: (t: Target, text: string) {
-    add_build_string_raw(t.id, text);
+  add_build_string_raw(t.id, text);
 }
 
 /// Tells the target where to find a module the ordinary search path would miss (ADR-0197 §5).
@@ -266,7 +266,7 @@ add_build_string :: (t: Target, text: string) {
 /// Either module layout works, the same two the compiler searches: `<dir>/Name/module.jr` or
 /// `<dir>/Name.jr`.
 provide_import :: (t: Target, name: string, directory: string) {
-    provide_import_raw(t.id, name, directory);
+  provide_import_raw(t.id, name, directory);
 }
 
 /// Changes the process's working directory.
@@ -279,12 +279,12 @@ provide_import :: (t: Target, name: string, directory: string) {
 /// `set_working_directory(#filepath)` is the idiom — a script that then names paths relative to its own
 /// file works wherever it is invoked from.
 set_working_directory :: (directory: string) {
-    set_working_directory_raw(directory);
+  set_working_directory_raw(directory);
 }
 
 /// The process's working directory.
 working_directory :: () -> string {
-    return working_directory_raw();
+  return working_directory_raw();
 }
 
 /// Reads a whole file, through the driver (ADR-0197 §6).
@@ -301,19 +301,19 @@ working_directory :: () -> string {
 /// Returns the empty string for a file that cannot be read. Use [`file_exists`] to tell that from an empty
 /// file — a `bool` beside the contents would make every call site destructure a tuple it usually ignores.
 read_file :: (path: string) -> string {
-    return read_file_raw(path);
+  return read_file_raw(path);
 }
 
 /// Writes a whole file, creating parent directories, through the driver.
 ///
 /// Returns whether it succeeded. See [`read_file`] for why this exists beside `File`.
 write_file :: (path: string, contents: string) -> bool #must {
-    return write_file_raw(path, contents);
+  return write_file_raw(path, contents);
 }
 
 /// Whether a path exists.
 file_exists :: (path: string) -> bool {
-    return file_exists_raw(path);
+  return file_exists_raw(path);
 }
 
 /// Compiles `t`, and reports whether it succeeded.
@@ -325,7 +325,7 @@ file_exists :: (path: string) -> bool {
 /// Diagnostics are rendered by the driver as they would be for `jr build`, so a failure looks the
 /// same whichever way the compilation was asked for.
 build :: (t: Target) -> bool #must {
-    return build_raw(t.id);
+  return build_raw(t.id);
 }
 
 /// Asks the driver to build `t` once the script has finished.
@@ -344,7 +344,7 @@ build :: (t: Target) -> bool #must {
 ///
 /// A `main`-shaped script should use [`build`] instead and get an answer it can act on.
 request_build :: (t: Target) {
-    request_build_raw(t.id);
+  request_build_raw(t.id);
 }
 
 /// Prints `message` as a compiler diagnostic.
@@ -353,12 +353,12 @@ request_build :: (t: Target) {
 /// own inputs — a missing directory, an unknown configuration name — looks like every other error
 /// the build produced instead of like stray output.
 report :: (message: string) {
-    report_raw(message);
+  report_raw(message);
 }
 
 /// How many arguments followed `--` on the command line.
 argument_count :: () -> s64 {
-    return argument_count_raw();
+  return argument_count_raw();
 }
 
 /// The argument at `index`, counting from zero.
@@ -366,7 +366,7 @@ argument_count :: () -> s64 {
 /// Out of range is an empty string rather than a trap: a script asking for an argument it was not
 /// given is the ordinary case, and `arguments()` below is the shape most callers want.
 argument :: (index: s64) -> string {
-    return argument_raw(index);
+  return argument_raw(index);
 }
 
 /// Every argument that followed `--`, in order.
@@ -374,24 +374,24 @@ argument :: (index: s64) -> string {
 /// Allocates through `context.allocator`. A fresh script context has the default pair from ADR-0216;
 /// replacing it still redirects this allocation.
 arguments :: () -> []string {
-    n := argument_count_raw();
-    if n <= 0 {
-        empty: []string;
-        return empty;
-    }
-    raw := context.allocator(n * size_of(string));
-    if raw == null {
-        empty: []string;
-        return empty;
-    }
-    data := typed(string, raw);
-    i := 0;
-    while i < n {
-        stored := data + i;
-        stored.* = argument_raw(i);
-        i = i + 1;
-    }
-    return view(data, n);
+  n := argument_count_raw();
+  if n <= 0 {
+    empty: []string;
+    return empty;
+  }
+  raw := context.allocator(n * size_of(string));
+  if raw == null {
+    empty: []string;
+    return empty;
+  }
+  data := typed(string, raw);
+  i := 0;
+  while i < n {
+    stored := data + i;
+    stored.* = argument_raw(i);
+    i = i + 1;
+  }
+  return view(data, n);
 }
 
 /// A command to run, being assembled.
@@ -399,8 +399,8 @@ arguments :: () -> []string {
 /// A handle, for the same reason [`Target`] is one: the arguments cross the boundary one at a time,
 /// so something has to say which command they belong to.
 Command :: struct {
-    /// The driver's handle. Opaque.
-    id: s64;
+  /// The driver's handle. Opaque.
+  id: s64;
 }
 
 /// Starts a command whose first argument is the program to run.
@@ -409,15 +409,15 @@ Command :: struct {
 /// line: there is no shell, so nothing splits on spaces, expands a glob, or interprets a quote. A path
 /// with a space in it therefore works, which is the failure mode a makefile has to fight.
 command :: (program: string) -> Command {
-    c: Command;
-    c.id = command_begin_raw();
-    command_arg_raw(c.id, program);
-    return c;
+  c: Command;
+  c.id = command_begin_raw();
+  command_arg_raw(c.id, program);
+  return c;
 }
 
 /// Appends one argument.
 argument_of :: (c: Command, value: string) {
-    command_arg_raw(c.id, value);
+  command_arg_raw(c.id, value);
 }
 
 /// Runs the command and returns its exit status, capturing its standard output.
@@ -432,7 +432,7 @@ argument_of :: (c: Command, value: string) {
 /// non-zero status and a message on [`output`], rather than a trap, because "the tool is not
 /// installed" is a thing a build script should be able to handle.
 run :: (c: Command) -> s64 #must {
-    return command_run_raw(c.id);
+  return command_run_raw(c.id);
 }
 
 /// Everything the command wrote to standard output, after [`run`].
@@ -441,7 +441,7 @@ run :: (c: Command) -> s64 #must {
 /// itself, so it goes to the terminal where the person running the build can read it — capturing it
 /// would mean a build script had to choose to print it, and most would forget.
 output :: (c: Command) -> string {
-    return command_output_raw(c.id);
+  return command_output_raw(c.id);
 }
 
 /// Runs `program` with `args` and returns its exit status.
@@ -449,11 +449,11 @@ output :: (c: Command) -> string {
 /// The one-line form, for the common case. Use [`command`] and [`output`] when the *output* is what
 /// the script wants — a git hash to stamp into a binary, say.
 shell :: (program: string, args: []string) -> s64 #must {
-    c := command(program);
-    for a: args {
-        command_arg_raw(c.id, a);
-    }
-    return command_run_raw(c.id);
+  c := command(program);
+  for a: args {
+    command_arg_raw(c.id, a);
+  }
+  return command_run_raw(c.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -499,12 +499,12 @@ shell :: (program: string, args: []string) -> s64 #must {
 
 /// Which operating system the build is running on.
 os :: () -> Operating_System {
-    raw := target_os_raw();
-    if raw == 1 {
-        return Operating_System.LINUX;
-    }
-    if raw == 2 {
-        return Operating_System.WINDOWS;
-    }
-    return Operating_System.MACOS;
+  raw := target_os_raw();
+  if raw == 1 {
+    return Operating_System.LINUX;
+  }
+  if raw == 2 {
+    return Operating_System.WINDOWS;
+  }
+  return Operating_System.MACOS;
 }

@@ -23,45 +23,45 @@
 ALIGNMENT :: 16;
 
 Aligned :: struct {
-    tag: u8;
-    value: s64 #align ALIGNMENT;
+  tag: u8;
+  value: s64 #align ALIGNMENT;
 }
 
 // Three fields over the same eight bytes. This is what a `union` cannot say: `header` does *not*
 // overlap, and only the last three do (ADR-0144 §4).
 Overlay :: struct {
-    header: s64;
-    lo: u8 #place 8;
-    hi: u8 #place 9;
-    both: s64 #place 8;
+  header: s64;
+  lo: u8 #place 8;
+  hi: u8 #place 9;
+  both: s64 #place 8;
 }
 
 // A deliberately unaligned field: 3 is not a multiple of 8. Nothing refuses it, and all three
 // engines read it back correctly because each computes its own addresses — the LLVM back end
 // claims `align 1` on every access for exactly this reason.
 Odd :: struct {
-    pad: u8;
-    value: s64 #place 3;
+  pad: u8;
+  value: s64 #place 3;
 }
 
 main :: () {
-    a: Aligned;
-    a.tag = 1;
-    a.value = 2;
+  a: Aligned;
+  a.tag = 1;
+  a.value = 2;
 
-    o: Overlay;
-    // Clearing through the wide field first, so the two bytes read below are the ones written
-    // after it rather than whatever the zeroing left.
-    o.both = 0;
-    o.lo = 3;
-    o.hi = 4;
+  o: Overlay;
+  // Clearing through the wide field first, so the two bytes read below are the ones written
+  // after it rather than whatever the zeroing left.
+  o.both = 0;
+  o.lo = 3;
+  o.hi = 4;
 
-    d: Odd;
-    d.value = 7;
-    d.pad = 1;
+  d: Odd;
+  d.value = 7;
+  d.pad = 1;
 
-    total := cast(s64, o.lo) + cast(s64, o.hi) * 10;
-    total = total + size_of(Aligned) + size_of(Overlay) + size_of(Odd);
-    total = total + d.value;
-    exit(total);
+  total := cast(s64, o.lo) + cast(s64, o.hi) * 10;
+  total = total + size_of(Aligned) + size_of(Overlay) + size_of(Odd);
+  total = total + d.value;
+  exit(total);
 }

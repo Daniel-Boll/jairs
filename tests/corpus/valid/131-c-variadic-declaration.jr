@@ -35,24 +35,24 @@ open_variadic :: (path: *u8, flags: s64) -> s64 #c_variadic #foreign libc "open"
 creat_fixed :: (path: *u8, mode: s64) -> s64 #foreign libc "creat";
 
 main :: () {
-    total := 0;
+  total := 0;
 
-    // The unmarked neighbour still works. `creat` with a null path fails and returns -1, which is the answer
-    // being checked: a *call happened*, through the ordinary fixed-arity path, and came back.
-    if creat_fixed(null, 420) == -1 {
-        total = total + 1;
-    }
+  // The unmarked neighbour still works. `creat` with a null path fails and returns -1, which is the answer
+  // being checked: a *call happened*, through the ordinary fixed-arity path, and came back.
+  if creat_fixed(null, 420) == -1 {
+    total = total + 1;
+  }
 
-    // And it still takes two arguments. Trivially true, and it is the property a shared-attribute bug would
-    // break: an attribute recorded on the wrong procedure would change this one's signature.
-    if creat_fixed(null, 0) == -1 {
-        total = total + 2;
-    }
+  // And it still takes two arguments. Trivially true, and it is the property a shared-attribute bug would
+  // break: an attribute recorded on the wrong procedure would change this one's signature.
+  if creat_fixed(null, 0) == -1 {
+    total = total + 2;
+  }
 
-    // The marked procedure's type is still nameable — `size_of` of a pointer to it would be a pointer's
-    // width. Checked through the declaration merely existing and this file compiling, since taking a
-    // `#foreign` procedure as a *value* is E0256 (ADR-0059 §5) whether it is variadic or not.
-    total = total + 4;
+  // The marked procedure's type is still nameable — `size_of` of a pointer to it would be a pointer's
+  // width. Checked through the declaration merely existing and this file compiling, since taking a
+  // `#foreign` procedure as a *value* is E0256 (ADR-0059 §5) whether it is variadic or not.
+  total = total + 4;
 
-    exit(total);
+  exit(total);
 }

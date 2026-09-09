@@ -16,7 +16,9 @@
 //     halves go in `x0`/`x1`.
 //
 // One case with two correct answers cannot be implemented once, and implementing both means a second ABI's
-// worth of rules verified against a target this project has never run (PLAN §1.5's Linux CI is still owed).
+// worth of rules. Both target families now run in CI, and ADR-0206 implements their differing classifications;
+// this mixed-class refusal remains because the shared classifier deliberately exposes only shapes every engine
+// can lower correctly.
 // So it is refused, and the diagnostic names the two shapes that *do* work — an honest narrower rule rather
 // than a wrong wider one, which is the call ADR-0112 made about `sqrt` and ADR-0157 made about a variadic
 // `open`.
@@ -41,8 +43,8 @@
 libc :: #system_library "c";
 
 Mixed :: struct {
-    d: float64;
-    n: s64;
+  d: float64;
+  n: s64;
 }
 
 takes :: (m: Mixed) -> s64 #foreign libc "takes";

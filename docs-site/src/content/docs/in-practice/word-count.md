@@ -52,13 +52,7 @@ main :: () {
     text := "the quick brown fox\njumps over\nthe lazy dog\n";
     c := count_text(text);
 
-    print("lines: ");
-    print_int(c.lines);
-    print("\nwords: ");
-    print_int(c.words);
-    print("\nbytes: ");
-    print_int(c.bytes);
-    print("\n");
+    print("lines: %\nwords: %\nbytes: %\n", c.lines, c.words, c.bytes);
 }
 ```
 

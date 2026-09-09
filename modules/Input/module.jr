@@ -101,33 +101,33 @@ MAX_EVENTS_PER_FRAME :: 256;
 /// **56 bytes**, which `EVENT_LAYOUT_IS_SDL2` asserts: SDL writes the whole union through the pointer, so a
 /// smaller struct is a stack overwrite and a larger one wastes nothing but lies about the ABI.
 Event :: struct {
-    /// The event type — `QUIT`, `KEY_DOWN`, `MOUSE_MOTION` and so on.
-    ///
-    /// **Offset 0 is contractual**, not inferred: SDL's header documents it as "shared with all events".
-    kind: u32 #place 0;
-    /// Milliseconds since SDL started, as `SDL_GetTicks` reports them.
-    timestamp: u32 #place 4;
-    /// Which window the event is about, for the kinds that concern one.
-    window_id: u32 #place 8;
-    /// For `WINDOW_EVENT`: which window thing happened — compare against `WINDOW_CLOSE`.
-    window_event: u8 #place 12;
-    /// For `KEY_DOWN`/`KEY_UP`: 1 while the key is held.
-    key_state: u8 #place 12;
-    /// For a key event: non-zero when this is an auto-repeat rather than a fresh press.
-    key_repeat: u8 #place 13;
-    /// For `MOUSE_DOWN`/`MOUSE_UP`: which button, 1 for left.
-    mouse_button: u8 #place 16;
-    /// For a key event: the keycode. Below 128 it is the ASCII value.
-    key_sym: u32 #place 20;
-    /// For a mouse event: x, in pixels from the window's left. Shares offset 20 with `key_sym`.
-    mouse_x: s32 #place 20;
-    /// For a mouse event: y, in pixels from the top.
-    mouse_y: s32 #place 24;
-    /// The rest of the union, so the struct is the 56 bytes SDL writes.
-    ///
-    /// Never read. It exists so that `sdl_poll_event` cannot write past this struct — the difference between
-    /// a working poll and a stack overwrite that appears as a corrupted unrelated local.
-    tail: [28]u8 #place 28;
+  /// The event type — `QUIT`, `KEY_DOWN`, `MOUSE_MOTION` and so on.
+  ///
+  /// **Offset 0 is contractual**, not inferred: SDL's header documents it as "shared with all events".
+  kind: u32 #place 0;
+  /// Milliseconds since SDL started, as `SDL_GetTicks` reports them.
+  timestamp: u32 #place 4;
+  /// Which window the event is about, for the kinds that concern one.
+  window_id: u32 #place 8;
+  /// For `WINDOW_EVENT`: which window thing happened — compare against `WINDOW_CLOSE`.
+  window_event: u8 #place 12;
+  /// For `KEY_DOWN`/`KEY_UP`: 1 while the key is held.
+  key_state: u8 #place 12;
+  /// For a key event: non-zero when this is an auto-repeat rather than a fresh press.
+  key_repeat: u8 #place 13;
+  /// For `MOUSE_DOWN`/`MOUSE_UP`: which button, 1 for left.
+  mouse_button: u8 #place 16;
+  /// For a key event: the keycode. Below 128 it is the ASCII value.
+  key_sym: u32 #place 20;
+  /// For a mouse event: x, in pixels from the window's left. Shares offset 20 with `key_sym`.
+  mouse_x: s32 #place 20;
+  /// For a mouse event: y, in pixels from the top.
+  mouse_y: s32 #place 24;
+  /// The rest of the union, so the struct is the 56 bytes SDL writes.
+  ///
+  /// Never read. It exists so that `sdl_poll_event` cannot write past this struct — the difference between
+  /// a working poll and a stack overwrite that appears as a corrupted unrelated local.
+  tail: [28]u8 #place 28;
 }
 
 /// Whether `Event` is the 56 bytes SDL2 writes through the pointer.
@@ -152,10 +152,10 @@ EVENT_LAYOUT_IS_SDL2 :: size_of(Event) == 56;
 ///
 /// Nothing here is written by the caller. `update_window_events` fills it; the readers below only read.
 Events :: struct {
-    /// The events the last drain took, in the order SDL delivered them.
-    buffer: [MAX_EVENTS_PER_FRAME]Event;
-    /// How many of `buffer` are meaningful. Zero on a frame with no input.
-    count: s64;
+  /// The events the last drain took, in the order SDL delivered them.
+  buffer: [MAX_EVENTS_PER_FRAME]Event;
+  /// How many of `buffer` are meaningful. Zero on a frame with no input.
+  count: s64;
 }
 
 /// Takes the next event, if one is waiting.
@@ -165,7 +165,7 @@ Events :: struct {
 /// non-event. That is the line ADR-0151 draws — the marker is for a failure a caller would otherwise miss, and
 /// "nothing happened yet" is not one.
 next_event :: (event: *Event) -> bool {
-    return sdl_poll_event(event) == 1;
+  return sdl_poll_event(event) == 1;
 }
 
 /// Moves pending device state into the queue.
@@ -173,7 +173,7 @@ next_event :: (event: *Event) -> bool {
 /// `next_event` pumps implicitly, so a caller who only polls never needs this. It is here for a caller who
 /// wants the queue filled at a known point — before a timing measurement, say — rather than as a side effect.
 pump :: () {
-    sdl_pump_events();
+  sdl_pump_events();
 }
 
 /// Puts `event` on the queue, so it comes back from `next_event`.
@@ -184,7 +184,7 @@ pump :: () {
 /// Its first use is a **test**: pushing a synthetic `QUIT` and polling it back exercises the whole overlay
 /// with no window manager and no human, which is how ADR-0165 §1 established the loop works at all.
 push :: (event: *Event) -> bool #must {
-    return sdl_push_event(event) == 1;
+  return sdl_push_event(event) == 1;
 }
 
 /// Whether `event` means the program should stop.
@@ -194,14 +194,14 @@ push :: (event: *Event) -> bool #must {
 /// have a window that refuses to shut. Handling both is what almost every program wants, and a caller who
 /// wants to distinguish them still can, by reading `kind` directly.
 should_close :: (event: *Event) -> bool {
-    // The fields are widened rather than the constants narrowed, and every comparison in this module does the
-    // same. A `#place` overlay's fields are C widths — `u32`, `u8` — while a Jairs constant is `s64` and there
-    // is no syntax to annotate one (probed: `QUIT : u32 : 256` does not parse). Widening a `u32` to `s64` is
-    // lossless in every case, so this direction cannot be wrong; narrowing the constant could be.
-    if cast(s64, event.kind) == QUIT {
-        return true;
-    }
-    return cast(s64, event.kind) == WINDOW_EVENT && cast(s64, event.window_event) == WINDOW_CLOSE;
+  // The fields are widened rather than the constants narrowed, and every comparison in this module does the
+  // same. A `#place` overlay's fields are C widths — `u32`, `u8` — while a Jairs constant is `s64` and there
+  // is no syntax to annotate one (probed: `QUIT : u32 : 256` does not parse). Widening a `u32` to `s64` is
+  // lossless in every case, so this direction cannot be wrong; narrowing the constant could be.
+  if cast(s64, event.kind) == QUIT {
+    return true;
+  }
+  return cast(s64, event.kind) == WINDOW_EVENT && cast(s64, event.window_event) == WINDOW_CLOSE;
 }
 
 /// Whether `event` is a fresh press of `keycode` — not an auto-repeat.
@@ -210,9 +210,9 @@ should_close :: (event: *Event) -> bool {
 /// pressed" almost never wants forty of them. A caller who *does* want the repeats reads `kind` and `key_sym`
 /// directly.
 pressed :: (event: *Event, keycode: s64) -> bool {
-    // `keycode` is `s64` so a caller can pass `KEY_ESCAPE` or a character literal without a cast, which is the
-    // whole point of a helper: the widening happens once here rather than at every call site.
-    return cast(s64, event.kind) == KEY_DOWN && cast(s64, event.key_sym) == keycode && event.key_repeat == 0;
+  // `keycode` is `s64` so a caller can pass `KEY_ESCAPE` or a character literal without a cast, which is the
+  // whole point of a helper: the widening happens once here rather than at every call site.
+  return cast(s64, event.kind) == KEY_DOWN && cast(s64, event.key_sym) == keycode && event.key_repeat == 0;
 }
 
 /// A synthetic `QUIT` event, ready to `push`.
@@ -220,9 +220,9 @@ pressed :: (event: *Event, keycode: s64) -> bool {
 /// A constructor because a caller building one by hand has to know that `kind` is the only field that matters
 /// and that the rest must be zero — and because the *test* for this module needs one.
 quit_event :: () -> Event {
-    e: Event;
-    e.kind = cast(u32, QUIT);
-    return e;
+  e: Event;
+  e.kind = cast(u32, QUIT);
+  return e;
 }
 
 /// Drains the queue into `events` and returns how many it took.
@@ -237,23 +237,23 @@ quit_event :: () -> Event {
 ///
 /// Not `#must`: zero is the ordinary answer on most frames.
 update_window_events :: (events: *Events, limit: s64) -> s64 {
-    bound := limit;
-    if bound > MAX_EVENTS_PER_FRAME {
-        bound = MAX_EVENTS_PER_FRAME;
+  bound := limit;
+  if bound > MAX_EVENTS_PER_FRAME {
+    bound = MAX_EVENTS_PER_FRAME;
+  }
+  if bound < 0 {
+    bound = 0;
+  }
+  events.count = 0;
+  while events.count < bound {
+    // Written straight into the buffer slot rather than into a local and copied: the overlay is 56
+    // bytes and a copy per event is a copy per event.
+    if !next_event(*events.buffer[events.count]) {
+      return events.count;
     }
-    if bound < 0 {
-        bound = 0;
-    }
-    events.count = 0;
-    while events.count < bound {
-        // Written straight into the buffer slot rather than into a local and copied: the overlay is 56
-        // bytes and a copy per event is a copy per event.
-        if !next_event(*events.buffer[events.count]) {
-            return events.count;
-        }
-        events.count = events.count + 1;
-    }
-    return events.count;
+    events.count = events.count + 1;
+  }
+  return events.count;
 }
 
 /// How many events the last `update_window_events` took.
@@ -261,7 +261,7 @@ update_window_events :: (events: *Events, limit: s64) -> s64 {
 /// A reader rather than a field access, so a caller never has to know that `count` is the field's name —
 /// which is what lets the buffer's shape change without touching a call site.
 event_count :: (events: *Events) -> s64 {
-    return events.count;
+  return events.count;
 }
 
 /// The events the last `update_window_events` took, as a view.
@@ -271,7 +271,7 @@ event_count :: (events: *Events) -> s64 {
 /// stated rather than enforced: there are no lifetimes here, and a caller who keeps it across frames reads
 /// the next frame's events — a bug a comment can prevent and a type cannot.
 events_this_frame :: (events: *Events) -> []Event {
-    return view(*events.buffer[0], events.count);
+  return view(*events.buffer[0], events.count);
 }
 
 /// Whether anything the last `update_window_events` took asked the program to stop.
@@ -281,14 +281,14 @@ events_this_frame :: (events: *Events) -> []Event {
 /// `update_window_events` **must not** drain again: the second drain would find an empty queue and answer
 /// `false` for a frame that did contain a close.
 frame_wants_to_close :: (events: *Events) -> bool {
-    i := 0;
-    while i < events.count {
-        if should_close(*events.buffer[i]) {
-            return true;
-        }
-        i = i + 1;
+  i := 0;
+  while i < events.count {
+    if should_close(*events.buffer[i]) {
+      return true;
     }
-    return false;
+    i = i + 1;
+  }
+  return false;
 }
 
 /// Drains the queue and reports whether anything in it asked the program to stop.
@@ -305,19 +305,19 @@ frame_wants_to_close :: (events: *Events) -> bool {
 ///
 /// Not `#must`: `false` is the ordinary answer on almost every frame.
 wants_to_close :: (limit: s64) -> bool {
-    closing := false;
-    e: Event;
-    i := 0;
-    while i < limit {
-        if !next_event(*e) {
-            return closing;
-        }
-        if should_close(*e) {
-            closing = true;
-        }
-        i = i + 1;
+  closing := false;
+  e: Event;
+  i := 0;
+  while i < limit {
+    if !next_event(*e) {
+      return closing;
     }
-    return closing;
+    if should_close(*e) {
+      closing = true;
+    }
+    i = i + 1;
+  }
+  return closing;
 }
 
 // ---------------------------------------------------------------------------

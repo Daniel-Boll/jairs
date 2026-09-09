@@ -25,48 +25,48 @@
 
 /// The canonical example: one `$N`, used as an ordinary `s64` in the body.
 make :: ($N: s64) -> s64 {
-    return N + 1;
+  return N + 1;
 }
 
 /// A `$N` beside an ordinary value parameter — a template may mix comptime and runtime parameters.
 scaled :: ($N: s64, factor: s64) -> s64 {
-    return N * factor;
+  return N * factor;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // `$N = 5`, baked. The instantiation returns 6.
-    if make(5) == 6 {
-        n = n + 1;
-    }
+  // `$N = 5`, baked. The instantiation returns 6.
+  if make(5) == 6 {
+    n = n + 1;
+  }
 
-    // A **second** call at the same value — one instantiation serves both (ADR-0005).
-    if make(5) == 6 {
-        n = n + 2;
-    }
+  // A **second** call at the same value — one instantiation serves both (ADR-0005).
+  if make(5) == 6 {
+    n = n + 2;
+  }
 
-    // A **distinct** value — a second instantiation, independent from `make(5)`.
-    if make(7) == 8 {
-        n = n + 4;
-    }
+  // A **distinct** value — a second instantiation, independent from `make(5)`.
+  if make(7) == 8 {
+    n = n + 4;
+  }
 
-    // Mixed comptime and runtime parameters. `$N` is baked to 3; `factor` is passed at the call as 4.
-    if scaled(3, 4) == 12 {
-        n = n + 8;
-    }
+  // Mixed comptime and runtime parameters. `$N` is baked to 3; `factor` is passed at the call as 4.
+  if scaled(3, 4) == 12 {
+    n = n + 8;
+  }
 
-    // A comptime call whose result is used in a bigger expression, so nothing folds it away.
-    a := make(5);
-    b := scaled(3, 4);
-    if a + b == 18 {
-        n = n + 16;
-    }
+  // A comptime call whose result is used in a bigger expression, so nothing folds it away.
+  a := make(5);
+  b := scaled(3, 4);
+  if a + b == 18 {
+    n = n + 16;
+  }
 
-    // Every assertion: 31 (1+2+4+8+16). One more from any additional path we might add — 32 total, which
-    // is what the differential exit-code assertion checks.
-    if n == 31 {
-        exit(32);
-    }
-    exit(1);
+  // Every assertion: 31 (1+2+4+8+16). One more from any additional path we might add — 32 total, which
+  // is what the differential exit-code assertion checks.
+  if n == 31 {
+    exit(32);
+  }
+  exit(1);
 }

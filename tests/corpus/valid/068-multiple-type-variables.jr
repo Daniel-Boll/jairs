@@ -23,75 +23,75 @@
 
 /// Two variables, returns the first.
 pick_first :: (a: $A, b: $B) -> A {
-    return a;
+  return a;
 }
 
 /// Two variables, returns the second — so `B`'s binding is what the result reads.
 pick_second :: (a: $A, b: $B) -> B {
-    return b;
+  return b;
 }
 
 /// `$A` used twice and a distinct `$B`: one variable repeated, one independent (ADR-0083 §3).
 combine :: (a: $A, b: A, tag: $B) -> A {
-    return a + b;
+  return a + b;
 }
 
 /// The single-variable form, unchanged — the generalisation is a superset.
 id :: (x: $T) -> T {
-    return x;
+  return x;
 }
 
 /// A struct so a variable can bind to something other than an integer.
 Point :: struct {
-    x: s64;
+  x: s64;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // A = Point, B = s64 — genuinely different types, which one variable could not express.
-    p: Point;
-    p.x = 1;
-    r := pick_first(p, 99);
-    if r.x == 1 {
-        n = n + 1;
-    }
+  // A = Point, B = s64 — genuinely different types, which one variable could not express.
+  p: Point;
+  p.x = 1;
+  r := pick_first(p, 99);
+  if r.x == 1 {
+    n = n + 1;
+  }
 
-    // A = s64, B = Point — returns the second, so B's binding drives the result type.
-    q: Point;
-    q.x = 2;
-    s := pick_second(40, q);
-    if s.x == 2 {
-        n = n + 2;
-    }
+  // A = s64, B = Point — returns the second, so B's binding drives the result type.
+  q: Point;
+  q.x = 2;
+  s := pick_second(40, q);
+  if s.x == 2 {
+    n = n + 2;
+  }
 
-    // `$A` = s64 twice, `$B` = bool once: `combine` sums the two `A`s and ignores the tag.
-    if combine(40, 2, true) == 42 {
-        n = n + 4;
-    }
+  // `$A` = s64 twice, `$B` = bool once: `combine` sums the two `A`s and ignores the tag.
+  if combine(40, 2, true) == 42 {
+    n = n + 4;
+  }
 
-    // A distinct tuple — `$A` = s64, `$B` = s64 — is a *different* instantiation from the one above, even
-    // though `combine` was already instantiated with a `bool` tag.
-    if combine(10, 6, 0) == 16 {
-        n = n + 8;
-    }
+  // A distinct tuple — `$A` = s64, `$B` = s64 — is a *different* instantiation from the one above, even
+  // though `combine` was already instantiated with a `bool` tag.
+  if combine(10, 6, 0) == 16 {
+    n = n + 8;
+  }
 
-    // The single-variable form, still working.
-    if id(16) == 16 {
-        n = n + 16;
-    }
+  // The single-variable form, still working.
+  if id(16) == 16 {
+    n = n + 16;
+  }
 
-    // `pick_first` again at the same types as the first call — one instantiation serves both (ADR-0005).
-    t: Point;
-    t.x = 32;
-    u := pick_first(t, 7);
-    if u.x == 32 {
-        n = n + 32;
-    }
+  // `pick_first` again at the same types as the first call — one instantiation serves both (ADR-0005).
+  t: Point;
+  t.x = 32;
+  u := pick_first(t, 7);
+  if u.x == 32 {
+    n = n + 32;
+  }
 
-    // Every assertion: 63.
-    if n == 63 {
-        exit(0);
-    }
-    exit(1);
+  // Every assertion: 63.
+  if n == 63 {
+    exit(0);
+  }
+  exit(1);
 }

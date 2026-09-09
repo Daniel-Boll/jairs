@@ -13,8 +13,8 @@
 
 /// A single value of any type — the smallest parameterised struct, and the shape ADR-0085 used to introduce them.
 Box :: struct($T) {
-    /// The value.
-    value: T;
+  /// The value.
+  value: T;
 }
 
 /// Two values of independent types.
@@ -22,8 +22,8 @@ Box :: struct($T) {
 /// Two parameters rather than one, because a list of arguments has to be genuinely a list: an implementation that
 /// bound only the first would pass every one-parameter test.
 Pair :: struct($A, $B) {
-    /// The first.
-    first: A;
-    /// The second.
-    second: B;
+  /// The first.
+  first: A;
+  /// The second.
+  second: B;
 }

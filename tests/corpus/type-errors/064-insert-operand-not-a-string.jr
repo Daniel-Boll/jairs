@@ -18,7 +18,7 @@
 // integer literal takes its type from context, so `#insert 5` might invite a "what type is 5" distraction,
 // while `x: s64` has one settled type and the error is only ever "that is an `s64`, not a `string`".
 main :: () {
-    x := 5;
-    // E0214: `x` is an `s64`, and a computed `#insert` operand must be a `string`.
-    #insert x;
+  x := 5;
+  // E0214: `x` is an `s64`, and a computed `#insert` operand must be a `string`.
+  #insert x;
 }

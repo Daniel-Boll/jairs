@@ -24,22 +24,22 @@
 
 /// The canonical example: one `$N`, used as an ordinary `s64` in the body.
 sized :: ($N: s64) -> s64 {
-    return N + 1;
+  return N + 1;
 }
 
 /// A `$N` beside an ordinary value parameter — a template may mix comptime and runtime parameters.
 scaled :: ($N: s64, factor: s64) -> s64 {
-    return N * factor;
+  return N * factor;
 }
 
 /// Two comptime-value parameters in one signature — the shape a later sub-wave keys per value tuple.
 area :: ($N: s64, $M: s64) -> s64 {
-    return N * M;
+  return N * M;
 }
 
 // None of the above is *called*, so `main` does ordinary work: the file's point is that declaring these
 // checks clean and their bodies type-check, which no earlier sub-wave allowed — `$N` did not even parse.
 main :: () {
-    n := 7;
-    exit(n);
+  n := 7;
+  exit(n);
 }

@@ -27,32 +27,32 @@
 
 /// The canonical example: one `$T`, inferred from `x`, returned as a bare `T`.
 id :: (x: $T) -> T {
-    return x;
+  return x;
 }
 
 /// One `$T` across two parameters and the return — a single variable, three uses, not three variables.
 first :: (a: $T, b: T) -> T {
-    return a;
+  return a;
 }
 
 /// `$T` behind a pointer, so the collector recurses through `*`.
 deref :: (p: *$T) -> T {
-    return p.*;
+  return p.*;
 }
 
 /// `$T` as a view's element, so the collector recurses through `[]`.
 count_view :: (items: []$T) -> s64 {
-    return items.count;
+  return items.count;
 }
 
 /// Two parameters of the same `$T`, summed — the shape a later sub-wave will instantiate per type.
 pair_sum :: (a: $T, b: T) -> T {
-    return a + b;
+  return a + b;
 }
 
 // None of the above is *called*, so `main` does ordinary work: the file's point is that declaring these
 // checks clean, which before this sub-wave it did not — `$T` did not even lex.
 main :: () {
-    n := 5;
-    exit(n);
+  n := 5;
+  exit(n);
 }

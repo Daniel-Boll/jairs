@@ -7,12 +7,12 @@
 #import "Basic";
 
 main :: () {
-    switch os() {
-        case .MACOS;
-            print_line("compiled for macOS");
-        case .LINUX;
-            print_line("compiled for Linux");
-        case .WINDOWS;
-            print_line("compiled for Windows");
-    }
+  switch os() {
+    case .MACOS;
+      print("compiled for macOS\n");
+    case .LINUX;
+      print("compiled for Linux\n");
+    case .WINDOWS;
+      print("compiled for Windows\n");
+  }
 }

@@ -23,51 +23,51 @@
 #import "Basic";
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // ------------------------------------------------------------------------
-    // Declaration: zero-initialised.
-    // ------------------------------------------------------------------------
-    xs: [..]s64;
-    if xs.count == 0 && xs.capacity == 0 {
-        n = n + 1;
-    }
+  // ------------------------------------------------------------------------
+  // Declaration: zero-initialised.
+  // ------------------------------------------------------------------------
+  xs: [..]s64;
+  if xs.count == 0 && xs.capacity == 0 {
+    n = n + 1;
+  }
 
-    // ------------------------------------------------------------------------
-    // The fields are writable. A caller populating them after a `malloc`.
-    // ------------------------------------------------------------------------
-    xs.count = 3;
-    xs.capacity = 8;
-    if xs.count == 3 && xs.capacity == 8 {
-        n = n + 2;
-    }
+  // ------------------------------------------------------------------------
+  // The fields are writable. A caller populating them after a `malloc`.
+  // ------------------------------------------------------------------------
+  xs.count = 3;
+  xs.capacity = 8;
+  if xs.count == 3 && xs.capacity == 8 {
+    n = n + 2;
+  }
 
-    // ------------------------------------------------------------------------
-    // The declared element type does not affect the layout: `[..]u8` and
-    // `[..]s64` have the same size and alignment. Verified by declaring two
-    // of different element types and reading their empty counts.
-    // ------------------------------------------------------------------------
-    ys: [..]u8;
-    zs: [..]bool;
-    if ys.count == 0 && zs.count == 0 && ys.capacity == 0 && zs.capacity == 0 {
-        n = n + 4;
-    }
+  // ------------------------------------------------------------------------
+  // The declared element type does not affect the layout: `[..]u8` and
+  // `[..]s64` have the same size and alignment. Verified by declaring two
+  // of different element types and reading their empty counts.
+  // ------------------------------------------------------------------------
+  ys: [..]u8;
+  zs: [..]bool;
+  if ys.count == 0 && zs.count == 0 && ys.capacity == 0 && zs.capacity == 0 {
+    n = n + 4;
+  }
 
-    // ------------------------------------------------------------------------
-    // Distinct from a view: they answer different fields.
-    // ------------------------------------------------------------------------
-    v: [4]s64;
-    v[0] = 10;
-    view := v[];
-    // `view.count == 4`; a view has no `.capacity`. `xs.capacity` is the
-    // dynamic-array-only field a view does not answer.
-    if view.count == 4 {
-        n = n + 8;
-    }
+  // ------------------------------------------------------------------------
+  // Distinct from a view: they answer different fields.
+  // ------------------------------------------------------------------------
+  v: [4]s64;
+  v[0] = 10;
+  view := v[];
+  // `view.count == 4`; a view has no `.capacity`. `xs.capacity` is the
+  // dynamic-array-only field a view does not answer.
+  if view.count == 4 {
+    n = n + 8;
+  }
 
-    // Every assertion above: 15.
-    if n == 15 {
-        exit(0);
-    }
-    exit(1);
+  // Every assertion above: 15.
+  if n == 15 {
+    exit(0);
+  }
+  exit(1);
 }

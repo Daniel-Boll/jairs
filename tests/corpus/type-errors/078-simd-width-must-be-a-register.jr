@@ -25,5 +25,5 @@
 // *reason* and the shapes are the answer: a reader who wrote `[4]s64` wants to be told `[2]s64`
 // exists.
 main :: () {
-    wide: #simd [4]s64;
+  wide: #simd [4]s64;
 }

@@ -27,71 +27,71 @@
 
 /// The canonical polymorph: returns its argument unchanged, at whatever type it is called with.
 id :: (x: $T) -> T {
-    return x;
+  return x;
 }
 
 /// Two parameters of one `$T`, summed — instantiated at `s64` here.
 add :: (a: $T, b: T) -> T {
-    return a + b;
+  return a + b;
 }
 
 /// Two parameters of one `$T`, returning the first. Instantiated at a **struct**, where a body that
 /// assumed a scalar would be wrong — so this exercises per-instantiation checking as well as running.
 first :: (a: $T, b: T) -> T {
-    return a;
+  return a;
 }
 
 /// A struct to instantiate `first` and `id` at.
 Point :: struct {
-    x: s64;
-    y: s64;
+  x: s64;
+  y: s64;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // `$T` = s64, inferred from the argument, returned.
-    if id(7) == 7 {
-        n = n + 1;
-    }
+  // `$T` = s64, inferred from the argument, returned.
+  if id(7) == 7 {
+    n = n + 1;
+  }
 
-    // Two calls at the **same** type — one appended instantiation serves both (ADR-0005).
-    if add(40, 2) == 42 {
-        n = n + 2;
-    }
-    if add(1, 1) == 2 {
-        n = n + 4;
-    }
+  // Two calls at the **same** type — one appended instantiation serves both (ADR-0005).
+  if add(40, 2) == 42 {
+    n = n + 2;
+  }
+  if add(1, 1) == 2 {
+    n = n + 4;
+  }
 
-    // `$T` = Point, carried through `id` and read back: the aggregate survives instantiation.
-    p: Point;
-    p.x = 8;
-    p.y = 8;
-    q := id(p);
-    if q.x + q.y == 16 {
-        n = n + 8;
-    }
+  // `$T` = Point, carried through `id` and read back: the aggregate survives instantiation.
+  p: Point;
+  p.x = 8;
+  p.y = 8;
+  q := id(p);
+  if q.x + q.y == 16 {
+    n = n + 8;
+  }
 
-    // `$T` = Point through `first`, returning the first of two.
-    a: Point;
-    a.x = 16;
-    a.y = 0;
-    b: Point;
-    b.x = 99;
-    b.y = 99;
-    r := first(a, b);
-    if r.x == 16 {
-        n = n + 16;
-    }
+  // `$T` = Point through `first`, returning the first of two.
+  a: Point;
+  a.x = 16;
+  a.y = 0;
+  b: Point;
+  b.x = 99;
+  b.y = 99;
+  r := first(a, b);
+  if r.x == 16 {
+    n = n + 16;
+  }
 
-    // `id` at s64 again — the same instantiation `id(7)` used, reached from a different call site.
-    if id(32) == 32 {
-        n = n + 32;
-    }
+  // `id` at s64 again — the same instantiation `id(7)` used, reached from a different call site.
+  if id(32) == 32 {
+    n = n + 32;
+  }
 
-    // Every assertion: 63.
-    if n == 63 {
-        exit(0);
-    }
-    exit(1);
+  // Every assertion: 63.
+  if n == 63 {
+    exit(0);
+  }
+  exit(1);
 }

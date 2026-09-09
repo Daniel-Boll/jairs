@@ -20,36 +20,36 @@
 COUNT :: 4;
 
 Entities :: struct #soa(COUNT) {
-    x: s64;
-    hp: u8;
+  x: s64;
+  hp: u8;
 }
 
 main :: () {
-    e: Entities;
+  e: Entities;
 
-    // The sugar as a *write* target, which is the half a read-only test would miss: the place is
-    // built the same way, so a rewrite that only fired on reads would produce a program that
-    // compiled and stored nothing where it was told to.
-    i := 0;
-    while i < COUNT {
-        e[i].x = i * 10;
-        e[i].hp = cast(u8, i);
-        i = i + 1;
-    }
+  // The sugar as a *write* target, which is the half a read-only test would miss: the place is
+  // built the same way, so a rewrite that only fired on reads would produce a program that
+  // compiled and stored nothing where it was told to.
+  i := 0;
+  while i < COUNT {
+    e[i].x = i * 10;
+    e[i].hp = cast(u8, i);
+    i = i + 1;
+  }
 
-    total := size_of(Entities);
-    j := 0;
-    while j < COUNT {
-        total = total + e[j].x + cast(s64, e[j].hp);
-        j = j + 1;
-    }
+  total := size_of(Entities);
+  j := 0;
+  while j < COUNT {
+    total = total + e[j].x + cast(s64, e[j].hp);
+    j = j + 1;
+  }
 
-    // **The two spellings must agree**, which is the claim that makes the sugar sugar: a reader who
-    // does not know about `e[i].x` can still read every program, because the field genuinely is an
-    // array and `e.x[i]` is an ordinary index. If these ever differ, one of them is a wrong address.
-    if e[2].x == e.x[2] {
-        total = total + 20;
-    }
+  // **The two spellings must agree**, which is the claim that makes the sugar sugar: a reader who
+  // does not know about `e[i].x` can still read every program, because the field genuinely is an
+  // array and `e.x[i]` is an ordinary index. If these ever differ, one of them is a wrong address.
+  if e[2].x == e.x[2] {
+    total = total + 20;
+  }
 
-    exit(total);
+  exit(total);
 }

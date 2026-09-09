@@ -24,12 +24,12 @@
 // does not allow. The intrinsics are recognised by the compiler rather than imported.
 
 a :: (x: s64) -> s64 @serialise {
-    return x;
+  return x;
 }
 
 asks_with_a_local :: () {
-    i := 0;
-    // A local, so the name resolves — the refusal is about *when* its value is readable, not whether it is
-    // spelled correctly.
-    which := noted_name("serialise", i);
+  i := 0;
+  // A local, so the name resolves — the refusal is about *when* its value is readable, not whether it is
+  // spelled correctly.
+  which := noted_name("serialise", i);
 }

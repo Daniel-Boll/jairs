@@ -131,7 +131,7 @@ fn unchanged(
 fn the_exit_criterion_file_inlines_its_one_leaf_call() {
     // ADR-0019 §6's deferral ends only if something actually inlines, and this is the
     // file the whole slice is measured against. `add` is the one eligible callee:
-    // `print` and `print_line` both call `write`, so neither is a leaf.
+    // `print` calls `write`, so it is not a leaf.
     let (mut db, search) = database();
     let text = std::fs::read_to_string(corpus("corpus/valid/024-hello.jr"))
         .expect("the exit criterion's file must exist");
@@ -366,36 +366,28 @@ fn the_optimized_dump_is_stable() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn print_line_loses_the_spill_slot_it_never_reads() {
-    // The symptom `PLAN.md` §7 named for two waves, asserted on the real module rather
-    // than a miniature: `modules/Basic`'s `print_line` spills its `string` parameter to
-    // a slot and then passes the value on, so the slot is written once and never read.
-    // Both halves are asserted, because "the optimized body has no slot" alone would
-    // also pass if lowering had stopped creating one.
-    // Loaded directly, the way `mir_corpus.rs` does: `modules/Basic` is not in
-    // `tests/corpus/valid/`, so nothing brings it into a database unless a test does.
+fn the_optimization_query_removes_a_write_only_spill() {
+    // Assert the DCE property through the database query without coupling the test to a
+    // standard-library compatibility wrapper. Lowering spills `forward`'s string parameter,
+    // then passes the SSA value to `sink`; the slot itself is written and never read.
     let (mut db, search) = database();
-    let text = std::fs::read_to_string(corpus("../modules/Basic/module.jr"))
-        .expect("the Basic module must exist");
-    let module = add_file(&mut db, "modules/Basic/module.jr", &text);
-    db.load_modules_transitively(module);
+    let file = add_file(
+        &mut db,
+        "write-only-spill.jr",
+        "sink :: (s: string) { }\nforward :: (s: string) { sink(s); }\n",
+    );
     let config = checked(&mut db);
 
-    let built = file_mir(&db, module, search).mir;
-    let optimized = optimized_file_mir(&db, module, search, config).mir;
-    let proc = proc_named(&db, module, "print_line");
+    let built = file_mir(&db, file, search).mir;
+    let optimized = optimized_file_mir(&db, file, search, config).mir;
+    let proc = proc_named(&db, file, "forward");
 
     let Some(Ok(before)) = built.get(proc) else {
-        panic!("`print_line` has no built body");
+        panic!("`forward` has no built body");
     };
     let Some(Ok(after)) = optimized.get(proc) else {
-        panic!("`print_line` has no optimized body");
+        panic!("`forward` has no optimized body");
     };
-    // **A count, not the count** (ADR-0189 §5). This asserted `== 1` while `print_line`'s body was
-    // `write(STDOUT, …)` twice; it now calls the variadic `print`, whose argument packing brings slots of
-    // its own, so the number is 2 and would move again on any change to `print`. The premise the test
-    // below actually needs is "lowering created at least one slot", and the assertion after this one
-    // pins the part that matters — that one of them is dead. An exact count here was a proxy for that.
     assert!(
         before.slot_count() > 0,
         "lowering no longer creates any slot; if this changes, the test below proves nothing"
@@ -405,12 +397,6 @@ fn print_line_loses_the_spill_slot_it_never_reads() {
         "the built body's spill slot is written and never read; if that stops being true, \
          the assertion below proves nothing"
     );
-    // **The property, not the count** (ADR-0145 §1). This used to assert `slot_count() == 0`,
-    // which was the same thing while `print_line`'s only slot was its own write-only spill.
-    // Non-leaf inlining changed the arithmetic rather than the property: `print_line` now
-    // absorbs `print`, twice, and each copy brings a `string` temporary that *is* read — so
-    // the optimized body legitimately has slots, and what must still hold is that none of
-    // them is dead.
     assert_eq!(
         write_only_slots(after),
         0,

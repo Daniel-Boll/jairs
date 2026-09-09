@@ -24,9 +24,9 @@ LITERAL :: 4;
 SUM :: 2 + 2;
 
 main :: () {
-    // Legal now, and here so the file shows the line rather than only one side of it.
-    ok: [LITERAL]u8;
+  // Legal now, and here so the file shows the line rather than only one side of it.
+  ok: [LITERAL]u8;
 
-    // E0233: the length names a constant, but not one whose value is already a literal.
-    a: [SUM]u8;
+  // E0233: the length names a constant, but not one whose value is already a literal.
+  a: [SUM]u8;
 }

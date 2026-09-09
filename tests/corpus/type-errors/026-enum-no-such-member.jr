@@ -2,10 +2,10 @@
 // The suggestion comes from the enum's own member list, which only `jr-sema` knows
 // (ADR-0031 §1) — so `jr check` explains its own error rather than leaving it to an editor.
 Colour :: enum {
-    RED;
-    GREEN;
+  RED;
+  GREEN;
 }
 
 main :: () {
-    c := Colour.REDD;
+  c := Colour.REDD;
 }

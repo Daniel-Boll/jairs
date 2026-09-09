@@ -47,41 +47,41 @@
 /// The first `@serialise`, so index 0 names this one. A single-letter name, because the exit code compares
 /// name *lengths* — comparing text needs a byte loop, which is `String`'s job in W7 (E0278, ADR-0099 §4).
 a :: (x: s64) -> s64 @serialise {
-    return x;
+  return x;
 }
 
 /// Not noted at all, so it is skipped rather than counted — sitting *between* the two that are counted, so
 /// declaration order is genuinely tested rather than accidentally satisfied.
 b :: (x: s64) -> s64 {
-    return x;
+  return x;
 }
 
 /// The second `@serialise`. A macro, since a note belongs to the declaration rather than to how it is called.
 c :: (x: s64) -> s64 #expand @serialise {
-    return x + x;
+  return x + x;
 }
 
 /// A different note, counted on its own — the query is per-note.
 d :: (x: s64) -> s64 @internal {
-    return x;
+  return x;
 }
 
 main :: () {
-    // Two `@serialise`s: `a` and `c`, with `b` skipped between them.
-    n := noted_count("serialise");
+  // Two `@serialise`s: `a` and `c`, with `b` skipped between them.
+  n := noted_count("serialise");
 
-    // Declaration order, so these are `a` then `c` — one byte each.
-    first := noted_name("serialise", 0);
-    second := noted_name("serialise", 1);
+  // Declaration order, so these are `a` then `c` — one byte each.
+  first := noted_name("serialise", 0);
+  second := noted_name("serialise", 1);
 
-    // Past the end. `""` rather than a refusal, so an unrolled tail is quiet.
-    past := noted_name("serialise", 2);
+  // Past the end. `""` rather than a refusal, so an unrolled tail is quiet.
+  past := noted_name("serialise", 2);
 
-    // A different note, counted separately: one `@internal`.
-    internal := noted_count("internal");
+  // A different note, counted separately: one `@internal`.
+  internal := noted_count("internal");
 
-    // A note nothing carries. Zero is a real answer, not a sentinel.
-    missing := noted_count("nosuchnote");
+  // A note nothing carries. Zero is a real answer, not a sentinel.
+  missing := noted_count("nosuchnote");
 
-    exit(n * 100 + first.count * 10 + second.count + past.count + internal - 1 + missing);
+  exit(n * 100 + first.count * 10 + second.count + past.count + internal - 1 + missing);
 }

@@ -32,25 +32,25 @@
 /// nothing in the mid-end can prove it in range — which is what makes this procedure's MIR
 /// genuinely different from `safe`'s below rather than identical after const-prop deleted both.
 read_fast :: (buf: [4]s64, i: s64) -> s64 #no_abc {
-    return buf[i];
+  return buf[i];
 }
 
 /// The same body without the directive, so its check survives. Here to make the difference between
 /// the two a property of the *declaration* rather than of the build — a file-level reading of
 /// `#no_abc` would give these two the same MIR.
 read_safe :: (buf: [4]s64, i: s64) -> s64 {
-    return buf[i];
+  return buf[i];
 }
 
 /// A `for` over an array also emits a check per element, at a second site in the lowering path
 /// (ADR-0049). `#no_abc` has to reach that one too, or the directive would work on `buf[i]` and
 /// silently not on a loop — two emission sites is how they come to disagree.
 sum_fast :: (buf: [4]s64) -> s64 #no_abc {
-    total := 0;
-    for x: buf {
-        total = total + x;
-    }
-    return total;
+  total := 0;
+  for x: buf {
+    total = total + x;
+  }
+  return total;
 }
 
 /// Both attributes on one procedure, in the order the parser accepts second. `#c_call` and
@@ -58,51 +58,51 @@ sum_fast :: (buf: [4]s64) -> s64 #no_abc {
 /// and writing both must be legal in either order, because an ordering rule is one no reader could
 /// guess. This also pins the formatter against reordering them.
 raw_fast :: (buf: [4]s64, i: s64) -> s64 #no_abc #c_call {
-    return buf[i];
+  return buf[i];
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    xs: [4]s64;
-    xs[0] = 1;
-    xs[1] = 2;
-    xs[2] = 4;
-    xs[3] = 8;
+  xs: [4]s64;
+  xs[0] = 1;
+  xs[1] = 2;
+  xs[2] = 4;
+  xs[3] = 8;
 
-    // The unchecked read and the checked one must agree, in range. This is the whole safety
-    // argument for the flag: removing a check cannot change a valid program's answer.
-    if read_fast(xs, 2) == 4 {
-        n = n + 1;
-    }
-    if read_safe(xs, 2) == 4 {
-        n = n + 2;
-    }
-    if read_fast(xs, 2) == read_safe(xs, 2) {
-        n = n + 4;
-    }
+  // The unchecked read and the checked one must agree, in range. This is the whole safety
+  // argument for the flag: removing a check cannot change a valid program's answer.
+  if read_fast(xs, 2) == 4 {
+    n = n + 1;
+  }
+  if read_safe(xs, 2) == 4 {
+    n = n + 2;
+  }
+  if read_fast(xs, 2) == read_safe(xs, 2) {
+    n = n + 4;
+  }
 
-    // Every element, through the `for` lowering's own check site.
-    if sum_fast(xs) == 15 {
-        n = n + 8;
-    }
+  // Every element, through the `for` lowering's own check site.
+  if sum_fast(xs) == 15 {
+    n = n + 8;
+  }
 
-    // `#no_abc` and `#c_call` together.
-    if raw_fast(xs, 3) == 8 {
-        n = n + 16;
-    }
+  // `#no_abc` and `#c_call` together.
+  if raw_fast(xs, 3) == 8 {
+    n = n + 16;
+  }
 
-    // The first and last elements, which are the two a wrong bound is most likely to catch.
-    if read_fast(xs, 0) == 1 {
-        n = n + 32;
-    }
-    if read_fast(xs, 3) == 8 {
-        n = n + 64;
-    }
+  // The first and last elements, which are the two a wrong bound is most likely to catch.
+  if read_fast(xs, 0) == 1 {
+    n = n + 32;
+  }
+  if read_fast(xs, 3) == 8 {
+    n = n + 64;
+  }
 
-    // Every assertion: 127.
-    if n == 127 {
-        exit(0);
-    }
-    exit(1);
+  // Every assertion: 127.
+  if n == 127 {
+    exit(0);
+  }
+  exit(1);
 }

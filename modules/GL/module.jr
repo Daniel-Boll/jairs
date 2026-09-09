@@ -94,7 +94,7 @@ NO_ERROR :: 0;
 /// Floats in 0..1, matching both OpenGL's own signature and `Simp`'s convention (ADR-0182 §3) — so a
 /// caller moving between the two renderers does not change numeric range.
 set_clear_color :: (r: float32, g: float32, b: float32, a: float32) {
-    gl_clear_color(r, g, b, a);
+  gl_clear_color(r, g, b, a);
 }
 
 /// Clears the buffers named by `mask` — `COLOR_BUFFER_BIT`, or it and `DEPTH_BUFFER_BIT` together.
@@ -102,7 +102,7 @@ set_clear_color :: (r: float32, g: float32, b: float32, a: float32) {
 /// Takes a `u32` rather than an `s64` because that is what a `GLbitfield` is, and since ADR-0190 the
 /// constants say so too — so the cast this used to need at the boundary has nowhere left to be.
 clear :: (mask: u32) {
-    gl_clear(mask);
+  gl_clear(mask);
 }
 
 /// Sets the viewport, in pixels from the lower-left.
@@ -111,7 +111,7 @@ clear :: (mask: u32) {
 /// system's. Stated because it is the single most common source of an upside-down first frame, and a
 /// wrapper that silently flipped it would be lying about which API a reader is using.
 set_viewport :: (x: s64, y: s64, width: s64, height: s64) {
-    gl_viewport(cast(s32, x), cast(s32, y), cast(s32, width), cast(s32, height));
+  gl_viewport(cast(s32, x), cast(s32, y), cast(s32, width), cast(s32, height));
 }
 
 /// The last error, or `NO_ERROR`.
@@ -120,7 +120,7 @@ set_viewport :: (x: s64, y: s64, width: s64, height: s64) {
 /// `NO_ERROR` is the answer on every well-behaved call and a marker there would make every frame carry a
 /// ceremony for a non-event — ADR-0151's line.
 error_code :: () -> s64 {
-    return cast(s64, gl_get_error());
+  return cast(s64, gl_get_error());
 }
 
 /// One of the driver's descriptive strings — pass `VERSION`, `VENDOR` or `RENDERER`.
@@ -129,12 +129,12 @@ error_code :: () -> s64 {
 /// current context**: on macOS this segfaults rather than returning null, which is OpenGL's contract and
 /// not something this module can guard.
 version_string :: (name: s64) -> *u8 {
-    return gl_get_string(cast(u32, name));
+  return gl_get_string(cast(u32, name));
 }
 
 /// Blocks until every issued command has completed.
 finish :: () {
-    gl_finish();
+  gl_finish();
 }
 
 // ---------------------------------------------------------------------------
@@ -179,7 +179,7 @@ LINEAR : s32 : 9729;
 /// `kind` is a `u32` because that is what a `GLenum` is (ADR-0190 §3); the cast this wrapper used to make
 /// existed only because a Jairs constant could not say so.
 create_shader :: (kind: u32) -> u32 {
-    return gl_create_shader(kind);
+  return gl_create_shader(kind);
 }
 
 /// Hands `source` to `shader`, **with its length**.
@@ -192,18 +192,18 @@ create_shader :: (kind: u32) -> u32 {
 ///
 /// Returns `false` for an empty source, which GL accepts and which is never what a caller meant.
 set_shader_source :: (shader: u32, source: string) -> bool {
-    if source.count == 0 {
-        return false;
-    }
-    text := source.data;
-    length := cast(s32, source.count);
-    gl_shader_source(shader, 1, *text, *length);
-    return true;
+  if source.count == 0 {
+    return false;
+  }
+  text := source.data;
+  length := cast(s32, source.count);
+  gl_shader_source(shader, 1, *text, *length);
+  return true;
 }
 
 /// Compiles a shader whose source is set.
 compile_shader :: (shader: u32) {
-    gl_compile_shader(shader);
+  gl_compile_shader(shader);
 }
 
 /// Whether `shader` compiled.
@@ -211,9 +211,9 @@ compile_shader :: (shader: u32) {
 /// A predicate rather than an out-parameter, because `GL_COMPILE_STATUS` has exactly two useful values
 /// and a caller that wants the log asks `shader_log`.
 shader_compiled :: (shader: u32) -> bool {
-    status: s32 = 0;
-    gl_get_shader_iv(shader, COMPILE_STATUS, *status);
-    return status != 0;
+  status: s32 = 0;
+  gl_get_shader_iv(shader, COMPILE_STATUS, *status);
+  return status != 0;
 }
 
 /// The driver's compile log for `shader`, written into `buffer` and returned as a view.
@@ -221,42 +221,42 @@ shader_compiled :: (shader: u32) -> bool {
 /// The caller owns the buffer, so this module allocates nothing and the log is valid as long as the
 /// buffer is. An empty view means the driver had nothing to say, which is normal on success.
 shader_log :: (shader: u32, buffer: []u8) -> []u8 {
-    if buffer.count == 0 {
-        return buffer;
-    }
-    // A view exposes `.count` but no `.data`, so the base pointer comes from the address of element
-    // zero — which is the same address, and is guarded by the emptiness check above.
-    base := *buffer[0];
-    written: s32 = 0;
-    gl_get_shader_info_log(shader, cast(s32, buffer.count), *written, base);
-    return view(base, cast(s64, written));
+  if buffer.count == 0 {
+    return buffer;
+  }
+  // A view exposes `.count` but no `.data`, so the base pointer comes from the address of element
+  // zero — which is the same address, and is guarded by the emptiness check above.
+  base := *buffer[0];
+  written: s32 = 0;
+  gl_get_shader_info_log(shader, cast(s32, buffer.count), *written, base);
+  return view(base, cast(s64, written));
 }
 
 /// Creates a program. Zero on failure.
 create_program :: () -> u32 {
-    return gl_create_program();
+  return gl_create_program();
 }
 
 /// Attaches a compiled shader to a program.
 attach_shader :: (program: u32, shader: u32) {
-    gl_attach_shader(program, shader);
+  gl_attach_shader(program, shader);
 }
 
 /// Links a program whose shaders are attached.
 link_program :: (program: u32) {
-    gl_link_program(program);
+  gl_link_program(program);
 }
 
 /// Whether `program` linked.
 program_linked :: (program: u32) -> bool {
-    status: s32 = 0;
-    gl_get_program_iv(program, LINK_STATUS, *status);
-    return status != 0;
+  status: s32 = 0;
+  gl_get_program_iv(program, LINK_STATUS, *status);
+  return status != 0;
 }
 
 /// Makes `program` current.
 use_program :: (program: u32) {
-    gl_use_program(program);
+  gl_use_program(program);
 }
 
 /// The location of a uniform by name, or `-1` when the program has no such uniform.
@@ -264,16 +264,16 @@ use_program :: (program: u32) {
 /// The name is NUL-terminated into temporary storage, for the reason `set_shader_source` explains about
 /// lengths: GL reads a uniform name to a NUL and a Jairs `string` has none.
 uniform_location :: (program: u32, name: string) -> s32 {
-    c_name, ok := nul_terminated(name);
-    if !ok {
-        return -1;
-    }
-    return gl_get_uniform_location(program, c_name);
+  c_name, ok := nul_terminated(name);
+  if !ok {
+    return -1;
+  }
+  return gl_get_uniform_location(program, c_name);
 }
 
 /// Sets an `int` uniform.
 set_uniform_int :: (location: s32, value: s64) {
-    gl_uniform_1i(location, cast(s32, value));
+  gl_uniform_1i(location, cast(s32, value));
 }
 
 /// Sets a `mat4` uniform from 16 floats in **column-major** order.
@@ -281,19 +281,19 @@ set_uniform_int :: (location: s32, value: s64) {
 /// `transpose = false`, which is what column-major means to GL. Stated because passing row-major data
 /// with `false` produces a picture that is wrong in a way that looks like a coordinate-system bug.
 set_uniform_matrix4 :: (location: s32, values: *float32) {
-    gl_uniform_matrix4fv(location, 1, cast(u8, 0), values);
+  gl_uniform_matrix4fv(location, 1, cast(u8, 0), values);
 }
 
 /// Creates a buffer object. Zero on failure.
 create_buffer :: () -> u32 {
-    name: u32 = 0;
-    gl_gen_buffers(1, *name);
-    return name;
+  name: u32 = 0;
+  gl_gen_buffers(1, *name);
+  return name;
 }
 
 /// Binds a buffer as the array buffer.
 bind_array_buffer :: (buffer: u32) {
-    gl_bind_buffer(ARRAY_BUFFER, buffer);
+  gl_bind_buffer(ARRAY_BUFFER, buffer);
 }
 
 /// Uploads `bytes` from `data` into the bound array buffer, replacing its contents.
@@ -308,54 +308,54 @@ bind_array_buffer :: (buffer: u32) {
 /// the caller can produce; the meaning of the bytes belongs to the caller's vertex layout, which this
 /// module cannot check anyway.
 upload_array_buffer :: (bytes: s64, data: *u8) {
-    gl_buffer_data(ARRAY_BUFFER, bytes, data, STREAM_DRAW);
+  gl_buffer_data(ARRAY_BUFFER, bytes, data, STREAM_DRAW);
 }
 
 /// Enables a float vertex attribute at `index`, reading `components` floats every `stride` bytes.
 ///
 /// `normalised = false`: these are real coordinates and real 0..1 colours, not integers to be scaled.
 enable_vertex_attribute :: (index: s64, components: s64, stride: s64, offset: s64) {
-    gl_enable_vertex_attrib_array(cast(u32, index));
-    gl_vertex_attrib_pointer(
-        cast(u32, index),
-        cast(s32, components),
-        FLOAT,
-        cast(u8, 0),
-        cast(s32, stride),
-        offset,
-    );
+  gl_enable_vertex_attrib_array(cast(u32, index));
+  gl_vertex_attrib_pointer(
+    cast(u32, index),
+    cast(s32, components),
+    FLOAT,
+    cast(u8, 0),
+    cast(s32, stride),
+    offset,
+  );
 }
 
 /// Disables the vertex attribute at `index`.
 disable_vertex_attribute :: (index: s64) {
-    gl_disable_vertex_attrib_array(cast(u32, index));
+  gl_disable_vertex_attrib_array(cast(u32, index));
 }
 
 /// Draws `count` vertices as triangles from the bound array buffer.
 draw_triangles :: (count: s64) {
-    gl_draw_arrays(TRIANGLES, 0, cast(s32, count));
+  gl_draw_arrays(TRIANGLES, 0, cast(s32, count));
 }
 
 /// Enables a capability — pass `BLEND`.
 enable :: (capability: s64) {
-    gl_enable(cast(u32, capability));
+  gl_enable(cast(u32, capability));
 }
 
 /// Disables a capability.
 disable :: (capability: s64) {
-    gl_disable(cast(u32, capability));
+  gl_disable(cast(u32, capability));
 }
 
 /// Sets the blend factors.
 set_blend_func :: (source: s64, destination: s64) {
-    gl_blend_func(cast(u32, source), cast(u32, destination));
+  gl_blend_func(cast(u32, source), cast(u32, destination));
 }
 
 /// Creates a texture object. Zero on failure.
 create_texture :: () -> u32 {
-    name: u32 = 0;
-    gl_gen_textures(1, *name);
-    return name;
+  name: u32 = 0;
+  gl_gen_textures(1, *name);
+  return name;
 }
 
 /// Binds `texture` to texture unit 0 as a 2D texture.
@@ -363,8 +363,8 @@ create_texture :: () -> u32 {
 /// Unit 0 only, because this library's renderer samples one texture at a time. A multi-texture path would
 /// take the unit as an argument, and nothing needs it yet.
 bind_texture_unit_0 :: (texture: u32) {
-    gl_active_texture(TEXTURE0);
-    gl_bind_texture(TEXTURE_2D, texture);
+  gl_active_texture(TEXTURE0);
+  gl_bind_texture(TEXTURE_2D, texture);
 }
 
 /// Deletes a texture object.
@@ -372,11 +372,11 @@ bind_texture_unit_0 :: (texture: u32) {
 /// Safe on zero, which GL defines as a no-op — so a caller can delete on every path without tracking
 /// whether the texture was ever created, the property `File.close` has for the same reason.
 delete_texture :: (texture: u32) {
-    if texture == 0 {
-        return;
-    }
-    name := texture;
-    gl_delete_textures(1, *name);
+  if texture == 0 {
+    return;
+  }
+  name := texture;
+  gl_delete_textures(1, *name);
 }
 
 /// Sets how many bytes a row of uploaded pixel data is aligned to.
@@ -386,7 +386,7 @@ delete_texture :: (texture: u32) {
 /// RGB row is 9 bytes, GL reads 12, and the picture skews progressively — the classic symptom. A caller
 /// uploading anything but tightly-packed RGBA sets this to 1 first.
 set_unpack_alignment :: (bytes: s64) {
-    gl_pixel_store_i(UNPACK_ALIGNMENT, cast(s32, bytes));
+  gl_pixel_store_i(UNPACK_ALIGNMENT, cast(s32, bytes));
 }
 
 /// Uploads RGBA pixels into the bound 2D texture and sets linear filtering.
@@ -394,23 +394,23 @@ set_unpack_alignment :: (bytes: s64) {
 /// Linear rather than nearest, matching the inspected `Simp` default for a loaded image. `pixels` is
 /// `width * height * 4` bytes, tightly packed.
 upload_texture_rgba :: (width: s64, height: s64, pixels: *u8) {
-    // **The `cast(s32, RGBA)` is real and stays.** `internalformat` is a `GLint` while `format` is a
-    // `GLenum`, so the same constant crosses at two widths in one call — which is exactly what a cast is
-    // for, and what it could not say while every constant was an `s64` and every argument needed one
-    // (ADR-0190 §3).
-    gl_tex_image_2d(
-        TEXTURE_2D,
-        0,
-        cast(s32, RGBA),
-        cast(s32, width),
-        cast(s32, height),
-        0,
-        RGBA,
-        UNSIGNED_BYTE,
-        pixels,
-    );
-    gl_tex_parameter_i(TEXTURE_2D, TEXTURE_MIN_FILTER, LINEAR);
-    gl_tex_parameter_i(TEXTURE_2D, TEXTURE_MAG_FILTER, LINEAR);
+  // **The `cast(s32, RGBA)` is real and stays.** `internalformat` is a `GLint` while `format` is a
+  // `GLenum`, so the same constant crosses at two widths in one call — which is exactly what a cast is
+  // for, and what it could not say while every constant was an `s64` and every argument needed one
+  // (ADR-0190 §3).
+  gl_tex_image_2d(
+    TEXTURE_2D,
+    0,
+    cast(s32, RGBA),
+    cast(s32, width),
+    cast(s32, height),
+    0,
+    RGBA,
+    UNSIGNED_BYTE,
+    pixels,
+  );
+  gl_tex_parameter_i(TEXTURE_2D, TEXTURE_MIN_FILTER, LINEAR);
+  gl_tex_parameter_i(TEXTURE_2D, TEXTURE_MAG_FILTER, LINEAR);
 }
 
 // ---------------------------------------------------------------------------
@@ -450,13 +450,13 @@ upload_texture_rgba :: (width: s64, height: s64, pixels: *u8) {
 /// catches the mistake a reader would actually make here: editing one branch and leaving another aliased to
 /// the same text.
 gl_library_for :: (target: Operating_System) -> string {
-    if target == Operating_System.MACOS {
-        return "gl :: #framework \"OpenGL\";";
-    }
-    if target == Operating_System.LINUX {
-        return "gl :: #system_library \"GL\";";
-    }
-    return "gl :: #system_library \"opengl32\";";
+  if target == Operating_System.MACOS {
+    return "gl :: #framework \"OpenGL\";";
+  }
+  if target == Operating_System.LINUX {
+    return "gl :: #system_library \"GL\";";
+  }
+  return "gl :: #system_library \"opengl32\";";
 }
 
 /// This host's declaration — `gl_library_for` applied to `os()`.
@@ -465,7 +465,7 @@ gl_library_for :: (target: Operating_System) -> string {
 /// path changed. It exists only to keep the choice (`os()`) apart from the mapping (which text per OS), so
 /// the mapping is testable.
 gl_library :: () -> string {
-    return gl_library_for(os());
+  return gl_library_for(os());
 }
 
 #scope_module
@@ -505,18 +505,18 @@ TEXTURE_MAG_FILTER : u32 : 10240;
 /// The same helper `File` and `Window` keep private for the same reason: the pointer lives only until the
 /// next `reset_temporary_storage`, and GL copies a uniform name during the call.
 nul_terminated :: (text: string) -> (*u8, bool) {
-    scratch := talloc(text.count + 1);
-    if scratch == null {
-        return null, false;
-    }
-    bytes := view(scratch, text.count + 1);
-    i := 0;
-    while i < text.count {
-        bytes[i] = cast(u8, (text.data + i).*);
-        i = i + 1;
-    }
-    bytes[text.count] = cast(u8, 0);
-    return scratch, true;
+  scratch := talloc(text.count + 1);
+  if scratch == null {
+    return null, false;
+  }
+  bytes := view(scratch, text.count + 1);
+  i := 0;
+  while i < text.count {
+    bytes[i] = cast(u8, (text.data + i).*);
+    i = i + 1;
+  }
+  bytes[text.count] = cast(u8, 0);
+  return scratch, true;
 }
 
 /// `glCreateShader(GLenum type)` -> a shader name.
@@ -579,12 +579,12 @@ gl_disable_vertex_attrib_array :: (index: u32) #foreign gl "glDisableVertexAttri
 /// `s64` here rather than a `*u8`: GL reinterprets an integer as an offset when a buffer is bound, and a
 /// pointer type would invite a caller to pass an address.
 gl_vertex_attrib_pointer :: (
-    index: u32,
-    size: s32,
-    kind: u32,
-    normalised: u8,
-    stride: s32,
-    offset: s64,
+  index: u32,
+  size: s32,
+  kind: u32,
+  normalised: u8,
+  stride: s32,
+  offset: s64,
 ) #foreign gl "glVertexAttribPointer";
 
 /// `glDrawArrays(GLenum, GLint, GLsizei)`.
@@ -610,15 +610,15 @@ gl_bind_texture :: (target: u32, texture: u32) #foreign gl "glBindTexture";
 
 /// `glTexImage2D(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *)`.
 gl_tex_image_2d :: (
-    target: u32,
-    level: s32,
-    internal_format: s32,
-    width: s32,
-    height: s32,
-    border: s32,
-    format: u32,
-    kind: u32,
-    pixels: *u8,
+  target: u32,
+  level: s32,
+  internal_format: s32,
+  width: s32,
+  height: s32,
+  border: s32,
+  format: u32,
+  kind: u32,
+  pixels: *u8,
 ) #foreign gl "glTexImage2D";
 
 /// `GL_UNPACK_ALIGNMENT`.

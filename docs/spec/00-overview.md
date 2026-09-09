@@ -143,13 +143,12 @@ main :: () {
     }
 
     ptr := *sum;
-    print_int(ptr.*);
-    print("\n");
+    print("%\n", ptr.*);
 }
 ```
 
-`print` and `print_int` come from `modules/Basic`, written in Jairs itself,
-which reaches libc `write` through `#foreign` (`PLAN.md` §1.2). That is the
+`print` comes from `modules/Basic`, written in Jairs itself, which reaches libc
+`write` through `#foreign` (`PLAN.md` §1.2). That is the
 proof that "the standard library is written in Jairs" — the bottom of the
 stdlib is a syscall, so FFI and the string ABI cannot be deferred past the
 slice.

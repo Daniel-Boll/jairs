@@ -3,5 +3,5 @@ nothing :: () {
 }
 
 main :: () {
-    x := nothing();
+  x := nothing();
 }

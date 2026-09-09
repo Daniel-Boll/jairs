@@ -5,6 +5,25 @@ document preserves the plan that led there; ADR-0208 qualifies its old exact-API
 broader public-source audit.
 
 > [!IMPORTANT]
+> **Current disposition (ADR-0222).** The body below is historical evidence, not the live backlog.
+> Several of its “remaining” items shipped after the plan was written:
+>
+> | Item below | Current state |
+> |---|---|
+> | A3 `Socket` portability | Delivered by ADR-0205: target-specific leading bytes and `SOL_SOCKET` are exercised on macOS and Linux |
+> | B2 “second renderer” | Superseded: SDL remains the platform/context layer and OpenGL replaced `SDL_RenderGeometry`; there are not two live renderers to keep equivalent |
+> | C1 typed constants | Delivered by ADR-0190 |
+> | C2 file-scope mutable variables | Delivered by ADR-0186 |
+> | C3 literal field projection | Delivered by ADR-0191 |
+> | C5 aggregate FFI | Narrowed by ADR-0160/0161 and completed per target by ADR-0206; unsupported classes still refuse honestly |
+> | D3 CI | Delivered: macOS arm64 and x86-64 Linux are green; CI exposed the platform bugs recorded by ADR-0205/0206 |
+>
+> `PLAN.md` §7 and
+> [`docs/research/way-to-jai-compatibility.md`](research/way-to-jai-compatibility.md)
+> own current ordering. Historical claims below remain visible so the decisions and failed estimates
+> can be audited without mistaking them for present facts.
+
+> [!IMPORTANT]
 > **Wave A is delivered, and building it corrected §0's own correction.** This document already led with "the
 > correction that reorders everything" — that OpenGL is unreachable because a per-OS library *name* is
 > circular. That cycle is real and it is **second in line**. Two commands, which cost less than reading this

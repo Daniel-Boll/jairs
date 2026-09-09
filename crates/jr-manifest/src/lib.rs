@@ -46,15 +46,11 @@ pub const DEFAULT_ENTRY: &str = "src/main.jr";
 
 /// The formatter configuration for projects that do not override `[fmt]`.
 ///
-/// This is deliberately separate from [`jr_fmt::Config::default`]: the formatter crate's direct
-/// callers include the repository's four-space canonical corpus, while the user-facing project
-/// default is two spaces (ADR-0221).
+/// This remains the project-facing ownership point even though the formatter crate now shares its
+/// two-space default (ADR-0222).
 #[must_use]
 pub fn default_fmt_config() -> jr_fmt::Config {
-    jr_fmt::Config {
-        indent_width: 2,
-        ..jr_fmt::Config::default()
-    }
+    jr_fmt::Config::default()
 }
 
 /// A parsed `jairs.toml`.

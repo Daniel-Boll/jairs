@@ -4,7 +4,7 @@
 // implicit conversion for floats would make the float the only type that silently changes
 // another's meaning.
 main :: () {
-    n: s64 = 1;
-    f: float64 = 1.5;
-    bad := n + f;
+  n: s64 = 1;
+  f: float64 = 1.5;
+  bad := n + f;
 }

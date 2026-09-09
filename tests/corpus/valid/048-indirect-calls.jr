@@ -33,75 +33,75 @@
 
 /// A plain binary procedure, used both directly and as a value.
 add :: (a: s64, b: s64) -> s64 {
-    return a + b;
+  return a + b;
 }
 
 /// Encodes its operands' positions so calling the *wrong* one is a different answer, not a
 /// coincidentally-equal one.
 sub :: (a: s64, b: s64) -> s64 {
-    return a - b;
+  return a - b;
 }
 
 /// Takes a procedure **as a parameter** and calls it (ADR-0059 §3). The `(s64, s64) -> s64` is the
 /// new type syntax; `fn` is one machine word, so this is the ABI check as well as the feature.
 apply :: (fn: (s64, s64) -> s64, a: s64, b: s64) -> s64 {
-    return fn(a, b);
+  return fn(a, b);
 }
 
 /// Returns *one of two procedures* by a condition, so the identity a pointer carries is observable:
 /// a representation that only recorded "some procedure" would call the wrong one.
 pick :: (want_add: bool) -> (s64, s64) -> s64 {
-    if want_add {
-        return add;
-    }
-    return sub;
+  if want_add {
+    return add;
+  }
+  return sub;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // A value of procedure type, called directly through the local.
-    f := add;
-    if f(20, 22) == 42 {
-        n = n + 1;
-    }
+  // A value of procedure type, called directly through the local.
+  f := add;
+  if f(20, 22) == 42 {
+    n = n + 1;
+  }
 
-    // The same value passed as a parameter and called there.
-    if apply(f, 20, 22) == 42 {
-        n = n + 2;
-    }
+  // The same value passed as a parameter and called there.
+  if apply(f, 20, 22) == 42 {
+    n = n + 2;
+  }
 
-    // A different procedure through the same parameter, so `apply` is not secretly calling `add`.
-    g := sub;
-    if apply(g, 50, 8) == 42 {
-        n = n + 4;
-    }
+  // A different procedure through the same parameter, so `apply` is not secretly calling `add`.
+  g := sub;
+  if apply(g, 50, 8) == 42 {
+    n = n + 4;
+  }
 
-    // The pointer's identity is observable: `pick` chooses, and the choice must run.
-    chosen := pick(true);
-    if chosen(40, 2) == 42 {
-        n = n + 8;
-    }
-    other := pick(false);
-    if other(44, 2) == 42 {
-        n = n + 16;
-    }
+  // The pointer's identity is observable: `pick` chooses, and the choice must run.
+  chosen := pick(true);
+  if chosen(40, 2) == 42 {
+    n = n + 8;
+  }
+  other := pick(false);
+  if other(44, 2) == 42 {
+    n = n + 16;
+  }
 
-    // Reassigning a proc-pointer local flows through a slot like any scalar.
-    h := add;
-    h = sub;
-    if h(43, 1) == 42 {
-        n = n + 32;
-    }
+  // Reassigning a proc-pointer local flows through a slot like any scalar.
+  h := add;
+  h = sub;
+  if h(43, 1) == 42 {
+    n = n + 32;
+  }
 
-    // A procedure literal passed straight to the parameter, never bound to a local.
-    if apply(add, 21, 21) == 42 {
-        n = n + 64;
-    }
+  // A procedure literal passed straight to the parameter, never bound to a local.
+  if apply(add, 21, 21) == 42 {
+    n = n + 64;
+  }
 
-    // Every assertion: 127.
-    if n == 127 {
-        exit(0);
-    }
-    exit(1);
+  // Every assertion: 127.
+  if n == 127 {
+    exit(0);
+  }
+  exit(1);
 }

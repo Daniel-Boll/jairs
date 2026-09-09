@@ -12,9 +12,9 @@
 // subtract a pointer from `s64`", since the distance is `p - n`, the other order). It is the same code
 // by design; this file pins the `p - q` case, which is the one the deferral is about.
 main :: () {
-    a: [4]s64;
-    p := *a[0];
-    q := *a[2];
-    d := p - q;
-    a[0] = d;
+  a: [4]s64;
+  p := *a[0];
+  q := *a[2];
+  d := p - q;
+  a[0] = d;
 }

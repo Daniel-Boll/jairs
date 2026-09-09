@@ -72,8 +72,8 @@ sched_yield :: () -> s64 #foreign libc "sched_yield";
 /// A named one-field struct rather than a bare `*u8`, for `File`'s reason (ADR-0157 §1): a handle and a count
 /// are both machine words, and the compiler will not confuse them once one has a name.
 Thread :: struct {
-    /// The `pthread_t`. Null before a successful spawn and after a join.
-    handle: *u8;
+  /// The `pthread_t`. Null before a successful spawn and after a join.
+  handle: *u8;
 }
 
 /// The value an unlocked spin lock holds.
@@ -91,12 +91,12 @@ LOCKED :: 1;
 /// `argument` is a `*u8` because C's is. A caller with a typed pointer passes `untyped(p)` and the body reads
 /// it back with `typed(T, arg)`, which is the one erasing boundary ADR-0106 permits and names.
 spawn :: (body: (*u8) -> *u8 #c_call, argument: *u8) -> (Thread, bool) #must {
-    t: Thread;
-    t.handle = null;
-    if pthread_create(untyped(*t.handle), null, body, argument) != 0 {
-        return t, false;
-    }
-    return t, t.handle != null;
+  t: Thread;
+  t.handle = null;
+  if pthread_create(untyped(*t.handle), null, body, argument) != 0 {
+    return t, false;
+  }
+  return t, t.handle != null;
 }
 
 /// Waits for `thread` to finish.
@@ -109,14 +109,14 @@ spawn :: (body: (*u8) -> *u8 #c_call, argument: *u8) -> (Thread, bool) #must {
 /// already-joined `pthread_t` is undefined behaviour in C, not an error, so catching it here is the
 /// difference between a refusal and a crash.
 join :: (thread: *Thread) -> bool #must {
-    if thread.handle == null {
-        return false;
-    }
-    if pthread_join(thread.handle, null) != 0 {
-        return false;
-    }
-    thread.handle = null;
-    return true;
+  if thread.handle == null {
+    return false;
+  }
+  if pthread_join(thread.handle, null) != 0 {
+    return false;
+  }
+  thread.handle = null;
+  return true;
 }
 
 /// Whether `thread` is still ours to join.
@@ -124,12 +124,12 @@ join :: (thread: *Thread) -> bool #must {
 /// Not "whether it is running": a thread may have finished and still be joinable, and reporting otherwise
 /// would invite a caller to skip the join and leak it.
 joinable :: (thread: *Thread) -> bool {
-    return thread.handle != null;
+  return thread.handle != null;
 }
 
 /// Yields the processor, so a spinning thread lets a lock holder run.
 yield_now :: () {
-    _ = sched_yield();
+  _ = sched_yield();
 }
 
 /// Takes the spin lock at `lock`, waiting until it is free.
@@ -144,9 +144,9 @@ yield_now :: () {
 ///
 /// Not `#must`: it does not fail, it waits.
 acquire :: (lock: *s64) {
-    while !atomic_compare_exchange(lock, UNLOCKED, LOCKED) {
-        yield_now();
-    }
+  while !atomic_compare_exchange(lock, UNLOCKED, LOCKED) {
+    yield_now();
+  }
 }
 
 /// Releases the spin lock at `lock`.
@@ -156,7 +156,7 @@ acquire :: (lock: *s64) {
 /// cannot detect — recording that plainly, because the alternative is an owner field and a thread identity
 /// this module does not have.
 release :: (lock: *s64) {
-    atomic_store(lock, UNLOCKED);
+  atomic_store(lock, UNLOCKED);
 }
 
 /// Whether the lock at `lock` is currently held.
@@ -164,5 +164,5 @@ release :: (lock: *s64) {
 /// For a diagnostic, never for a decision: by the time a caller reads the answer it may be stale, which is
 /// the whole difficulty of shared state. `acquire` is the only correct way to act on it.
 is_locked :: (lock: *s64) -> bool {
-    return atomic_load(lock) == LOCKED;
+  return atomic_load(lock) == LOCKED;
 }

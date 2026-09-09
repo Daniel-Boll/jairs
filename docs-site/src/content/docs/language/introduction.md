@@ -109,8 +109,7 @@ main :: () {
     }
 
     ptr := *sum;                     // prefix * takes the address of `sum`
-    print_int(ptr.*);                // postfix .* reads through the pointer
-    print("\n");
+    print("%\n", ptr.*);             // postfix .* reads through the pointer
 }
 ```
 
@@ -120,7 +119,7 @@ A few things to notice, each of which gets a full chapter later:
   all *constants* — introduced with `::`. `sum := …` infers a variable's type; `p: Point;`
   gives one explicitly. There is no `let`, `const`, `fn` or `struct` keyword: a procedure
   and a struct are just constants whose value happens to be a procedure or a type.
-- **`print` and `print_int` are not built in.** They come from `modules/Basic`, which is
+- **`print` is not built in.** It comes from `modules/Basic`, which is
   itself written in Jairs and reaches the operating system's `write` through the foreign
   function interface. The standard library is Jairs code, all the way down to the syscall.
 - **`#run add(2, 3)` runs at compile time.** The same `add` you call at run time is executed

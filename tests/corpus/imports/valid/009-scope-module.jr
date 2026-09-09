@@ -11,20 +11,20 @@
 #import "Private";
 
 main :: () {
-    n := 0;
-    // Exported with no directive, because export is the default.
-    if scaled(2) == 6 {
-        n = n + 1;
-    }
-    // Exported by an explicit `#scope_export` after the private section.
-    if doubled(4) == 8 {
-        n = n + 2;
-    }
-    // A *constant* declared before any marker is exported too, and its **value** now crosses the
-    // boundary (ADR-0055 §1). When this file was written one wave earlier that was E0245 — "the
-    // compiler could not lower the body" — and this assertion had to be left out with a note saying
-    // so. The note is gone because the gap is.
-    if FACTOR == 3 {
-        n = n + 4;
-    }
+  n := 0;
+  // Exported with no directive, because export is the default.
+  if scaled(2) == 6 {
+    n = n + 1;
+  }
+  // Exported by an explicit `#scope_export` after the private section.
+  if doubled(4) == 8 {
+    n = n + 2;
+  }
+  // A *constant* declared before any marker is exported too, and its **value** now crosses the
+  // boundary (ADR-0055 §1). When this file was written one wave earlier that was E0245 — "the
+  // compiler could not lower the body" — and this assertion had to be left out with a note saying
+  // so. The note is gone because the gap is.
+  if FACTOR == 3 {
+    n = n + 4;
+  }
 }

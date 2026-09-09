@@ -37,46 +37,46 @@ DRIVER : string : "gl";
 COUNT : s64 : 4;
 
 takes_u32 :: (v: u32) -> s64 {
-    return cast(s64, v);
+  return cast(s64, v);
 }
 
 takes_u8 :: (v: u8) -> s64 {
-    return cast(s64, v);
+  return cast(s64, v);
 }
 
 takes_s16 :: (v: s16) -> s64 {
-    return cast(s64, v);
+  return cast(s64, v);
 }
 
 takes_f32 :: (v: float32) -> s64 {
-    return cast(s64, v);
+  return cast(s64, v);
 }
 
 main :: () {
-    total := 0;
+  total := 0;
 
-    // Each of these calls is the assertion: the parameter type is exact, so passing an `s64` would be
-    // E0214 and this file would not build.
-    total = total + takes_u32(FLAG);
-    total = total + takes_u8(TINY);
-    total = total + takes_s16(SMALL);
-    total = total + takes_f32(THICKNESS);
+  // Each of these calls is the assertion: the parameter type is exact, so passing an `s64` would be
+  // E0214 and this file would not build.
+  total = total + takes_u32(FLAG);
+  total = total + takes_u8(TINY);
+  total = total + takes_s16(SMALL);
+  total = total + takes_f32(THICKNESS);
 
-    // A `u64` above `2^63` is only expressible because the constant is unsigned. An `s64` constant
-    // could not hold it, which is why this line is here rather than a smaller number.
-    if WIDE == 18446744073709551615 {
-        total = total + 1000;
-    }
+  // A `u64` above `2^63` is only expressible because the constant is unsigned. An `s64` constant
+  // could not hold it, which is why this line is here rather than a smaller number.
+  if WIDE == 18446744073709551615 {
+    total = total + 1000;
+  }
 
-    // A string constant is unremarkable and that is the point: the annotation is not integer-only.
-    if DRIVER.count == 2 {
-        total = total + 2000;
-    }
+  // A string constant is unremarkable and that is the point: the annotation is not integer-only.
+  if DRIVER.count == 2 {
+    total = total + 2000;
+  }
 
-    // The array length still works.
-    buf: [COUNT]u8;
-    total = total + buf.count;
+  // The array length still works.
+  buf: [COUNT]u8;
+  total = total + buf.count;
 
-    // 256 + 200 + (-300) + 1 + 1000 + 2000 + 4 = 3161, and 3161 % 251 = 149.
-    exit(total % 251);
+  // 256 + 200 + (-300) + 1 + 1000 + 2000 + 4 = 3161, and 3161 % 251 = 149.
+  exit(total % 251);
 }

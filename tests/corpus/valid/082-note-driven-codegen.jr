@@ -44,40 +44,40 @@
 
 /// The first `@counted`, so the generated code calls this one first — declaration order (ADR-0100 §1).
 alpha :: () -> s64 @counted {
-    return 1;
+  return 1;
 }
 
 /// No note, so the generated code skips it. It sits *between* the two that are counted, so order is genuinely
 /// tested rather than accidentally satisfied.
 skipped :: () -> s64 {
-    return 100;
+  return 100;
 }
 
 /// A note whose **payload is code**, spliced directly by `#insert note_value(…)`. This is the capability that
 /// already worked and was undocumented.
 configured :: () -> s64 @gen "n = n + 8;" {
-    return 0;
+  return 0;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // One line generating a call to every `@counted` procedure. The template has **two** `#`s, so each name
-    // is substituted at both occurrences: `n = n + alpha() * alpha();` and the same for `beta`.
-    #insert noted_insert("counted", "n = n + #() * #();");
+  // One line generating a call to every `@counted` procedure. The template has **two** `#`s, so each name
+  // is substituted at both occurrences: `n = n + alpha() * alpha();` and the same for `beta`.
+  #insert noted_insert("counted", "n = n + #() * #();");
 
-    // A note nothing carries: folds to `""`, which splices nothing. A build script's generated section is
-    // empty in a file with nothing to generate for, rather than a diagnostic.
-    #insert noted_insert("nosuchnote", "n = n + 1000;");
+  // A note nothing carries: folds to `""`, which splices nothing. A build script's generated section is
+  // empty in a file with nothing to generate for, rather than a diagnostic.
+  #insert noted_insert("nosuchnote", "n = n + 1000;");
 
-    // The payload of a note, spliced as code.
-    #insert note_value(configured, "gen");
+  // The payload of a note, spliced as code.
+  #insert note_value(configured, "gen");
 
-    exit(n + 65);
+  exit(n + 65);
 }
 
 /// The second `@counted`, declared **after** the splice that calls it — the query walks the file's items, not
 /// what happens to be in scope at the splice point, so generation is not order-dependent in that way.
 beta :: () -> s64 @counted {
-    return 2;
+  return 2;
 }

@@ -3577,8 +3577,7 @@ main :: () {
     }
 
     ptr := *sum;
-    print_int(ptr.*);
-    print("\n");
+    print("%\n", ptr.*);
 }
 "#;
         let p = parse(text, file());
@@ -3689,8 +3688,7 @@ main :: () {
     }
 
     ptr := *sum;
-    print_int(ptr.*);
-    print("\n");
+    print("%\n", ptr.*);
 }
 "#;
         let p = parse(text, file());

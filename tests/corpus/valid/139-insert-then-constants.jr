@@ -34,7 +34,7 @@ BEFORE :: 7;
 // The generated declaration. A `#system_library` is what a computed operand may generate (ADR-0184 §4),
 // and `"c"` is a name that links on every target this project builds for.
 generated :: () -> string {
-    return "libc :: #system_library \"c\";";
+  return "libc :: #system_library \"c\";";
 }
 
 #insert #run generated();
@@ -49,30 +49,30 @@ D :: 44;
 // A procedure after the splice too, called below. Reached by `ProcId`, so it should never have been
 // affected — asserted rather than assumed, because "should never" is how the other map got missed.
 after_splice :: (n: s64) -> s64 {
-    return n * 2;
+  return n * 2;
 }
 
 // Uses the generated library declaration, so the splice is load-bearing. `abs` is in libc everywhere.
 c_abs :: (n: s32) -> s32 #foreign libc "abs";
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    if BEFORE == 7 {
-        n = n + 1;
-    }
-    if A == 11 && B == 22 {
-        n = n + 2;
-    }
-    if C == 33 && D == 44 {
-        n = n + 4;
-    }
-    if after_splice(21) == 42 {
-        n = n + 8;
-    }
-    if c_abs(-5) == 5 {
-        n = n + 16;
-    }
+  if BEFORE == 7 {
+    n = n + 1;
+  }
+  if A == 11 && B == 22 {
+    n = n + 2;
+  }
+  if C == 33 && D == 44 {
+    n = n + 4;
+  }
+  if after_splice(21) == 42 {
+    n = n + 8;
+  }
+  if c_abs(-5) == 5 {
+    n = n + 16;
+  }
 
-    exit(n);
+  exit(n);
 }

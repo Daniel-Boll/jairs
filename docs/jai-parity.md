@@ -94,9 +94,10 @@ nothing crosses a `#foreign` boundary by value. ~40 lines of bindings plus a wra
 
 ### 3. Ryū (`ostef/jai-ryu`) — one algorithm closes two debts this repo wrote down
 
-`modules/JSON` defers serialisation for exactly one stated reason, "a correct `dtoa`", and `Basic`
-cannot print a float at all. Pure arithmetic with tables, ~400 lines, no FFI. **The only item that
-closes a debt the repository itself recorded.**
+`modules/JSON` defers serialisation for exactly one stated reason, "a correct `dtoa`". `Basic.print`
+does render floats now, but with a bounded decimal algorithm rather than shortest-round-trip output,
+so Ryū would improve printing and unlock correct JSON serialisation. Pure arithmetic with tables,
+~400 lines, no FFI.
 
 ### 4. `Pool` / `Flat_Pool` — fixes the allocator seam AGENTS.md names
 
@@ -135,9 +136,10 @@ produces widgets that cannot show a label.
 
 ### What lost, and why
 
-- **`Hash_Table` with a string key** — very high value, but a generic `Table($K,$V)` is **E0269**
-  (cross-module parameterised structs), and a second concrete instance is a copy of `Map` rather than a
-  general answer. It becomes top-three the day E0269 lifts.
+- **`Hash_Table` with a string key** — very high value. Generic struct instances now cross modules;
+  the remaining blocker is imported polymorphic **procedures** (E0268), so a generic table type can be
+  named but its generic operations cannot be instantiated by callers. A second concrete instance would
+  still copy `Map` rather than solve the general API.
 - **`Command_Line`** — small, but **a Jairs program cannot reach `argv` at all**. That is compiler work,
   so the cheap module cannot pay off yet.
 - **`Bindings_Generator`** — would pay for items 2 and 7 and every graphics binding, but it needs a C

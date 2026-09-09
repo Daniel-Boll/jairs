@@ -17,56 +17,56 @@
 #import "Basic";
 
 Point :: struct {
-    x: s64;
-    y: s64;
+  x: s64;
+  y: s64;
 }
 
 // Takes the `Any` the implicit coercion builds, and reads it back through its real type.
 sum_through_pointer :: (a: Any) -> s64 {
-    pp := any_as(a, *Point);
-    return pp.*.x + pp.*.y;
+  pp := any_as(a, *Point);
+  return pp.*.x + pp.*.y;
 }
 
 // The same value, erased the *explicit* way, which describes the pointee instead (ADR-0189 §2).
 sum_through_value :: (a: Any) -> s64 {
-    p := any_as(a, Point);
-    return p.x + p.y;
+  p := any_as(a, Point);
+  return p.x + p.y;
 }
 
 main :: () {
-    total := 0;
+  total := 0;
 
-    p: Point;
-    p.x = 3;
-    p.y = 4;
+  p: Point;
+  p.x = 3;
+  p.y = 4;
 
-    // The implicit coercion, read back by naming the pointer type. This is the line the wave exists for.
-    total = total + sum_through_pointer(*p);
+  // The implicit coercion, read back by naming the pointer type. This is the line the wave exists for.
+  total = total + sum_through_pointer(*p);
 
-    // The explicit form still describes the pointee, so it reads back as a `Point`. Both spellings work
-    // and they mean different things — asserting both in one file is what stops one silently becoming
-    // the other.
-    total = total + sum_through_value(any_of(*p));
+  // The explicit form still describes the pointee, so it reads back as a `Point`. Both spellings work
+  // and they mean different things — asserting both in one file is what stops one silently becoming
+  // the other.
+  total = total + sum_through_value(any_of(*p));
 
-    // A pointer type is a type everywhere an intrinsic takes one, not only in `any_as`.
-    if size_of(*Point) == size_of(*u8) {
-        total = total + 100;
-    }
+  // A pointer type is a type everywhere an intrinsic takes one, not only in `any_as`.
+  if size_of(*Point) == size_of(*u8) {
+    total = total + 100;
+  }
 
-    // Recursion: `**s64` needs the arm to call itself.
-    if size_of(**s64) == size_of(*u8) {
-        total = total + 200;
-    }
+  // Recursion: `**s64` needs the arm to call itself.
+  if size_of(**s64) == size_of(*u8) {
+    total = total + 200;
+  }
 
-    // A pointer type's own reflection: the kind is POINTER and the size is a machine word, whatever the
-    // pointee. `type_info` takes the same argument shape as `any_as`, through the same one function.
-    if type_info(*Point).kind == Type_Info_Kind.POINTER {
-        total = total + 1000;
-    }
-    if type_info(*Point).id != type_info(Point).id {
-        total = total + 2000;
-    }
+  // A pointer type's own reflection: the kind is POINTER and the size is a machine word, whatever the
+  // pointee. `type_info` takes the same argument shape as `any_as`, through the same one function.
+  if type_info(*Point).kind == Type_Info_Kind.POINTER {
+    total = total + 1000;
+  }
+  if type_info(*Point).id != type_info(Point).id {
+    total = total + 2000;
+  }
 
-    // 7 + 7 + 100 + 200 + 1000 + 2000 = 3314, and 3314 % 251 = 51.
-    exit(total % 251);
+  // 7 + 7 + 100 + 200 + 1000 + 2000 = 3314, and 3314 % 251 = 51.
+  exit(total % 251);
 }

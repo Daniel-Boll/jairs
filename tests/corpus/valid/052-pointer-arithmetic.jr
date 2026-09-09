@@ -28,72 +28,72 @@
 /// then reads two of them back through fresh offsets — the read and the write reach the same cell, so
 /// `p + i` is a stable address rather than an accident.
 walk_s64 :: () -> s64 {
-    a: [4]s64;
-    base := *a[0];
+  a: [4]s64;
+  base := *a[0];
 
-    // Write through advancing element offsets.
-    // Fills the cells with 10, 20, 30, 40.
-    i := 0;
-    while i < 4 {
-        p := base + i;
-        p.* = (i + 1) * 10;
-        i = i + 1;
-    }
+  // Write through advancing element offsets.
+  // Fills the cells with 10, 20, 30, 40.
+  i := 0;
+  while i < 4 {
+    p := base + i;
+    p.* = (i + 1) * 10;
+    i = i + 1;
+  }
 
-    total := 0;
+  total := 0;
 
-    // `p + n`: the third cell is 30.
-    third := base + 2;
-    if third.* == 30 {
-        total = total + 1;
-    }
-    // `n + p`: addition commutes, so `2 + base` is the same cell.
-    also_third := 2 + base;
-    if also_third.* == 30 {
-        total = total + 2;
-    }
-    // `p - n`: from the fourth cell, back two, is the second — 20.
-    back := (base + 3) - 2;
-    if back.* == 20 {
-        total = total + 4;
-    }
-    return total;
+  // `p + n`: the third cell is 30.
+  third := base + 2;
+  if third.* == 30 {
+    total = total + 1;
+  }
+  // `n + p`: addition commutes, so `2 + base` is the same cell.
+  also_third := 2 + base;
+  if also_third.* == 30 {
+    total = total + 2;
+  }
+  // `p - n`: from the fourth cell, back two, is the second — 20.
+  back := (base + 3) - 2;
+  if back.* == 20 {
+    total = total + 4;
+  }
+  return total;
 }
 
 /// A bump allocator over a `*u8` region: hand out `s64`-sized cells by advancing a byte pointer by 8.
 /// This is the motivating case — element and byte scaling coincide on a `*u8`, and it is exactly what
 /// a real temporary-storage arena does.
 bump :: () -> s64 {
-    region := malloc(64);
-    if region == null {
-        return 0;
-    }
+  region := malloc(64);
+  if region == null {
+    return 0;
+  }
 
-    // Two cells, 8 bytes apart.
-    cell0 := region;
-    cell1 := region + 8;
-    cell0.* = 111;
-    cell1.* = 222;
+  // Two cells, 8 bytes apart.
+  cell0 := region;
+  cell1 := region + 8;
+  cell0.* = 111;
+  cell1.* = 222;
 
-    // Read back through independently-computed offsets, so a stale or wrong address shows.
-    r0 := region + 0;
-    r1 := region + 8;
-    got := 0;
-    if r0.* == 111 {
-        got = got + 8;
-    }
-    if r1.* == 222 {
-        got = got + 16;
-    }
+  // Read back through independently-computed offsets, so a stale or wrong address shows.
+  r0 := region + 0;
+  r1 := region + 8;
+  got := 0;
+  if r0.* == 111 {
+    got = got + 8;
+  }
+  if r1.* == 222 {
+    got = got + 16;
+  }
 
-    free(region);
-    return got;
+  free(region);
+  return got;
 }
 
 main :: () {
-    n := walk_s64() + bump();
-    if n == 31 {
-        exit(0);
-    }
-    exit(1);
+  n := walk_s64() + bump();
+  if n == 31 {
+    exit(0);
+  }
+  exit(1);
 }

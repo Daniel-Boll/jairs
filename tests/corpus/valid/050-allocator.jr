@@ -36,103 +36,103 @@
 /// a procedure-pointer field: its type is `ContextKind::CCall` and a proc-pointer type is always
 /// `Jairs` (ADR-0059 §3), so the assignment is E0256. One line, and it is the required shape.
 libc_alloc :: (n: s64) -> *u8 {
-    return malloc(n);
+  return malloc(n);
 }
 
 /// The release half, **returning nothing** — the `(*u8)` form ADR-0062 §1 made spellable.
 libc_free :: (p: *u8) {
-    free(p);
+  free(p);
 }
 
 /// A second allocator that records how many bytes it was asked for, in `allocator_data`. Proves the
 /// field is read at each call rather than folded, and that the state word is writable from inside an
 /// allocator — which is what a real bump allocator would need.
 counting_alloc :: (n: s64) -> *u8 {
-    context.allocator_data = context.allocator_data + n;
-    return malloc(n);
+  context.allocator_data = context.allocator_data + n;
+  return malloc(n);
 }
 
 /// Allocates **without knowing which allocator it is using**. It never sees an installation; it reads
 /// the context and calls through it. This is the procedure that proves the protocol works.
 alloc_through_context :: (n: s64) -> *u8 {
-    return context.allocator(n);
+  return context.allocator(n);
 }
 
 /// Releases through the context, likewise.
 free_through_context :: (p: *u8) {
-    context.allocator_free(p);
+  context.allocator_free(p);
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // ADR-0216 installs a default allocator in every fresh context. It allocates real writable bytes
-    // and its matching free half is ready without any program setup.
-    default := alloc_through_context(8);
-    if default == null {
-        exit(1);
-    }
-    default.* = 42;
-    if default.* != 42 {
-        exit(1);
-    }
-    free_through_context(default);
-
-    // The allocator's state word remains program-owned and starts at zero.
-    if context.allocator_data == 0 {
-        n = n + 1;
-    }
-
-    // Install the libc wrapper.
-    context.allocator = libc_alloc;
-    context.allocator_free = libc_free;
-
-    // A callee allocates through the context without knowing what is installed.
-    p := alloc_through_context(24);
-    if p == null {
-        exit(1);
-    }
-    n = n + 2;
-
-    // The memory is real: a byte written through it reads back.
-    p.* = 99;
-    if p.* == 99 {
-        n = n + 4;
-    }
-
-    // And released through the context's other half — the void-returning pointer.
-    free_through_context(p);
-    n = n + 8;
-
-    // Swap in the counting allocator. A call after the swap must reach the *new* one, which it
-    // proves by moving `allocator_data`.
-    context.allocator = counting_alloc;
-    q := alloc_through_context(16);
-    if q == null {
-        exit(1);
-    }
-    if context.allocator_data == 16 {
-        n = n + 16;
-    }
-
-    // A second allocation accumulates, so the state word is genuinely read-modify-written across
-    // calls rather than assigned once.
-    r := alloc_through_context(8);
-    if r == null {
-        exit(1);
-    }
-    if context.allocator_data == 24 {
-        n = n + 32;
-    }
-
-    // Both still release through the libc half, which the swap left installed.
-    free_through_context(q);
-    free_through_context(r);
-    n = n + 64;
-
-    // Every assertion: 127.
-    if n == 127 {
-        exit(0);
-    }
+  // ADR-0216 installs a default allocator in every fresh context. It allocates real writable bytes
+  // and its matching free half is ready without any program setup.
+  default := alloc_through_context(8);
+  if default == null {
     exit(1);
+  }
+  default.* = 42;
+  if default.* != 42 {
+    exit(1);
+  }
+  free_through_context(default);
+
+  // The allocator's state word remains program-owned and starts at zero.
+  if context.allocator_data == 0 {
+    n = n + 1;
+  }
+
+  // Install the libc wrapper.
+  context.allocator = libc_alloc;
+  context.allocator_free = libc_free;
+
+  // A callee allocates through the context without knowing what is installed.
+  p := alloc_through_context(24);
+  if p == null {
+    exit(1);
+  }
+  n = n + 2;
+
+  // The memory is real: a byte written through it reads back.
+  p.* = 99;
+  if p.* == 99 {
+    n = n + 4;
+  }
+
+  // And released through the context's other half — the void-returning pointer.
+  free_through_context(p);
+  n = n + 8;
+
+  // Swap in the counting allocator. A call after the swap must reach the *new* one, which it
+  // proves by moving `allocator_data`.
+  context.allocator = counting_alloc;
+  q := alloc_through_context(16);
+  if q == null {
+    exit(1);
+  }
+  if context.allocator_data == 16 {
+    n = n + 16;
+  }
+
+  // A second allocation accumulates, so the state word is genuinely read-modify-written across
+  // calls rather than assigned once.
+  r := alloc_through_context(8);
+  if r == null {
+    exit(1);
+  }
+  if context.allocator_data == 24 {
+    n = n + 32;
+  }
+
+  // Both still release through the libc half, which the swap left installed.
+  free_through_context(q);
+  free_through_context(r);
+  n = n + 64;
+
+  // Every assertion: 127.
+  if n == 127 {
+    exit(0);
+  }
+  exit(1);
 }

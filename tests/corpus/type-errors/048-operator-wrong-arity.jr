@@ -3,11 +3,11 @@
 // the binary form's name, and that ambiguity deserves its own decision rather than being resolved
 // by parameter count.
 Vec2 :: struct {
-    x: s64;
+  x: s64;
 }
 
 operator - :: (a: Vec2) -> s64 {
-    return a.x;
+  return a.x;
 }
 
 main :: () {

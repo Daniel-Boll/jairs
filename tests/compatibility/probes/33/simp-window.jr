@@ -3,10 +3,10 @@ Input :: #import "Input";
 Simp :: #import "Simp";
 
 main :: () {
-    events: Input.Events;
-    seen := Input.events_this_frame(*events);
-    bounds := Window.rect(0, 0, 800, 600);
-    colour := Simp.vector4(0.2, 0.3, 0.3, 1.0);
+  events: Input.Events;
+  seen := Input.events_this_frame(*events);
+  bounds := Window.rect(0, 0, 800, 600);
+  colour := Simp.vector4(0.2, 0.3, 0.3, 1.0);
 
-    ready := seen.count == 0 && bounds.w == 800 && colour.w == 1.0;
+  ready := seen.count == 0 && bounds.w == 800 && colour.w == 1.0;
 }

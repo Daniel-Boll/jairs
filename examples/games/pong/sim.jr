@@ -15,35 +15,35 @@ Pong :: #import "Pong";
 // A fixed `dt` rather than a measured one is what makes this deterministic and therefore assertable.
 // `main.jr` measures instead, because a real frame takes as long as it takes.
 main :: () {
-    state := Pong.make();
-    dt := 1.0 / 60.0;
+  state := Pong.make();
+  dt := 1.0 / 60.0;
 
-    walls := 0;
-    paddles := 0;
-    points := 0;
-    steps := 0;
+  walls := 0;
+  paddles := 0;
+  points := 0;
+  steps := 0;
 
-    // A bound rather than `while !Pong.is_over(...)`: a bug that stops either paddle would otherwise
-    // hang the compile-time VM until its step budget ran out, and a budget message is a worse
-    // diagnostic than a step count.
-    while steps < 20000 && !Pong.is_over(*state) {
-        left := Pong.follow(state.left_y, state.ball.y);
-        right := Pong.follow(state.right_y, state.ball.y);
+  // A bound rather than `while !Pong.is_over(...)`: a bug that stops either paddle would otherwise
+  // hang the compile-time VM until its step budget ran out, and a budget message is a worse
+  // diagnostic than a step count.
+  while steps < 20000 && !Pong.is_over(*state) {
+    left := Pong.follow(state.left_y, state.ball.y);
+    right := Pong.follow(state.right_y, state.ball.y);
 
-        event := Pong.update(*state, dt, left, right);
-        if event == Pong.EVENT_WALL {
-            walls = walls + 1;
-        }
-        if event == Pong.EVENT_PADDLE {
-            paddles = paddles + 1;
-        }
-        if event == Pong.EVENT_SCORE {
-            points = points + 1;
-        }
-        steps = steps + 1;
+    event := Pong.update(*state, dt, left, right);
+    if event == Pong.EVENT_WALL {
+      walls = walls + 1;
     }
+    if event == Pong.EVENT_PADDLE {
+      paddles = paddles + 1;
+    }
+    if event == Pong.EVENT_SCORE {
+      points = points + 1;
+    }
+    steps = steps + 1;
+  }
 
-    print("steps=% walls=% paddle hits=% points=%\n", steps, walls, paddles, points);
-    print("final score %-%\n", state.left_score, state.right_score);
-    print("ball rested at (%, %)\n", state.ball.x, state.ball.y);
+  print("steps=% walls=% paddle hits=% points=%\n", steps, walls, paddles, points);
+  print("final score %-%\n", state.left_score, state.right_score);
+  print("ball rested at (%, %)\n", state.ball.x, state.ball.y);
 }

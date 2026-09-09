@@ -11,7 +11,7 @@ cargo run -q -p jr-cli -- run examples/<name>.jr -I modules
 
 | File | Shows |
 |---|---|
-| [`01-hello.jr`](01-hello.jr) | The smallest program: one `#import`, one `print_line`. |
+| [`01-hello.jr`](01-hello.jr) | The smallest program: one `#import`, one `print`. |
 | [`02-struct-and-proc.jr`](02-struct-and-proc.jr) | A `struct`, and a procedure that takes one by value. |
 | [`03-polymorphic-procedure.jr`](03-polymorphic-procedure.jr) | A `$T` polymorphic procedure, instantiated at two different types. |
 | [`04-comptime-run.jr`](04-comptime-run.jr) | `#run` folds a procedure call to a constant at compile time. |

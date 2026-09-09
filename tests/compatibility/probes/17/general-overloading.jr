@@ -1,9 +1,9 @@
 choose :: (value: u8) -> u8 {
-    return value;
+  return value;
 }
 
 choose :: (value: u16) -> u16 {
-    return value;
+  return value;
 }
 
 main :: () {

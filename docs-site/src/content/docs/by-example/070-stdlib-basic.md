@@ -44,12 +44,11 @@ STDERR :: 2;
 
 print :: (fmt: string, args: ..Any) -> s64 { … }        // formats to stdout, returns bytes written
 print_error :: (fmt: string, args: ..Any) -> s64 { … }  // the same, to stderr
-print_line :: (fmt: string, args: ..Any) -> s64 { … }   // the same, with a newline appended
 format :: (buffer: []u8, fmt: string, args: ..Any) -> s64 { … }  // into a caller's buffer
 ```
 
-All three take a **format string and a variadic** `..Any` (ADR-0189, over the variadic machinery of
-ADR-0138/0139/0141), so `print_line("x = %", x)` works and a call with no trailing arguments packs an
+The output procedures take a **format string and a variadic** `..Any` (ADR-0189, over the variadic machinery of
+ADR-0138/0139/0141), so `print("x = %\n", x)` works and a call with no trailing arguments packs an
 empty variadic — which is why every older call site that passed one bare `string` still compiles.
 
 A `%` takes the next argument and renders it by reading its `Type_Info`. A wrong argument count is not a
@@ -98,7 +97,7 @@ main :: () {
 
     // The return value is the byte count, so output can be measured.
     written := print("counted\n");
-    print_line("that line was % bytes", written);
+    print("that line was % bytes\n", written);
 
     exit(0);
 }
@@ -122,7 +121,8 @@ A float prints to nine rounded fraction digits rather than shortest-round-trip: 
 is <span class="jairs-status absent">absent</span>, and it is the same missing algorithm that stops
 `modules/JSON` serialising.
 
-`print_int :: (n: s64)` still exists, as one line — `print("%", n)` — kept because programs call it.
+`print_line` and `print_int` remain compatibility wrappers for older callers. New code uses `print`
+with `\n` in the format and `%` for integer values, keeping one output vocabulary.
 The historical version is worth a sentence for the reason it is gone: it printed digits by *recursion*,
 one stack frame per digit, because the base subset had no buffer to format into; and it **trapped** on
 the most negative `s64`, which it negated to handle the sign. That was the first value anybody tested.

@@ -108,6 +108,7 @@ jobs:
           tests/corpus/cfg-errors
           tests/corpus/modules
           modules
+          tests/fixtures
 
   # ---------------------------------------------------------------------------
   # corpus-drift — THE GATE (PLAN.md §2.0 and §5)
@@ -118,12 +119,6 @@ jobs:
   # tree-sitter side: tree-sitter is not the authority on diagnostics, only on
   # whether well-formed source is recognised.
   #
-  # TODAY (skeleton phase):
-  #   - tree-sitter-jairs/grammar.js is absent → nothing to generate, exits 0.
-  #   - the jr-syntax corpus test target does not exist yet → exits 0.
-  #
-  # AUTOMATICALLY BECOMES A REAL GATE when those appear.
-  # To graduate: delete the two guard blocks marked DELETE-WHEN-READY.
   # ---------------------------------------------------------------------------
   corpus-drift:
     name: corpus-drift
@@ -142,14 +137,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          GRAMMAR="tree-sitter-jairs/grammar.js"
-
-          # ── DELETE-WHEN-READY: guard block (tree-sitter side) ──────────────
-          if [ ! -f "$GRAMMAR" ]; then
-            echo "::notice::corpus-drift (tree-sitter): $GRAMMAR not found — nothing to check yet."
-            exit 0
-          fi
-          # ── END DELETE-WHEN-READY ──────────────────────────────────────────
 
           npm install -g tree-sitter-cli@0.26.11
           ( cd tree-sitter-jairs && tree-sitter generate )
@@ -174,7 +161,8 @@ jobs:
               ../tests/corpus/cfg-errors/*.jr \
               ../tests/corpus/modules/*.jr \
               ../tests/corpus/modules/*/*.jr \
-              ../modules/*/*.jr )
+              ../modules/*/*.jr \
+              ../tests/fixtures/*/*/*.jr )
           echo "::notice::corpus-drift (tree-sitter): all well-formed corpus files parsed cleanly."
 
           # Every query file must compile against the grammar. This is not
@@ -191,17 +179,21 @@ jobs:
           done
           echo "::notice::corpus-drift (tree-sitter): all four query files compile against the grammar."
 
+          editors/zed/generate-queries.sh
+          for q in highlights brackets indents outline; do
+            ( cd tree-sitter-jairs && tree-sitter query \
+                "../editors/zed/languages/jairs/$q.scm" \
+                ../tests/corpus/valid/024-hello.jr > /dev/null )
+          done
+          echo "::notice::corpus-drift (Zed): all four query files compile against the grammar."
+
+          git diff --exit-code -- \
+            tree-sitter-jairs/src/parser.c \
+            editors/zed/languages/jairs/highlights.scm
+
       # ---- compiler side ---------------------------------------------------
       - name: compiler corpus test
         shell: bash
         run: |
           set -euo pipefail
-
-          # ── DELETE-WHEN-READY: guard block (compiler side) ─────────────────
-          if [ ! -f crates/jr-syntax/tests/corpus.rs ]; then
-            echo "::notice::corpus-drift (compiler): jr-syntax corpus test target does not exist yet — nothing to check."
-            exit 0
-          fi
-          # ── END DELETE-WHEN-READY ──────────────────────────────────────────
-
           cargo test -p jr-syntax --test corpus

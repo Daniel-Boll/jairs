@@ -39,25 +39,25 @@ NESTED :: "#insert \"n = n + 32;\";";
 
 // A procedure run at compile time to produce source text — the `#run` operand form.
 build :: () -> string {
-    return "n = n + 16;";
+  return "n = n + 16;";
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // A named-constant operand: `n = n + 10;` is spliced here, writing the enclosing `n`.
-    #insert CODE;
+  // A named-constant operand: `n = n + 10;` is spliced here, writing the enclosing `n`.
+  #insert CODE;
 
-    // An empty computed operand: inserts nothing, changes nothing.
-    #insert EMPTY;
+  // An empty computed operand: inserts nothing, changes nothing.
+  #insert EMPTY;
 
-    // A `#run` operand: `build()` runs in the comptime VM, and its returned string is spliced.
-    #insert #run build();
+  // A `#run` operand: `build()` runs in the comptime VM, and its returned string is spliced.
+  #insert #run build();
 
-    // A nested computed operand: `NESTED`'s text is a literal `#insert`, which expands in turn.
-    #insert NESTED;
+  // A nested computed operand: `NESTED`'s text is a literal `#insert`, which expands in turn.
+  #insert NESTED;
 
-    // 10 + 16 + 32 = 58. If any insert had its own scope, its write to `n` would not reach here — and if
-    // the empty insert were treated as *pending* rather than evaluated-empty, the body would be refused.
-    exit(n);
+  // 10 + 16 + 32 = 58. If any insert had its own scope, its write to `n` would not reach here — and if
+  // the empty insert were treated as *pending* rather than evaluated-empty, the body would be refused.
+  exit(n);
 }

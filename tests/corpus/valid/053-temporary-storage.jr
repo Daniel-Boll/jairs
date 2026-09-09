@@ -31,58 +31,58 @@
 /// pointer cast, which the language does not have yet (ADR-0046 §2); a byte arena holding bytes is the
 /// shape available now, and it exercises the arena all the same.
 fill_via_talloc :: (value: u8) -> *u8 {
-    p := talloc(8);
-    if p == null {
-        return null;
-    }
-    p.* = value;
-    return p;
+  p := talloc(8);
+  if p == null {
+    return null;
+  }
+  p.* = value;
+  return p;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // First allocation creates the region (it was null in main's zeroed context).
-    a := talloc(8);
-    if a == null {
-        exit(1);
-    }
-    a.* = 11;
-
-    // A callee allocates from the same arena — it never saw the region created.
-    b := fill_via_talloc(22);
-    if b == null {
-        exit(1);
-    }
-
-    // Distinct cells: writing `b` did not disturb `a`.
-    if a.* == 11 {
-        n = n + 1;
-    }
-    if b.* == 22 {
-        n = n + 2;
-    }
-
-    // Reset rewinds the cursor; the region is reused, so the next `talloc` aliases `a`.
-    reset_temporary_storage();
-    c := talloc(8);
-    if c == null {
-        exit(1);
-    }
-    c.* = 33;
-    if a.* == 33 {
-        n = n + 4;
-    }
-
-    // Overflow returns null rather than trapping: one byte past the region is refused.
-    big := talloc(TEMP_REGION_SIZE + 1);
-    if big == null {
-        n = n + 8;
-    }
-
-    // Every assertion: 15.
-    if n == 15 {
-        exit(0);
-    }
+  // First allocation creates the region (it was null in main's zeroed context).
+  a := talloc(8);
+  if a == null {
     exit(1);
+  }
+  a.* = 11;
+
+  // A callee allocates from the same arena — it never saw the region created.
+  b := fill_via_talloc(22);
+  if b == null {
+    exit(1);
+  }
+
+  // Distinct cells: writing `b` did not disturb `a`.
+  if a.* == 11 {
+    n = n + 1;
+  }
+  if b.* == 22 {
+    n = n + 2;
+  }
+
+  // Reset rewinds the cursor; the region is reused, so the next `talloc` aliases `a`.
+  reset_temporary_storage();
+  c := talloc(8);
+  if c == null {
+    exit(1);
+  }
+  c.* = 33;
+  if a.* == 33 {
+    n = n + 4;
+  }
+
+  // Overflow returns null rather than trapping: one byte past the region is refused.
+  big := talloc(TEMP_REGION_SIZE + 1);
+  if big == null {
+    n = n + 8;
+  }
+
+  // Every assertion: 15.
+  if n == 15 {
+    exit(0);
+  }
+  exit(1);
 }

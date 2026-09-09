@@ -4,14 +4,14 @@
 // separate cases, but lowering has already decoded both literals to the integer value one and the
 // second branch can never run.
 classify :: (n: s64) -> s64 {
-    result := 0;
-    switch n {
-        case 1;
-            result = 1;
-        case 0x1;
-            result = 2;
-        else;
-            result = 3;
-    }
-    return result;
+  result := 0;
+  switch n {
+    case 1;
+      result = 1;
+    case 0x1;
+      result = 2;
+    else;
+      result = 3;
+  }
+  return result;
 }

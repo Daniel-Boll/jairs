@@ -121,7 +121,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             indent_style: IndentStyle::Space,
-            indent_width: 4,
+            indent_width: 2,
             case_block_style: CaseBlockStyle::NextLine,
             max_width: 100,
         }
@@ -2600,7 +2600,7 @@ mod tests {
     fn char_directive_and_escape_survive() {
         let src = "main :: () {\nvalue:u8=#char \"\\\\\";\n}\n";
         let out = fmt(src);
-        assert_eq!(out, "main :: () {\n    value: u8 = #char \"\\\\\";\n}\n");
+        assert_eq!(out, "main :: () {\n  value: u8 = #char \"\\\\\";\n}\n");
         assert_idempotent(src);
         assert_parses(&out);
     }
@@ -2703,8 +2703,8 @@ mod tests {
         let src = "Point :: struct {\n    x: s64;\n    y: s64;\n}\n";
         let out = fmt(src);
         assert!(out.contains("Point :: struct {"), "got: {out}");
-        assert!(out.contains("    x: s64;"), "got: {out}");
-        assert!(out.contains("    y: s64;"), "got: {out}");
+        assert!(out.contains("  x: s64;"), "got: {out}");
+        assert!(out.contains("  y: s64;"), "got: {out}");
         assert_idempotent(src);
         assert_parses(&out);
     }
@@ -2761,7 +2761,9 @@ mod tests {
         let src = "f :: (n:s64) {\nif   #complete n=={\ncase 0;return;\nelse;return;\n}\n}\n";
         let out = fmt(src);
         assert!(
-            out.contains("if #complete n == {\n        case 0;\n            return;\n        else;\n            return;\n    }"),
+            out.contains(
+                "if #complete n == {\n    case 0;\n      return;\n    else;\n      return;\n  }"
+            ),
             "got: {out}"
         );
         assert_idempotent(src);
@@ -2773,9 +2775,7 @@ mod tests {
         let src = "f :: (n: s64) {\nif #complete n == {\ncase 0; { return; }\nelse; {}\n}\n}\n";
         let out = fmt(src);
         assert!(
-            out.contains(
-                "case 0;\n            {\n                return;\n            }\n        else;\n            {\n            }"
-            ),
+            out.contains("case 0;\n      {\n        return;\n      }\n    else;\n      {\n      }"),
             "got:\n{out}"
         );
         assert_idempotent(src);
@@ -2791,11 +2791,11 @@ mod tests {
         };
         let out = format(src, file(), &config).expect("format failed");
         assert!(
-            out.contains("case 0; {\n            return;\n        }"),
+            out.contains("case 0; {\n      return;\n    }"),
             "got:\n{out}"
         );
         assert!(
-            out.contains("case 1; {\n            // keep\n        }"),
+            out.contains("case 1; {\n      // keep\n    }"),
             "a comment must keep the empty block multiline:\n{out}"
         );
         assert!(out.contains("else; {}"), "got:\n{out}");
@@ -2813,7 +2813,7 @@ mod tests {
         };
         let out = format(src, file(), &config).expect("format failed");
         assert!(
-            out.contains("case 0;\n            return;\n        else;\n            return;"),
+            out.contains("case 0;\n      return;\n    else;\n      return;"),
             "got:\n{out}"
         );
         assert_parses(&out);
@@ -2907,8 +2907,8 @@ mod tests {
         let src = "f :: ()->(s64,bool){\nreturn 1,true;\n}\ng :: (){\nq,ok:=f();\n}\n";
         let out = fmt(src);
         assert!(out.contains("f :: () -> (s64, bool) {"), "got: {out}");
-        assert!(out.contains("    return 1, true;"), "got: {out}");
-        assert!(out.contains("    q, ok := f();"), "got: {out}");
+        assert!(out.contains("  return 1, true;"), "got: {out}");
+        assert!(out.contains("  q, ok := f();"), "got: {out}");
         assert_parses(&out);
     }
 
@@ -3220,7 +3220,7 @@ mod tests {
         let src = "f :: (using    p:Point)->s64{\nusing   q:Point;\nreturn x;\n}\n";
         let out = fmt(src);
         assert!(out.contains("(using p: Point)"), "got: {out}");
-        assert!(out.contains("    using q: Point;"), "got: {out}");
+        assert!(out.contains("  using q: Point;"), "got: {out}");
         assert_parses(&out);
     }
 
@@ -3285,7 +3285,7 @@ mod tests {
         let src = "f :: () {\nouter:for<x,i:buf{\ndefer n=n+1;\nbreak outer;\n}\n}\n";
         let out = fmt(src);
         assert!(out.contains("outer: for < x, i: buf {"), "got: {out}");
-        assert!(out.contains("        defer n = n + 1;"), "got: {out}");
+        assert!(out.contains("    defer n = n + 1;"), "got: {out}");
         assert_parses(&out);
     }
 
@@ -3719,11 +3719,11 @@ mod wrapping {
             "the paren should open the break:\n{out}"
         );
         assert!(
-            out.contains("\n    alpha: s64,\n"),
+            out.contains("\n  alpha: s64,\n"),
             "one per line, indented:\n{out}"
         );
         assert!(
-            out.contains("\n    golf: s64,\n"),
+            out.contains("\n  golf: s64,\n"),
             "trailing comma on the last:\n{out}"
         );
         assert!(
@@ -3740,11 +3740,11 @@ mod wrapping {
         let out = fmt(src);
         assert!(out.contains("g(\n"), "got:\n{out}");
         assert!(
-            out.contains("\n        111111111,\n"),
+            out.contains("\n    111111111,\n"),
             "indented inside the body:\n{out}"
         );
         assert!(
-            out.contains("\n    );"),
+            out.contains("\n  );"),
             "closer at the statement's indent:\n{out}"
         );
     }
@@ -3752,7 +3752,7 @@ mod wrapping {
     #[test]
     fn a_short_argument_list_stays_flat() {
         let out = fmt("f :: () {\n    g(1, 2);\n}\n");
-        assert!(out.contains("    g(1, 2);"), "got:\n{out}");
+        assert!(out.contains("  g(1, 2);"), "got:\n{out}");
     }
 
     /// **The property that matters most**: what a break emits must still parse.

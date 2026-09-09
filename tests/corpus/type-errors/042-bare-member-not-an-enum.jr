@@ -3,5 +3,5 @@
 // named: "expected `s64`, and a bare `.` member needs an enum". Conflating the two would tell a
 // reader to add an annotation they already have.
 main :: () {
-    n: s64 = .RED;
+  n: s64 = .RED;
 }

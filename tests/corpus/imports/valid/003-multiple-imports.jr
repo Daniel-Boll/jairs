@@ -2,8 +2,8 @@
 #import "Colors";
 
 main :: () {
-    r: Rect;
-    r.w = blend(BLACK, WHITE);
-    r.h = SHAPES_VERSION;
-    a := area(r);
+  r: Rect;
+  r.w = blend(BLACK, WHITE);
+  r.h = SHAPES_VERSION;
+  a := area(r);
 }

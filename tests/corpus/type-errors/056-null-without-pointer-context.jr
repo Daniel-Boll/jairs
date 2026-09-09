@@ -10,6 +10,6 @@
 // the wrong-context case belongs here, because a file under `type-errors/` must otherwise check
 // cleanly.
 main :: () {
-    // A pointer literal assigned to an integer: the literal is well-formed, the context is wrong.
-    n: s64 = null;
+  // A pointer literal assigned to an integer: the literal is well-formed, the context is wrong.
+  n: s64 = null;
 }

@@ -22,15 +22,15 @@
 ELEMENT_SIZE :: size_of(s64);
 
 main :: () {
-    // The body form, which is every counted use in real Jai code.
-    xs := s64.[1, 2, 3];
-    total := 0;
-    for x: xs {
-        total = total + x;
-    }
-    // 6 + 8 = 14.
-    if total + ELEMENT_SIZE != 14 {
-        exit(1);
-    }
-    exit(66);
+  // The body form, which is every counted use in real Jai code.
+  xs := s64.[1, 2, 3];
+  total := 0;
+  for x: xs {
+    total = total + x;
+  }
+  // 6 + 8 = 14.
+  if total + ELEMENT_SIZE != 14 {
+    exit(1);
+  }
+  exit(66);
 }

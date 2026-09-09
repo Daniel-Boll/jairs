@@ -32,34 +32,34 @@
 /// A void macro: no return type, so it produces no value. Its body reaches the *caller's* `total`, which
 /// is what makes it a macro rather than a procedure.
 add_to_total :: (x: s64) #expand {
-    total = total + x;
+  total = total + x;
 }
 
 /// A value macro: its tail `return` becomes an assignment to the call's result local.
 double :: (x: s64) -> s64 #expand {
-    return x * 2;
+  return x * 2;
 }
 
 main :: () {
-    total := 0;
+  total := 0;
 
-    // Statement position, twice: each splices into `main` and modifies `main`'s own local.
-    add_to_total(10);
-    add_to_total(6);
-    // total == 16
+  // Statement position, twice: each splices into `main` and modifies `main`'s own local.
+  add_to_total(10);
+  add_to_total(6);
+  // total == 16
 
-    // Expression position, through the generated result local.
-    a := double(21);
-    // a == 42
+  // Expression position, through the generated result local.
+  a := double(21);
+  // a == 42
 
-    // An argument that is an *expression*: the prelude binds its value, so `1 + 2` is evaluated once.
-    b := double(1 + 2);
-    // b == 6
+  // An argument that is an *expression*: the prelude binds its value, so `1 + 2` is evaluated once.
+  b := double(1 + 2);
+  // b == 6
 
-    // Two macro calls in one expression — two result locals, no collision.
-    c := double(4) + double(5);
-    // c == 8 + 10 == 18
+  // Two macro calls in one expression — two result locals, no collision.
+  c := double(4) + double(5);
+  // c == 8 + 10 == 18
 
-    // 16 + 42 + 6 + 18 == 82, plus 14 to make the total distinctive.
-    exit(total + a + b + c + 14);
+  // 16 + 42 + 6 + 18 == 82, plus 14 to make the total distinctive.
+  exit(total + a + b + c + 14);
 }

@@ -42,7 +42,7 @@ main :: () {
 
     ptr := *sum;
     if ptr.* == 9 {
-        print_line("arithmetic and pointers agree");
+        print("arithmetic and pointers agree\n");
     }
 }
 ```
@@ -54,12 +54,10 @@ That is why it exercises so much at once — a struct, a constant, a compile-tim
 call, `if`, `while`, and pointers.
 
 This particular program prints no integers — a limitation from the vertical slice that has
-since been lifted. At the time this program was written, `print_int` could not exist, because
+since been lifted. At the time this program was written, the old `print_int` helper could not exist, because
 turning a digit into a byte needs an `s64`-to-`u8` conversion and `cast` did not exist yet.
-`cast` has since shipped (ADR-0037), and `modules/Basic` now has a `print_int`, built on `%`-based
-`print` (ADR-0189). This program is unchanged from the vertical slice, though, so it still prints
-only fixed strings, through `print` and `print_line`, both provided by the imported `Basic`
-module.
+`cast` and general formatted `print` have since shipped (ADR-0037, ADR-0189). The current spelling
+uses one output API and puts the newline in the format string.
 
 ## Importing a module
 
@@ -72,8 +70,7 @@ main :: () {
 ```
 
 `#import "Basic"` brings a module's declarations into scope. `Basic` is the standard prelude
-module that supplies `print` and `print_line`; without the import, those names would not
-resolve.
+module that supplies `print`; without the import, that name would not resolve.
 
 ## Foreign bindings
 

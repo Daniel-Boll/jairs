@@ -21,36 +21,36 @@
 /// A wrapping multiply of two values near `u64`'s maximum, evaluated at compile time. Before the fix this
 /// panicked the constant evaluator; the value itself is unimportant, only that it computes.
 folded_mul :: () -> u64 {
-    a: u64 = 11400714819323198485;
-    return a *% a;
+  a: u64 = 11400714819323198485;
+  return a *% a;
 }
 
 COMPUTED :: #run folded_mul();
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // The comptime value exists — the constant evaluator did not panic building it.
-    c := COMPUTED;
-    if c > 0 {
-        n = n + 1;
+  // The comptime value exists — the constant evaluator did not panic building it.
+  c := COMPUTED;
+  if c > 0 {
+    n = n + 1;
+  }
+
+  // The same multiply at run time, in both engines.
+  x: u64 = 11400714819323198485;
+  y := x *% x;
+  if y == c {
+    n = n + 2;
+  }
+
+  // `+%` and `-%` at the boundary shared the bug: adding past the top wraps to a small value, and subtracting
+  // below zero wraps to a large one.
+  hi: u64 = 18000000000000000000;
+  if hi +% hi < hi {
+    if 0 -% 1 > hi {
+      n = n + 4;
     }
+  }
 
-    // The same multiply at run time, in both engines.
-    x: u64 = 11400714819323198485;
-    y := x *% x;
-    if y == c {
-        n = n + 2;
-    }
-
-    // `+%` and `-%` at the boundary shared the bug: adding past the top wraps to a small value, and subtracting
-    // below zero wraps to a large one.
-    hi: u64 = 18000000000000000000;
-    if hi +% hi < hi {
-        if 0 -% 1 > hi {
-            n = n + 4;
-        }
-    }
-
-    exit(n);
+  exit(n);
 }

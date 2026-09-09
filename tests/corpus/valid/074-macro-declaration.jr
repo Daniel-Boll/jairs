@@ -28,25 +28,25 @@
 
 /// The canonical macro: doubles its argument. Its body will be spliced at each call site.
 double :: (x: s64) -> s64 #expand {
-    return x * 2;
+  return x * 2;
 }
 
 /// `#expand` beside `#no_abc`, in that order.
 indexed :: (n: s64) -> s64 #expand #no_abc {
-    return n + 1;
+  return n + 1;
 }
 
 /// And in the other order, because the attribute loop takes either.
 indexed_too :: (n: s64) -> s64 #no_abc #expand {
-    return n + 2;
+  return n + 2;
 }
 
 /// Several parameters, all used — a real body rather than a trivial one.
 combine :: (a: s64, b: s64, c: s64) -> s64 #expand {
-    return a * 100 + b * 10 + c;
+  return a * 100 + b * 10 + c;
 }
 
 main :: () {
-    n := 9;
-    exit(n);
+  n := 9;
+  exit(n);
 }

@@ -3,5 +3,5 @@
 #import "Colors";
 
 main :: () {
-    x := blend(BLACK, WHITE);
+  x := blend(BLACK, WHITE);
 }

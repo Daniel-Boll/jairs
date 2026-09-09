@@ -2,5 +2,5 @@
 // Type names are ordinary identifiers resolved by name, so a misspelling is a
 // resolution failure rather than a syntax error.
 main :: () {
-    n: int = 0;
+  n: int = 0;
 }

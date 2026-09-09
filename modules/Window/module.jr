@@ -103,14 +103,14 @@ PRESENT_VSYNC :: 4;
 /// height. Passed by pointer, as SDL's own API does, so ADR-0161's aggregate-by-value work is not needed here
 /// — which is part of why SDL2 was reachable before Cocoa was.
 Rect :: struct {
-    /// Left edge, in pixels from the drawing area's left.
-    x: s32;
-    /// Top edge, in pixels from the top.
-    y: s32;
-    /// Width in pixels.
-    w: s32;
-    /// Height in pixels.
-    h: s32;
+  /// Left edge, in pixels from the drawing area's left.
+  x: s32;
+  /// Top edge, in pixels from the top.
+  y: s32;
+  /// Width in pixels.
+  w: s32;
+  /// Height in pixels.
+  h: s32;
 }
 
 /// Whether `Rect` is the 16 bytes SDL2 reads through the pointer.
@@ -127,8 +127,8 @@ RECT_LAYOUT_IS_SDL2 :: size_of(Rect) == 16;
 /// §1): a handle and a count are both machine words, and the compiler will not confuse them once one has a
 /// name.
 Window :: struct {
-    /// The `SDL_Window *`. Null when the window is not open.
-    handle: *u8;
+  /// The `SDL_Window *`. Null when the window is not open.
+  handle: *u8;
 }
 
 /// Starts the video subsystem.
@@ -139,12 +139,12 @@ Window :: struct {
 ///
 /// Idempotent in SDL, so calling it twice is defined and cheap.
 start :: () -> bool #must {
-    return sdl_init(cast(u32, INIT_VIDEO)) == 0;
+  return sdl_init(cast(u32, INIT_VIDEO)) == 0;
 }
 
 /// Shuts the video subsystem down. Not `#must`: there is nothing to recover from and nothing to report.
 stop :: () {
-    sdl_quit();
+  sdl_quit();
 }
 
 /// Opens a window `width` by `height`, titled `window_name` (ADR-0187 §2).
@@ -172,61 +172,61 @@ stop :: () {
 /// isolation. A null `handle` is the failure, `is_open` asks the question, and every routine here is
 /// already safe on a closed window.
 create_window :: (
-    width: s64,
-    height: s64,
-    window_name: string,
-    window_x: s64 = 0,
-    window_y: s64 = 0,
+  width: s64,
+  height: s64,
+  window_name: string,
+  window_x: s64 = 0,
+  window_y: s64 = 0,
 ) -> Window {
-    w: Window;
-    // SDL wants a NUL-terminated title and a Jairs `string` carries a count instead, so the title is
-    // copied into temporary storage. The pointer is valid until the next `reset_temporary_storage`,
-    // which outlives the call SDL makes with it — SDL copies the title itself.
-    c_title, ok := nul_terminated(window_name);
-    if !ok {
-        return w;
-    }
-    x := window_position(window_x);
-    y := window_position(window_y);
-    // Every constant is cast at the boundary, which is the discipline the private section's own
-    // comment argues for: a Jairs constant is `s64` and there is no syntax to annotate one narrower
-    // (probed — `CENTERED : s32 : 805240832` does not parse), so the narrowing is explicit here.
-    //
-    // **GL is asked for first and then fallen back on, and the fallback is not a convenience**
-    // (ADR-0187 §2). SDL decides GL capability at *creation* time, so a window made without
-    // `SDL_WINDOW_OPENGL` cannot get a context later — which is why the flag is not optional.
-    //
-    // But `SDL_VIDEODRIVER=dummy` **has no GL at all**: `SDL_CreateWindow` with the flag fails
-    // outright, reporting *"OpenGL support is either not configured in SDL or not available in
-    // current SDL video driver (dummy) or platform"*. Measured with a C program against the installed
-    // SDL2, and confirmed independently twice. Without the fallback, every headless program that
-    // merely opens a window to **read events** would fail at creation, even though it never draws —
-    // and this library's event tests are exactly that.
-    //
-    // So: ask for GL, and on failure open a plain window. A program that only reads events then works
-    // headless, and a program that draws finds out from `Simp.is_ready()` rather than from a null
-    // window — which puts the failure where the requirement is. The rejected alternative was a flags
-    // argument, which is what this module used to have: it makes every caller decide a question only
-    // the renderer knows the answer to, and the inspected `create_window` has no such flag.
-    w.handle = sdl_create_window(
-        c_title,
-        cast(s32, x),
-        cast(s32, y),
-        cast(s32, width),
-        cast(s32, height),
-        cast(u32, OPENGL | SHOWN),
-    );
-    if w.handle == null {
-        w.handle = sdl_create_window(
-            c_title,
-            cast(s32, x),
-            cast(s32, y),
-            cast(s32, width),
-            cast(s32, height),
-            cast(u32, SHOWN),
-        );
-    }
+  w: Window;
+  // SDL wants a NUL-terminated title and a Jairs `string` carries a count instead, so the title is
+  // copied into temporary storage. The pointer is valid until the next `reset_temporary_storage`,
+  // which outlives the call SDL makes with it — SDL copies the title itself.
+  c_title, ok := nul_terminated(window_name);
+  if !ok {
     return w;
+  }
+  x := window_position(window_x);
+  y := window_position(window_y);
+  // Every constant is cast at the boundary, which is the discipline the private section's own
+  // comment argues for: a Jairs constant is `s64` and there is no syntax to annotate one narrower
+  // (probed — `CENTERED : s32 : 805240832` does not parse), so the narrowing is explicit here.
+  //
+  // **GL is asked for first and then fallen back on, and the fallback is not a convenience**
+  // (ADR-0187 §2). SDL decides GL capability at *creation* time, so a window made without
+  // `SDL_WINDOW_OPENGL` cannot get a context later — which is why the flag is not optional.
+  //
+  // But `SDL_VIDEODRIVER=dummy` **has no GL at all**: `SDL_CreateWindow` with the flag fails
+  // outright, reporting *"OpenGL support is either not configured in SDL or not available in
+  // current SDL video driver (dummy) or platform"*. Measured with a C program against the installed
+  // SDL2, and confirmed independently twice. Without the fallback, every headless program that
+  // merely opens a window to **read events** would fail at creation, even though it never draws —
+  // and this library's event tests are exactly that.
+  //
+  // So: ask for GL, and on failure open a plain window. A program that only reads events then works
+  // headless, and a program that draws finds out from `Simp.is_ready()` rather than from a null
+  // window — which puts the failure where the requirement is. The rejected alternative was a flags
+  // argument, which is what this module used to have: it makes every caller decide a question only
+  // the renderer knows the answer to, and the inspected `create_window` has no such flag.
+  w.handle = sdl_create_window(
+    c_title,
+    cast(s32, x),
+    cast(s32, y),
+    cast(s32, width),
+    cast(s32, height),
+    cast(u32, OPENGL | SHOWN),
+  );
+  if w.handle == null {
+    w.handle = sdl_create_window(
+      c_title,
+      cast(s32, x),
+      cast(s32, y),
+      cast(s32, width),
+      cast(s32, height),
+      cast(u32, SHOWN),
+    );
+  }
+  return w;
 }
 
 /// Closes `window` and marks it closed.
@@ -238,10 +238,10 @@ create_window :: (
 /// leaves `Simp` holding a dangling handle. Stated because nothing enforces it: the renderer lives in
 /// another module and neither struct points at the other.
 close :: (window: *Window) {
-    if window.handle != null {
-        sdl_destroy_window(window.handle);
-    }
-    window.handle = null;
+  if window.handle != null {
+    sdl_destroy_window(window.handle);
+  }
+  window.handle = null;
 }
 
 /// The window's size in pixels, as the window manager has it.
@@ -252,13 +252,13 @@ close :: (window: *Window) {
 ///
 /// `(0, 0)` for a closed window, which is the same "nothing there" answer every other routine here gives.
 get_window_size :: (window: *Window) -> (s64, s64) {
-    if window.handle == null {
-        return 0, 0;
-    }
-    w: s32;
-    h: s32;
-    sdl_get_window_size(window.handle, *w, *h);
-    return cast(s64, w), cast(s64, h);
+  if window.handle == null {
+    return 0, 0;
+  }
+  w: s32;
+  h: s32;
+  sdl_get_window_size(window.handle, *w, *h);
+  return cast(s64, w), cast(s64, h);
 }
 
 /// Whether `window` is open.
@@ -267,7 +267,7 @@ get_window_size :: (window: *Window) -> (s64, s64) {
 /// window is a null handle, and every routine here is already safe on one, so this exists for the
 /// caller who wants to *branch* rather than to be safe.
 is_open :: (window: *Window) -> bool {
-    return window.handle != null;
+  return window.handle != null;
 }
 
 /// Sleeps for `milliseconds`.
@@ -277,7 +277,7 @@ is_open :: (window: *Window) -> bool {
 /// the objection does not apply. A drawing program needs to yield the CPU between frames, and this is the
 /// only way it can.
 delay :: (milliseconds: s64) {
-    sdl_delay(cast(u32, milliseconds));
+  sdl_delay(cast(u32, milliseconds));
 }
 
 /// A rectangle, built from four `s64`s a caller already has.
@@ -285,12 +285,12 @@ delay :: (milliseconds: s64) {
 /// A constructor because the four `cast(s32, …)`es are noise at every call site, and because narrowing is
 /// exactly where a caller would forget one and write a `s64` into a field SDL reads as two.
 rect :: (x: s64, y: s64, w: s64, h: s64) -> Rect {
-    r: Rect;
-    r.x = cast(s32, x);
-    r.y = cast(s32, y);
-    r.w = cast(s32, w);
-    r.h = cast(s32, h);
-    return r;
+  r: Rect;
+  r.x = cast(s32, x);
+  r.y = cast(s32, y);
+  r.w = cast(s32, w);
+  r.h = cast(s32, h);
+  return r;
 }
 
 /// How many video drivers SDL was built with.
@@ -298,7 +298,7 @@ rect :: (x: s64, y: s64, w: s64, h: s64) -> Rect {
 /// Not useful for drawing, and useful for a *test*: it is the cheapest call that proves the library linked
 /// and ran, with no display and no window. It is what ADR-0163 §1's first probe used.
 video_driver_count :: () -> s64 {
-    return cast(s64, sdl_video_drivers());
+  return cast(s64, sdl_video_drivers());
 }
 
 // ---------------------------------------------------------------------------
@@ -326,10 +326,10 @@ video_driver_count :: () -> s64 {
 /// Windows, and documents no centring rule for either. A window at the very corner of the screen is
 /// nobody's intent, so `0` centres and a caller who genuinely wants the corner passes `1`.
 window_position :: (requested: s64) -> s64 {
-    if requested == 0 {
-        return CENTERED;
-    }
-    return requested;
+  if requested == 0 {
+    return CENTERED;
+  }
+  return requested;
 }
 
 /// Copies `text` into NUL-terminated scratch from temporary storage.
@@ -338,18 +338,18 @@ window_position :: (requested: s64) -> s64 {
 /// only until the next `reset_temporary_storage`, and that contract belongs inside the module rather
 /// than in its surface. SDL copies a window title, so the lifetime is long enough.
 nul_terminated :: (text: string) -> (*u8, bool) {
-    scratch := talloc(text.count + 1);
-    if scratch == null {
-        return null, false;
-    }
-    bytes := view(scratch, text.count + 1);
-    i := 0;
-    while i < text.count {
-        bytes[i] = cast(u8, (text.data + i).*);
-        i = i + 1;
-    }
-    bytes[text.count] = cast(u8, 0);
-    return scratch, true;
+  scratch := talloc(text.count + 1);
+  if scratch == null {
+    return null, false;
+  }
+  bytes := view(scratch, text.count + 1);
+  i := 0;
+  while i < text.count {
+    bytes[i] = cast(u8, (text.data + i).*);
+    i = i + 1;
+  }
+  bytes[text.count] = cast(u8, 0);
+  return scratch, true;
 }
 
 sdl :: #system_library "SDL2";

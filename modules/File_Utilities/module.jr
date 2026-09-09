@@ -63,37 +63,37 @@ EXTENSION_SEPARATOR :: 46;
 ///
 /// Allocates through `context.allocator`; `String.free_string` releases it.
 path_join :: (left: string, right: string) -> string {
-    if left.count == 0 {
-        return copy_of(right);
-    }
-    if right.count == 0 {
-        return copy_of(left);
-    }
-    if byte_at(right, 0) == SEPARATOR {
-        return copy_of(right);
-    }
+  if left.count == 0 {
+    return copy_of(right);
+  }
+  if right.count == 0 {
+    return copy_of(left);
+  }
+  if byte_at(right, 0) == SEPARATOR {
+    return copy_of(right);
+  }
 
-    left_end := left.count;
-    while left_end > 0 {
-        if byte_at(left, left_end - 1) != SEPARATOR {
-            break;
-        }
-        left_end = left_end - 1;
+  left_end := left.count;
+  while left_end > 0 {
+    if byte_at(left, left_end - 1) != SEPARATOR {
+      break;
     }
-    // No stripping of `right`: a leading separator there means it is absolute, which returned above. So the
-    // only trimming is `left`'s trailing separators, and `right` is appended as written.
-    //
-    // A `left` that was only separators is the root, and the root's child has one separator:
-    // `path_join("/", "a")` is `"/a"`. That falls out of the general path rather than being special-cased,
-    // because `left_end == 0` makes the prefix empty and the separator inserted below *is* the root's.
-    head := substring(left, 0, left_end);
-    tail := copy_of(right);
-    with_separator := concat(head, "/");
-    free_string(head);
-    joined := concat(with_separator, tail);
-    free_string(with_separator);
-    free_string(tail);
-    return joined;
+    left_end = left_end - 1;
+  }
+  // No stripping of `right`: a leading separator there means it is absolute, which returned above. So the
+  // only trimming is `left`'s trailing separators, and `right` is appended as written.
+  //
+  // A `left` that was only separators is the root, and the root's child has one separator:
+  // `path_join("/", "a")` is `"/a"`. That falls out of the general path rather than being special-cased,
+  // because `left_end == 0` makes the prefix empty and the separator inserted below *is* the root's.
+  head := substring(left, 0, left_end);
+  tail := copy_of(right);
+  with_separator := concat(head, "/");
+  free_string(head);
+  joined := concat(with_separator, tail);
+  free_string(with_separator);
+  free_string(tail);
+  return joined;
 }
 
 /// Everything after the last separator, or the whole path when there is none.
@@ -102,11 +102,11 @@ path_join :: (left: string, right: string) -> string {
 /// ending in a separator names a directory and has no base name, and returning `"b"` would be inventing one.
 /// Borrowed from `path`, not allocated: it is a slice of the input, so there is nothing to free.
 base_name :: (path: string) -> string {
-    at := last_separator(path);
-    if at < 0 {
-        return path;
-    }
-    return slice_of(path, at + 1, path.count);
+  at := last_separator(path);
+  if at < 0 {
+    return path;
+  }
+  return slice_of(path, at + 1, path.count);
 }
 
 /// Everything before the last separator, or `""` when there is none.
@@ -116,14 +116,14 @@ base_name :: (path: string) -> string {
 /// interpretation can test for empty, while a caller who got `"."` cannot tell it from a path that really
 /// said `"."`. `directory_name("/a")` is `"/"`, the root, which is the one case where the separator is kept.
 directory_name :: (path: string) -> string {
-    at := last_separator(path);
-    if at < 0 {
-        return "";
-    }
-    if at == 0 {
-        return slice_of(path, 0, 1);
-    }
-    return slice_of(path, 0, at);
+  at := last_separator(path);
+  if at < 0 {
+    return "";
+  }
+  if at == 0 {
+    return slice_of(path, 0, 1);
+  }
+  return slice_of(path, 0, at);
 }
 
 /// The extension, without its dot, or `""`.
@@ -133,15 +133,15 @@ directory_name :: (path: string) -> string {
 /// `extension(".bashrc")` is `""`, which is the rule every tool uses and the one a naive implementation gets
 /// wrong. A dot in a *directory* name is not one either: `extension("a.b/c")` is `""`.
 extension :: (path: string) -> string {
-    name := base_name(path);
-    at := name.count - 1;
-    while at > 0 {
-        if byte_at(name, at) == EXTENSION_SEPARATOR {
-            return slice_of(name, at + 1, name.count);
-        }
-        at = at - 1;
+  name := base_name(path);
+  at := name.count - 1;
+  while at > 0 {
+    if byte_at(name, at) == EXTENSION_SEPARATOR {
+      return slice_of(name, at + 1, name.count);
     }
-    return "";
+    at = at - 1;
+  }
+  return "";
 }
 
 /// The base name without its extension.
@@ -150,23 +150,23 @@ extension :: (path: string) -> string {
 /// partition the base name between them — a property worth having, since the two are almost always used
 /// together.
 stem :: (path: string) -> string {
-    name := base_name(path);
-    at := name.count - 1;
-    while at > 0 {
-        if byte_at(name, at) == EXTENSION_SEPARATOR {
-            return slice_of(name, 0, at);
-        }
-        at = at - 1;
+  name := base_name(path);
+  at := name.count - 1;
+  while at > 0 {
+    if byte_at(name, at) == EXTENSION_SEPARATOR {
+      return slice_of(name, 0, at);
     }
-    return name;
+    at = at - 1;
+  }
+  return name;
 }
 
 /// Whether `path` starts at the root.
 is_absolute :: (path: string) -> bool {
-    if path.count == 0 {
-        return false;
-    }
-    return byte_at(path, 0) == SEPARATOR;
+  if path.count == 0 {
+    return false;
+  }
+  return byte_at(path, 0) == SEPARATOR;
 }
 
 /// Resolves `.` and `..` **textually**, and collapses repeated separators.
@@ -179,79 +179,79 @@ is_absolute :: (path: string) -> bool {
 /// A `..` that would escape a **relative** path is kept, because `../x` means something and dropping it would
 /// change it. A `..` at the root is dropped, because `/..` is `/`.
 normalise :: (path: string) -> string {
-    absolute := is_absolute(path);
-    // **A computed empty string, not the `""` literal.** `push_component` and the `..` branch below free
-    // `out`, and freeing a literal releases memory the compiler owns — which aborts natively while the VM's
-    // own region tolerates it, so it is a divergence a test only catches by running the native binary
-    // (ADR-0157 §5). `substring` returns null data for a zero count, so a computed empty is safe to free and
-    // this one line is the whole fix.
-    out := copy_of("");
-    at := 0;
-    while at < path.count {
-        // One component: from `at` to the next separator or the end.
-        end := at;
-        while end < path.count {
-            if byte_at(path, end) == SEPARATOR {
-                break;
-            }
-            end = end + 1;
-        }
-        piece := slice_of(path, at, end);
-        at = end + 1;
+  absolute := is_absolute(path);
+  // **A computed empty string, not the `""` literal.** `push_component` and the `..` branch below free
+  // `out`, and freeing a literal releases memory the compiler owns — which aborts natively while the VM's
+  // own region tolerates it, so it is a divergence a test only catches by running the native binary
+  // (ADR-0157 §5). `substring` returns null data for a zero count, so a computed empty is safe to free and
+  // this one line is the whole fix.
+  out := copy_of("");
+  at := 0;
+  while at < path.count {
+    // One component: from `at` to the next separator or the end.
+    end := at;
+    while end < path.count {
+      if byte_at(path, end) == SEPARATOR {
+        break;
+      }
+      end = end + 1;
+    }
+    piece := slice_of(path, at, end);
+    at = end + 1;
 
-        if piece.count == 0 {
-            continue;
-        }
-        if equal(piece, ".") {
-            continue;
-        }
-        if equal(piece, "..") {
-            // Pop, unless there is nothing to pop and the path is relative — in which case the `..` is part
-            // of the answer.
-            if out.count > 0 {
-                popped := pop_component(out);
-                if popped.count != out.count {
-                    free_string(out);
-                    out = popped;
-                    continue;
-                }
-                free_string(popped);
-            }
-            if absolute {
-                continue;
-            }
-            out = push_component(out, piece);
-            continue;
-        }
-        out = push_component(out, piece);
+    if piece.count == 0 {
+      continue;
     }
+    if equal(piece, ".") {
+      continue;
+    }
+    if equal(piece, "..") {
+      // Pop, unless there is nothing to pop and the path is relative — in which case the `..` is part
+      // of the answer.
+      if out.count > 0 {
+        popped := pop_component(out);
+        if popped.count != out.count {
+          free_string(out);
+          out = popped;
+          continue;
+        }
+        free_string(popped);
+      }
+      if absolute {
+        continue;
+      }
+      out = push_component(out, piece);
+      continue;
+    }
+    out = push_component(out, piece);
+  }
 
-    if absolute {
-        rooted := concat("/", out);
-        free_string(out);
-        return rooted;
-    }
-    if out.count == 0 {
-        // A relative path that normalised to nothing is `.`, not `""`: `normalise("a/..")` names the current
-        // directory, and `""` names nothing a caller could open.
-        free_string(out);
-        return copy_of(".");
-    }
-    return out;
+  if absolute {
+    rooted := concat("/", out);
+    free_string(out);
+    return rooted;
+  }
+  if out.count == 0 {
+    // A relative path that normalised to nothing is `.`, not `""`: `normalise("a/..")` names the current
+    // directory, and `""` names nothing a caller could open.
+    free_string(out);
+    return copy_of(".");
+  }
+  return out;
 }
 
 #scope_module
 
 /// The index of the last separator, or `-1`.
 last_separator :: (path: string) -> s64 {
-    at := path.count - 1;
-    while at >= 0 {
-        if byte_at(path, at) == SEPARATOR {
-            return at;
-        }
-        at = at - 1;
+  at := path.count - 1;
+  while at >= 0 {
+    if byte_at(path, at) == SEPARATOR {
+      return at;
     }
-    return -1;
+    at = at - 1;
+  }
+  return -1;
 }
 
 /// A borrowed slice of `s`, without allocating.
@@ -260,30 +260,30 @@ last_separator :: (path: string) -> s64 {
 /// here return slices *of their argument*, so they must not — a `base_name` that allocated would make every
 /// caller free, and the borrow is safe because the result never outlives the path it came from.
 slice_of :: (s: string, from: s64, to: s64) -> string {
-    if from >= to {
-        return "";
-    }
-    // **`borrow`, not `adopt`** (ADR-0157 §4): the bytes belong to `s`, so the result must never be freed.
-    // Using `adopt` here would be a double free waiting for the first caller who did the tidy thing.
-    return borrow(s.data + from, to - from);
+  if from >= to {
+    return "";
+  }
+  // **`borrow`, not `adopt`** (ADR-0157 §4): the bytes belong to `s`, so the result must never be freed.
+  // Using `adopt` here would be a double free waiting for the first caller who did the tidy thing.
+  return borrow(s.data + from, to - from);
 }
 
 /// An owned copy of `s`.
 copy_of :: (s: string) -> string {
-    return substring(s, 0, s.count);
+  return substring(s, 0, s.count);
 }
 
 /// `out` with `piece` appended after a separator, freeing `out`.
 push_component :: (out: string, piece: string) -> string {
-    if out.count == 0 {
-        free_string(out);
-        return copy_of(piece);
-    }
-    with_separator := concat(out, "/");
+  if out.count == 0 {
     free_string(out);
-    joined := concat(with_separator, piece);
-    free_string(with_separator);
-    return joined;
+    return copy_of(piece);
+  }
+  with_separator := concat(out, "/");
+  free_string(out);
+  joined := concat(with_separator, piece);
+  free_string(with_separator);
+  return joined;
 }
 
 /// `out` with its last component removed, or an equal-length copy when there is none to remove.
@@ -291,9 +291,9 @@ push_component :: (out: string, piece: string) -> string {
 /// The equal length is how `normalise` tells "popped" from "nothing to pop" without a second return value —
 /// a component is at least one byte, so a successful pop always shortens.
 pop_component :: (out: string) -> string {
-    at := last_separator(out);
-    if at < 0 {
-        return copy_of("");
-    }
-    return substring(out, 0, at);
+  at := last_separator(out);
+  if at < 0 {
+    return copy_of("");
+  }
+  return substring(out, 0, at);
 }

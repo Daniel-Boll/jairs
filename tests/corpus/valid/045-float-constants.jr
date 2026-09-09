@@ -32,44 +32,44 @@ WHOLE :: 2.0;
 /// is exercised through a local here, and a typed `float32` constant is owed — recorded in §7 rather
 /// than discovered, because writing one is the obvious next thing a reader tries.
 narrow_local :: () -> float32 {
-    n: float32 = 0.75;
-    return n;
+  n: float32 = 0.75;
+  return n;
 }
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // The bare comparison that crashed.
-    if HALF == 0.5 {
-        n = n + 1;
-    }
-    // Arithmetic, so a wrong bit pattern is a wrong answer rather than a plausible one.
-    if HALF * 4.0 == 2.0 {
-        n = n + 2;
-    }
-    if QUARTER + QUARTER == 0.5 {
-        n = n + 4;
-    }
-    // A negative float constant, which ADR-0038 folds the sign into during lowering.
-    if NEGATIVE * 2.0 == -3.0 {
-        n = n + 8;
-    }
-    // A float constant whose value happens to be integral — the case most likely to *look* right
-    // while carrying integer bits, because 2.0 and 2 are visually the same number.
-    if WHOLE == 2.0 {
-        n = n + 16;
-    }
-    if WHOLE / 2.0 == 1.0 {
-        n = n + 32;
-    }
-    // A `float32`, for the narrower interning path.
-    if narrow_local() > 0.5 {
-        n = n + 64;
-    }
+  // The bare comparison that crashed.
+  if HALF == 0.5 {
+    n = n + 1;
+  }
+  // Arithmetic, so a wrong bit pattern is a wrong answer rather than a plausible one.
+  if HALF * 4.0 == 2.0 {
+    n = n + 2;
+  }
+  if QUARTER + QUARTER == 0.5 {
+    n = n + 4;
+  }
+  // A negative float constant, which ADR-0038 folds the sign into during lowering.
+  if NEGATIVE * 2.0 == -3.0 {
+    n = n + 8;
+  }
+  // A float constant whose value happens to be integral — the case most likely to *look* right
+  // while carrying integer bits, because 2.0 and 2 are visually the same number.
+  if WHOLE == 2.0 {
+    n = n + 16;
+  }
+  if WHOLE / 2.0 == 1.0 {
+    n = n + 32;
+  }
+  // A `float32`, for the narrower interning path.
+  if narrow_local() > 0.5 {
+    n = n + 64;
+  }
 
-    // Every assertion: 127.
-    if n == 127 {
-        exit(0);
-    }
-    exit(1);
+  // Every assertion: 127.
+  if n == 127 {
+    exit(0);
+  }
+  exit(1);
 }

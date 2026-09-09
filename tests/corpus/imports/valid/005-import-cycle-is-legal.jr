@@ -4,6 +4,6 @@
 #import "Cycle_A";
 
 main :: () {
-    x := a_calls_b();
-    y := A_VALUE;
+  x := a_calls_b();
+  y := A_VALUE;
 }

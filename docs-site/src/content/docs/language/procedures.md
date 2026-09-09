@@ -38,7 +38,7 @@ divide :: (a: s64, b: s64) -> (s64, bool) {
 main :: () {
     q, ok := divide(10, 2);    // bind both results
     if ok {
-        print_int(q);
+        print("%\n", q);
     }
     _, valid := divide(1, 0);  // `_` discards a result you don't need
 }

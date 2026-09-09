@@ -29,36 +29,36 @@
 Compiler :: #import "Compiler";
 
 build :: () {
-    print("configuring at compile time\n");
+  print("configuring at compile time\n");
 
-    if Compiler.os() == Compiler.Operating_System.MACOS {
-        print("target is macOS\n");
-    }
+  if Compiler.os() == Compiler.Operating_System.MACOS {
+    print("target is macOS\n");
+  }
 
-    // Allocation at compile time: a string built in the comptime VM's own region.
-    context.allocator = comptime_alloc;
-    context.allocator_free = comptime_free;
+  // Allocation at compile time: a string built in the comptime VM's own region.
+  context.allocator = comptime_alloc;
+  context.allocator_free = comptime_free;
 
-    paths := string.["modules"];
+  paths := string.["modules"];
 
-    t := Compiler.create_target("hello");
-    o := Compiler.options(t);
-    o.output = "hello-from-a-run";
-    o.module_paths = paths[];
-    Compiler.set_options(t, o);
-    Compiler.add_file(t, "examples/01-hello.jr");
+  t := Compiler.create_target("hello");
+  o := Compiler.options(t);
+  o.output = "hello-from-a-run";
+  o.module_paths = paths[];
+  Compiler.set_options(t, o);
+  Compiler.add_file(t, "examples/01-hello.jr");
 
-    // Declares rather than compiles — see the header.
-    Compiler.request_build(t);
-    print("target declared\n");
+  // Declares rather than compiles — see the header.
+  Compiler.request_build(t);
+  print("target declared\n");
 }
 
 comptime_alloc :: (n: s64) -> *u8 {
-    return malloc(n);
+  return malloc(n);
 }
 
 comptime_free :: (p: *u8) {
-    free(p);
+  free(p);
 }
 
 #run build();

@@ -3,41 +3,40 @@
 // `jr build`, produce identical output either way, and receive hover,
 // goto-definition and diagnostics in the language server.
 //
-// Note there is no integer printing here. `print_int` cannot be written in the
-// Jairs-0 subset -- turning a digit into a byte needs a `s64` to `u8`
-// conversion, and `cast` is reserved until wave W1. See modules/Basic/module.jr
-// for why the alternatives are all worse than waiting.
+// The original Jairs-0 slice could only print strings. The current `print`
+// formatter also handles integers and aggregates; this file keeps the slice's
+// original behaviour while using the current API.
 #import "Basic";
 
 Point :: struct {
-    x: s64;
-    y: s64;
+  x: s64;
+  y: s64;
 }
 
 MESSAGE :: "hello from Jairs\n";
 COMPUTED :: #run add(2, 3);
 
 add :: (a: s64, b: s64) -> s64 {
-    return a + b;
+  return a + b;
 }
 
 main :: () {
-    p: Point;
-    p.x = 4;
-    p.y = COMPUTED;
+  p: Point;
+  p.x = 4;
+  p.y = COMPUTED;
 
-    sum := add(p.x, p.y);
-    if sum > 5 {
-        print(MESSAGE);
-    }
+  sum := add(p.x, p.y);
+  if sum > 5 {
+    print(MESSAGE);
+  }
 
-    i := 0;
-    while i < 3 {
-        i = i + 1;
-    }
+  i := 0;
+  while i < 3 {
+    i = i + 1;
+  }
 
-    ptr := *sum;
-    if ptr.* == 9 {
-        print_line("arithmetic and pointers agree");
-    }
+  ptr := *sum;
+  if ptr.* == 9 {
+    print("arithmetic and pointers agree\n");
+  }
 }

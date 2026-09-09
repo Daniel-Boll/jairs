@@ -35,93 +35,93 @@
 #import "Math";
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // Construction and field access.
-    a := vec3(1.0, 2.0, 3.0);
-    if a.x == 1.0 && a.y == 2.0 && a.z == 3.0 {
-        n = n + 1;
-    }
+  // Construction and field access.
+  a := vec3(1.0, 2.0, 3.0);
+  if a.x == 1.0 && a.y == 2.0 && a.z == 3.0 {
+    n = n + 1;
+  }
 
-    // **The imported operator.** Addition and subtraction on Vector3.
-    b := vec3(4.0, 5.0, 6.0);
-    if a + b == vec3(5.0, 7.0, 9.0) {
-        n = n + 2;
-    }
-    if b - a == vec3(3.0, 3.0, 3.0) {
-        n = n + 4;
-    }
+  // **The imported operator.** Addition and subtraction on Vector3.
+  b := vec3(4.0, 5.0, 6.0);
+  if a + b == vec3(5.0, 7.0, 9.0) {
+    n = n + 2;
+  }
+  if b - a == vec3(3.0, 3.0, 3.0) {
+    n = n + 4;
+  }
 
-    // Scalar multiply in **both** orders, and division.
-    if a * 2.0 == vec3(2.0, 4.0, 6.0) && 2.0 * a == vec3(2.0, 4.0, 6.0) {
-        n = n + 8;
-    }
-    if vec3(2.0, 4.0, 6.0) / 2.0 == a {
-        n = n + 16;
-    }
+  // Scalar multiply in **both** orders, and division.
+  if a * 2.0 == vec3(2.0, 4.0, 6.0) && 2.0 * a == vec3(2.0, 4.0, 6.0) {
+    n = n + 8;
+  }
+  if vec3(2.0, 4.0, 6.0) / 2.0 == a {
+    n = n + 16;
+  }
 
-    // Dot: perpendicular is zero, self is the squared length.
-    if dot3(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0)) == 0.0 {
-        n = n + 32;
-    }
-    if dot3(a, a) == length_squared3(a) && length_squared3(a) == 14.0 {
-        n = n + 64;
-    }
+  // Dot: perpendicular is zero, self is the squared length.
+  if dot3(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0)) == 0.0 {
+    n = n + 32;
+  }
+  if dot3(a, a) == length_squared3(a) && length_squared3(a) == 14.0 {
+    n = n + 64;
+  }
 
-    // **The right-hand rule**: x cross y is z, and y cross x is -z.
-    if cross(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0)) == vec3(0.0, 0.0, 1.0) {
-        n = n + 128;
-    }
-    if cross(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0)) == vec3(0.0, 0.0, -1.0) {
-        n = n + 256;
-    }
+  // **The right-hand rule**: x cross y is z, and y cross x is -z.
+  if cross(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0)) == vec3(0.0, 0.0, 1.0) {
+    n = n + 128;
+  }
+  if cross(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0)) == vec3(0.0, 0.0, -1.0) {
+    n = n + 256;
+  }
 
-    // A 3-4-5 triangle, so the root is exact and `==` is legitimate.
-    if length3(vec3(3.0, 4.0, 0.0)) == 5.0 {
-        n = n + 512;
-    }
-    if distance3(vec3(1.0, 1.0, 0.0), vec3(4.0, 5.0, 0.0)) == 5.0 {
-        n = n + 1024;
-    }
+  // A 3-4-5 triangle, so the root is exact and `==` is legitimate.
+  if length3(vec3(3.0, 4.0, 0.0)) == 5.0 {
+    n = n + 512;
+  }
+  if distance3(vec3(1.0, 1.0, 0.0), vec3(4.0, 5.0, 0.0)) == 5.0 {
+    n = n + 1024;
+  }
 
-    // Normalising a 3-4-5 vector. 0.6 and 0.8 are *not* exactly representable; equality holds because
-    // correctly-rounded division lands on the same double the literal does.
-    if normalize3(vec3(0.0, 3.0, 4.0)) == vec3(0.0, 0.6, 0.8) {
-        n = n + 2048;
-    }
+  // Normalising a 3-4-5 vector. 0.6 and 0.8 are *not* exactly representable; equality holds because
+  // correctly-rounded division lands on the same double the literal does.
+  if normalize3(vec3(0.0, 3.0, 4.0)) == vec3(0.0, 0.6, 0.8) {
+    n = n + 2048;
+  }
 
-    // **The degenerate case**: no direction, so no unit vector — zero rather than NaN.
-    if normalize3(vec3(0.0, 0.0, 0.0)) == vec3(0.0, 0.0, 0.0) {
-        n = n + 4096;
-    }
+  // **The degenerate case**: no direction, so no unit vector — zero rather than NaN.
+  if normalize3(vec3(0.0, 0.0, 0.0)) == vec3(0.0, 0.0, 0.0) {
+    n = n + 4096;
+  }
 
-    // `lerp` hits both endpoints exactly, and the midpoint.
-    if lerp3(a, b, 0.0) == a && lerp3(a, b, 1.0) == b {
-        n = n + 8192;
-    }
-    if lerp3(vec3(0.0, 0.0, 0.0), vec3(2.0, 4.0, 8.0), 0.5) == vec3(1.0, 2.0, 4.0) {
-        n = n + 16384;
-    }
+  // `lerp` hits both endpoints exactly, and the midpoint.
+  if lerp3(a, b, 0.0) == a && lerp3(a, b, 1.0) == b {
+    n = n + 8192;
+  }
+  if lerp3(vec3(0.0, 0.0, 0.0), vec3(2.0, 4.0, 8.0), 0.5) == vec3(1.0, 2.0, 4.0) {
+    n = n + 16384;
+  }
 
-    // Negation is a procedure, not `operator -`: a unary overload is out of scope.
-    if negate3(a) == vec3(-1.0, -2.0, -3.0) {
-        n = n + 32768;
-    }
+  // Negation is a procedure, not `operator -`: a unary overload is out of scope.
+  if negate3(a) == vec3(-1.0, -2.0, -3.0) {
+    n = n + 32768;
+  }
 
-    // Vector2 and Vector4 carry the same operators, so a width wired only for Vector3 is visible.
-    if vec2(1.0, 2.0) + vec2(3.0, 4.0) == vec2(4.0, 6.0) && length2(vec2(3.0, 4.0)) == 5.0 {
-        n = n + 65536;
-    }
-    if vec4(1.0, 2.0, 3.0, 4.0) * 2.0 == vec4(2.0, 4.0, 6.0, 8.0) && dot4(
-        vec4(1.0, 0.0, 0.0, 0.0),
-        vec4(0.0, 1.0, 0.0, 0.0),
-    ) == 0.0 {
-        n = n + 131072;
-    }
+  // Vector2 and Vector4 carry the same operators, so a width wired only for Vector3 is visible.
+  if vec2(1.0, 2.0) + vec2(3.0, 4.0) == vec2(4.0, 6.0) && length2(vec2(3.0, 4.0)) == 5.0 {
+    n = n + 65536;
+  }
+  if vec4(1.0, 2.0, 3.0, 4.0) * 2.0 == vec4(2.0, 4.0, 6.0, 8.0) && dot4(
+    vec4(1.0, 0.0, 0.0, 0.0),
+    vec4(0.0, 1.0, 0.0, 0.0),
+  ) == 0.0 {
+    n = n + 131072;
+  }
 
-    // Every assertion: 262143.
-    if n == 262143 {
-        exit(0);
-    }
-    exit(1);
+  // Every assertion: 262143.
+  if n == 262143 {
+    exit(0);
+  }
+  exit(1);
 }

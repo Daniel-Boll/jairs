@@ -31,67 +31,67 @@
 #import "Basic";
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // The simplest form: a local declared inside the body is visible after it.
-    #code {
-        seven := 7;
-    }
-    if seven == 7 {
-        n = n + 1;
-    }
+  // The simplest form: a local declared inside the body is visible after it.
+  #code {
+    seven := 7;
+  }
+  if seven == 7 {
+    n = n + 1;
+  }
 
-    // **Several statements**, which is what a braceless form could not express.
-    #code {
-        a := 2;
-        b := a * 3;
-    }
-    if b == 6 {
-        n = n + 2;
-    }
+  // **Several statements**, which is what a braceless form could not express.
+  #code {
+    a := 2;
+    b := a * 3;
+  }
+  if b == 6 {
+    n = n + 2;
+  }
 
-    // The body **reads an enclosing local**, so the splice is genuinely in this scope rather than a
-    // closure over a copy.
-    outer := 10;
-    #code {
-        from_outer := outer + 5;
-    }
-    if from_outer == 15 {
-        n = n + 4;
-    }
+  // The body **reads an enclosing local**, so the splice is genuinely in this scope rather than a
+  // closure over a copy.
+  outer := 10;
+  #code {
+    from_outer := outer + 5;
+  }
+  if from_outer == 15 {
+    n = n + 4;
+  }
 
-    // A body containing a **string literal**, which in `#insert` form would need escaping. This is the
-    // ergonomic gain, made observable: the string survives the splice intact.
-    #code {
-        greeting := "hi";
-    }
-    if greeting.count == 2 {
-        n = n + 8;
-    }
+  // A body containing a **string literal**, which in `#insert` form would need escaping. This is the
+  // ergonomic gain, made observable: the string survives the splice intact.
+  #code {
+    greeting := "hi";
+  }
+  if greeting.count == 2 {
+    n = n + 8;
+  }
 
-    // An **empty** body splices nothing and is legal, matching `#insert "";` (ADR-0072 §5). Worth an
-    // assertion because "expands to zero statements" and "was never expanded" were a real bug in the
-    // computed-insert wave, distinguishable only by a field ADR-0073 had to clear.
-    #code {
-    }
-    n = n + 16;
+  // An **empty** body splices nothing and is legal, matching `#insert "";` (ADR-0072 §5). Worth an
+  // assertion because "expands to zero statements" and "was never expanded" were a real bug in the
+  // computed-insert wave, distinguishable only by a field ADR-0073 had to clear.
+  #code {
+  }
+  n = n + 16;
 
-    // **Control flow** inside a body, so the spliced statements are not limited to declarations.
-    #code {
-        counted := 0;
-        i := 0;
-        while i < 4 {
-            counted = counted + i;
-            i = i + 1;
-        }
+  // **Control flow** inside a body, so the spliced statements are not limited to declarations.
+  #code {
+    counted := 0;
+    i := 0;
+    while i < 4 {
+      counted = counted + i;
+      i = i + 1;
     }
-    if counted == 6 {
-        n = n + 32;
-    }
+  }
+  if counted == 6 {
+    n = n + 32;
+  }
 
-    // Every assertion: 63.
-    if n == 63 {
-        exit(0);
-    }
-    exit(1);
+  // Every assertion: 63.
+  if n == 63 {
+    exit(0);
+  }
+  exit(1);
 }

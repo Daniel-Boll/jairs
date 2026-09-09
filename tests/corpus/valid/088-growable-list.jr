@@ -59,81 +59,81 @@
 #import "List";
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    l: [..]s64;
+  l: [..]s64;
 
-    // A fresh list allocates nothing, so it is free to declare and safe to free. A `[..]s64` is
-    // zero-initialised (ADR-0136) — `.data == null`, both counts 0 — so no manual reset is needed.
-    if is_empty(*l) && l.capacity == 0 && l.data == null {
-        n = n + 1;
-    }
+  // A fresh list allocates nothing, so it is free to declare and safe to free. A `[..]s64` is
+  // zero-initialised (ADR-0136) — `.data == null`, both counts 0 — so no manual reset is needed.
+  if is_empty(*l) && l.capacity == 0 && l.data == null {
+    n = n + 1;
+  }
 
-    // Ten pushes through a 4-element first allocation: growth happens twice.
-    pushed := true;
-    i := 0;
-    while i < 10 {
-        if !push(*l, i * 3) {
-            pushed = false;
-        }
-        i = i + 1;
+  // Ten pushes through a 4-element first allocation: growth happens twice.
+  pushed := true;
+  i := 0;
+  while i < 10 {
+    if !push(*l, i * 3) {
+      pushed = false;
     }
-    if pushed && l.count == 10 {
-        n = n + 2;
-    }
-    if l.capacity >= 10 && l.capacity > FIRST_CAPACITY {
-        n = n + 4;
-    }
+    i = i + 1;
+  }
+  if pushed && l.count == 10 {
+    n = n + 2;
+  }
+  if l.capacity >= 10 && l.capacity > FIRST_CAPACITY {
+    n = n + 4;
+  }
 
-    // Every element survived both copies — what a broken copy loop would break.
-    survived := true;
-    j := 0;
-    while j < 10 {
-        v, ok := get(*l, j);
-        if !ok {
-            survived = false;
-        }
-        if v != j * 3 {
-            survived = false;
-        }
-        j = j + 1;
+  // Every element survived both copies — what a broken copy loop would break.
+  survived := true;
+  j := 0;
+  while j < 10 {
+    v, ok := get(*l, j);
+    if !ok {
+      survived = false;
     }
-    if survived {
-        n = n + 8;
+    if v != j * 3 {
+      survived = false;
     }
+    j = j + 1;
+  }
+  if survived {
+    n = n + 8;
+  }
 
-    // `pop` shortens the list and leaves the capacity alone.
-    before := l.capacity;
-    last, last_ok := pop(*l);
-    if last_ok && last == 27 && l.count == 9 && l.capacity == before {
-        n = n + 16;
-    }
+  // `pop` shortens the list and leaves the capacity alone.
+  before := l.capacity;
+  last, last_ok := pop(*l);
+  if last_ok && last == 27 && l.count == 9 && l.capacity == before {
+    n = n + 16;
+  }
 
-    // The memory exists between `count` and `capacity`; the element does not.
-    _, past := get(*l, 9);
-    if !past && !set(*l, 9, 1) && set(*l, 0, 99) {
-        n = n + 32;
-    }
-    replaced, _ := get(*l, 0);
-    if replaced == 99 {
-        n = n + 64;
-    }
+  // The memory exists between `count` and `capacity`; the element does not.
+  _, past := get(*l, 9);
+  if !past && !set(*l, 9, 1) && set(*l, 0, 99) {
+    n = n + 32;
+  }
+  replaced, _ := get(*l, 0);
+  if replaced == 99 {
+    n = n + 64;
+  }
 
-    // `clear` keeps the buffer, `free_data` releases it — deliberately different routines. The capacity is
-    // re-read rather than compared against `before`, because the `set` above may have been the last thing to
-    // touch it and this assertion is about `clear`, not about what came before.
-    kept := l.capacity;
-    clear(*l);
-    if is_empty(*l) && l.capacity == kept && push(*l, 1) {
-        free_data(*l);
-        // Safe twice, and safe on a list that never grew.
-        free_data(*l);
-        fresh: [..]s64;
-        free_data(*fresh);
-        if l.data == null && l.capacity == 0 {
-            n = n + 128;
-        }
+  // `clear` keeps the buffer, `free_data` releases it — deliberately different routines. The capacity is
+  // re-read rather than compared against `before`, because the `set` above may have been the last thing to
+  // touch it and this assertion is about `clear`, not about what came before.
+  kept := l.capacity;
+  clear(*l);
+  if is_empty(*l) && l.capacity == kept && push(*l, 1) {
+    free_data(*l);
+    // Safe twice, and safe on a list that never grew.
+    free_data(*l);
+    fresh: [..]s64;
+    free_data(*fresh);
+    if l.data == null && l.capacity == 0 {
+      n = n + 128;
     }
+  }
 
-    exit(n);
+  exit(n);
 }

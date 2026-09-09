@@ -3,6 +3,6 @@
 // bit pattern that is not the AND of anything meaningful. A program that wants a float's
 // bits will want a cast to an integer of the same width, which Jairs does not have yet.
 main :: () {
-    a := 1.5;
-    b := a & a;
+  a := 1.5;
+  b := a & a;
 }

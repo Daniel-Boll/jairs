@@ -1128,7 +1128,7 @@ main :: () {
         print(MESSAGE);
     }
     ptr := *sum;
-    print_int(ptr.*);
+    print("%", ptr.*);
 }
 "#;
         let out = lex(text, file());

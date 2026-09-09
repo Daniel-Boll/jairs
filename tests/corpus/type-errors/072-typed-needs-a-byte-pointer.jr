@@ -18,8 +18,8 @@
 // does not allow. The intrinsics are recognised by the compiler rather than imported.
 
 retypes_a_typed_pointer :: () {
-    x := 5;
-    p := *x;
-    // `p` is a `*s64`, not a `*u8`: this is the general pointer cast, asked for politely.
-    q := typed(u8, p);
+  x := 5;
+  p := *x;
+  // `p` is a `*s64`, not a `*u8`: this is the general pointer cast, asked for politely.
+  q := typed(u8, p);
 }

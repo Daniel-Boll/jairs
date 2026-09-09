@@ -5,5 +5,5 @@
 #import "Basic";
 
 main :: () {
-    print_line("Hello, Jairs!");
+  print("Hello, Jairs!\n");
 }

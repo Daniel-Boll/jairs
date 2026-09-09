@@ -708,7 +708,7 @@ mod tests {
         let mut imports = ImportedProcs::new();
         let import = ItemId::from_usize(0);
         let print = interner.intern("print");
-        let other = interner.intern("print_line");
+        let other = interner.intern("format");
         let target = ProcRef::new(FileId::from_usize(7), ProcId::from_usize(2));
         imports.set(import, print, target);
 

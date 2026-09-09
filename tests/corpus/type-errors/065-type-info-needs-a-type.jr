@@ -28,12 +28,12 @@
 // the compiler rather than imported, so the refusal does not depend on a module being loaded.
 
 Point :: struct {
-    x: s64;
+  x: s64;
 }
 
 describes_a_value :: () {
-    // A local, so the name resolves — which is exactly what distinguishes this from an unresolved name.
-    x := 5;
-    // The refusal: `x` is a value, and `type_info` wants the type to describe.
-    info := type_info(x);
+  // A local, so the name resolves — which is exactly what distinguishes this from an unresolved name.
+  x := 5;
+  // The refusal: `x` is a value, and `type_info` wants the type to describe.
+  info := type_info(x);
 }

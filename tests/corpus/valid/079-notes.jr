@@ -28,40 +28,40 @@
 
 /// A bare note.
 old_way :: (x: s64) -> s64 @deprecated {
-    return x;
+  return x;
 }
 
 /// A note with a payload — the same form, with the optional string present.
 checked :: (x: s64) -> s64 @requires "a positive x" {
-    return x;
+  return x;
 }
 
 /// Several notes on one declaration.
 tracked :: (x: s64) -> s64 @deprecated @internal @since "0.2" {
-    return x;
+  return x;
 }
 
 /// A note before a directive.
 fast :: (x: s64) -> s64 @hot #no_abc {
-    return x;
+  return x;
 }
 
 /// And after one, since the loop takes either order.
 faster :: (x: s64) -> s64 #no_abc @hot {
-    return x;
+  return x;
 }
 
 /// A note on a `#expand` macro — notes compose with W5's macros.
 doubled :: (x: s64) -> s64 @inline #expand {
-    return x * 2;
+  return x * 2;
 }
 
 /// A note on a polymorphic procedure — and on one with a `$T`, so it composes with instantiation too.
 identity :: (x: $T) -> T @generic {
-    return x;
+  return x;
 }
 
 main :: () {
-    n := identity(7);
-    exit(n);
+  n := identity(7);
+  exit(n);
 }

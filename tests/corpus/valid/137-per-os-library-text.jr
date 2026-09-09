@@ -39,46 +39,43 @@ GL :: #import "GL";
 Str :: #import "String";
 
 main :: () {
-    n := 0;
+  n := 0;
 
-    // macOS is a framework — a different directive, not merely a different name.
-    if Str.equal(GL.gl_library_for(Operating_System.MACOS), "gl :: #framework \"OpenGL\";") {
-        n = n + 1;
-    }
+  // macOS is a framework — a different directive, not merely a different name.
+  if Str.equal(GL.gl_library_for(Operating_System.MACOS), "gl :: #framework \"OpenGL\";") {
+    n = n + 1;
+  }
 
-    // Linux is an ordinary `-lGL`.
-    if Str.equal(GL.gl_library_for(Operating_System.LINUX), "gl :: #system_library \"GL\";") {
-        n = n + 2;
-    }
+  // Linux is an ordinary `-lGL`.
+  if Str.equal(GL.gl_library_for(Operating_System.LINUX), "gl :: #system_library \"GL\";") {
+    n = n + 2;
+  }
 
-    // Windows is the ordinary form under a different name.
-    if Str.equal(
-        GL.gl_library_for(Operating_System.WINDOWS),
-        "gl :: #system_library \"opengl32\";",
-    ) {
-        n = n + 4;
-    }
+  // Windows is the ordinary form under a different name.
+  if Str.equal(GL.gl_library_for(Operating_System.WINDOWS), "gl :: #system_library \"opengl32\";") {
+    n = n + 4;
+  }
 
-    // The three must be pairwise distinct.
-    mac := GL.gl_library_for(Operating_System.MACOS);
-    linux := GL.gl_library_for(Operating_System.LINUX);
-    windows := GL.gl_library_for(Operating_System.WINDOWS);
-    distinct := !Str.equal(mac, linux) && !Str.equal(linux, windows) && !Str.equal(mac, windows);
+  // The three must be pairwise distinct.
+  mac := GL.gl_library_for(Operating_System.MACOS);
+  linux := GL.gl_library_for(Operating_System.LINUX);
+  windows := GL.gl_library_for(Operating_System.WINDOWS);
+  distinct := !Str.equal(mac, linux) && !Str.equal(linux, windows) && !Str.equal(mac, windows);
 
-    if distinct {
-        n = n + 8;
-    }
+  if distinct {
+    n = n + 8;
+  }
 
-    // **The host's own choice is asserted elsewhere, and this is the interesting part of the file.**
-    // `Str.equal(GL.gl_library(), GL.gl_library_for(os()))` used to be here, tying the mapping to what the
-    // module really compiled against. It cannot live in a corpus program: `os()` is a *compile-time* value,
-    // so it folds into this body's MIR as `0_enum` on macOS and `1_enum` on Linux — and the checked-in MIR
-    // snapshot is one artifact, so it cannot be right on both. That made the snapshot silently wrong on
-    // x86-64 from the wave this file was added in until the Linux leg was finally read (ADR-0206 §8).
-    //
-    // The assertion still exists, in `crates/jr-cli/tests/integration.rs`, where `cfg!(target_os = ...)`
-    // can state each platform's expectation and no snapshot sees the MIR. Moved rather than deleted: it is
-    // the one assertion here that connects the mapping to reality.
+  // **The host's own choice is asserted elsewhere, and this is the interesting part of the file.**
+  // `Str.equal(GL.gl_library(), GL.gl_library_for(os()))` used to be here, tying the mapping to what the
+  // module really compiled against. It cannot live in a corpus program: `os()` is a *compile-time* value,
+  // so it folds into this body's MIR as `0_enum` on macOS and `1_enum` on Linux — and the checked-in MIR
+  // snapshot is one artifact, so it cannot be right on both. That made the snapshot silently wrong on
+  // x86-64 from the wave this file was added in until the Linux leg was finally read (ADR-0206 §8).
+  //
+  // The assertion still exists, in `crates/jr-cli/tests/integration.rs`, where `cfg!(target_os = ...)`
+  // can state each platform's expectation and no snapshot sees the MIR. Moved rather than deleted: it is
+  // the one assertion here that connects the mapping to reality.
 
-    exit(n);
+  exit(n);
 }

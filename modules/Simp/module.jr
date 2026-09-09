@@ -92,10 +92,10 @@ MAX_VERTICES :: 2400;
 
 /// A 2D point.
 Vector2 :: struct {
-    /// Horizontal, in pixels from the origin.
-    x: float32;
-    /// Vertical, in pixels from the origin.
-    y: float32;
+  /// Horizontal, in pixels from the origin.
+  x: float32;
+  /// Vertical, in pixels from the origin.
+  y: float32;
 }
 
 /// An RGBA colour, each channel 0..1.
@@ -103,14 +103,14 @@ Vector2 :: struct {
 /// Floats in 0..1 rather than bytes, matching the inspected snapshots: `immediate_quad` takes a
 /// `Vector4`, and one `draw_text` form defaults to `Vector4.{1,1,1,1}`.
 Vector4 :: struct {
-    /// Red, 0..1.
-    x: float32;
-    /// Green, 0..1.
-    y: float32;
-    /// Blue, 0..1.
-    z: float32;
-    /// Alpha, 0..1.
-    w: float32;
+  /// Red, 0..1.
+  x: float32;
+  /// Green, 0..1.
+  y: float32;
+  /// Blue, 0..1.
+  z: float32;
+  /// Alpha, 0..1.
+  w: float32;
 }
 
 /// One vertex as the shaders below read it: position, colour, texture coordinate.
@@ -121,12 +121,12 @@ Vector4 :: struct {
 /// with no lighting reads. The names match that snapshot where the field exists, so widening it later is
 /// additive rather than a rename.
 Vertex :: struct {
-    /// Position in pixels.
-    position: Vector2;
-    /// Colour, 0..1 per channel.
-    color: Vector4;
-    /// Texture coordinate, 0..1.
-    uv: Vector2;
+  /// Position in pixels.
+  position: Vector2;
+  /// Colour, 0..1 per channel.
+  color: Vector4;
+  /// Texture coordinate, 0..1.
+  uv: Vector2;
 }
 
 /// A texture the renderer can bind.
@@ -134,12 +134,12 @@ Vertex :: struct {
 /// `width` and `height` are here because every caller sizing a quad from an image needs them, which is
 /// the same reason the inspected `Texture` carries them. `modules/Image` produces one of these.
 Texture :: struct {
-    /// The GL texture name. Zero when the texture is not loaded.
-    handle: u32;
-    /// Width in pixels.
-    width: s64;
-    /// Height in pixels.
-    height: s64;
+  /// The GL texture name. Zero when the texture is not loaded.
+  handle: u32;
+  /// Width in pixels.
+  width: s64;
+  /// Height in pixels.
+  height: s64;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,26 +164,26 @@ Texture :: struct {
 // and this is as close
 // as the language gets — the name is in the doc comment above so a reader is not left with a bare 1.
 set_render_target :: (window: *Window.Window, coords: s64 = 1) {
-    if window.handle == null {
-        return;
-    }
+  if window.handle == null {
+    return;
+  }
+  if the_gl_context == null {
+    the_gl_context = sdl_gl_create_context(window.handle);
     if the_gl_context == null {
-        the_gl_context = sdl_gl_create_context(window.handle);
-        if the_gl_context == null {
-            return;
-        }
-        // The shaders are compiled once, on the first target, because a GL program belongs to a
-        // context and there is one context.
-        if !compile_shaders() {
-            return;
-        }
+      return;
     }
-    if sdl_gl_make_current(window.handle, the_gl_context) != 0 {
-        return;
+    // The shaders are compiled once, on the first target, because a GL program belongs to a
+    // context and there is one context.
+    if !compile_shaders() {
+      return;
     }
-    the_window = window.handle;
-    coordinate_system = coords;
-    update_projection();
+  }
+  if sdl_gl_make_current(window.handle, the_gl_context) != 0 {
+    return;
+  }
+  the_window = window.handle;
+  coordinate_system = coords;
+  update_projection();
 }
 
 /// Re-reads the render dimensions and the projection after a resize.
@@ -192,11 +192,11 @@ set_render_target :: (window: *Window.Window, coords: s64 = 1) {
 /// re-uploads the 2D projection. Must be called for every `Input.get_window_resizes()` record."* There
 /// is no separate backend target here, so it is the viewport and the projection.
 update_window :: (window: *Window.Window) {
-    if window.handle == null || the_gl_context == null {
-        return;
-    }
-    the_window = window.handle;
-    update_projection();
+  if window.handle == null || the_gl_context == null {
+    return;
+  }
+  the_window = window.handle;
+  update_projection();
 }
 
 /// The render target's size in pixels.
@@ -206,13 +206,13 @@ update_window :: (window: *Window.Window) {
 /// backing-store pixels and `Window.get_window_size` is window-manager units, so a program that sized
 /// geometry from the wrong one draws at half scale.
 get_render_dimensions :: (window: *Window.Window) -> (s64, s64) {
-    if window.handle == null {
-        return 0, 0;
-    }
-    w: s32;
-    h: s32;
-    sdl_gl_get_drawable_size(window.handle, *w, *h);
-    return cast(s64, w), cast(s64, h);
+  if window.handle == null {
+    return 0, 0;
+  }
+  w: s32;
+  h: s32;
+  sdl_gl_get_drawable_size(window.handle, *w, *h);
+  return cast(s64, w), cast(s64, h);
 }
 
 /// Clears the whole target to one colour. Channels are 0..1.
@@ -220,8 +220,8 @@ get_render_dimensions :: (window: *Window.Window) -> (s64, s64) {
 /// **Returns nothing**, matching the inspected signature — it used to return `bool #must`. The
 /// observed body is `glClearColor` then `glClear`, and so is this.
 clear_render_target :: (r: float32, g: float32, b: float32, a: float32) {
-    GL.set_clear_color(r, g, b, a);
-    GL.clear(GL.COLOR_BUFFER_BIT);
+  GL.set_clear_color(r, g, b, a);
+  GL.clear(GL.COLOR_BUFFER_BIT);
 }
 
 /// Selects the flat-colour shader, optionally with alpha blending.
@@ -232,14 +232,14 @@ clear_render_target :: (r: float32, g: float32, b: float32, a: float32) {
 ///
 /// Flushes first, because a batch is drawn with the shader that was current when it was opened.
 set_shader_for_color :: (enable_blend: bool = false) {
-    flush_if_open();
-    current_texture = 0;
-    if enable_blend {
-        GL.enable(GL.BLEND);
-        GL.set_blend_func(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA);
-    } else {
-        GL.disable(GL.BLEND);
-    }
+  flush_if_open();
+  current_texture = 0;
+  if enable_blend {
+    GL.enable(GL.BLEND);
+    GL.set_blend_func(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA);
+  } else {
+    GL.disable(GL.BLEND);
+  }
 }
 
 /// Selects the textured shader and binds `texture`.
@@ -247,10 +247,10 @@ set_shader_for_color :: (enable_blend: bool = false) {
 /// Takes a **pointer** to the texture, matching the inspected signature. Flushes first, for the reason
 /// `set_shader_for_color` does.
 set_shader_for_images :: (texture: *Texture) {
-    flush_if_open();
-    current_texture = texture.handle;
-    GL.enable(GL.BLEND);
-    GL.set_blend_func(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA);
+  flush_if_open();
+  current_texture = texture.handle;
+  GL.enable(GL.BLEND);
+  GL.set_blend_func(GL.SRC_ALPHA, GL.ONE_MINUS_SRC_ALPHA);
 }
 
 /// Opens a batch.
@@ -259,7 +259,7 @@ set_shader_for_images :: (texture: *Texture) {
 /// flag, and **is not required before a quad**. This one is also harmless, while explicitly opening
 /// the local batch.
 immediate_begin :: () {
-    in_batch = true;
+  in_batch = true;
 }
 
 /// An axis-aligned quad from two opposite corners, in one colour.
@@ -267,13 +267,13 @@ immediate_begin :: () {
 /// The inspected two-corner overload also names the parameter `color`; a real call site uses it by
 /// name. Coordinates are **pixels** with the origin where `set_render_target`'s `coords` put it.
 immediate_quad :: (x0: float32, y0: float32, x1: float32, y1: float32, color: Vector4) {
-    p0 := vector2(x0, y0);
-    p1 := vector2(x1, y0);
-    p2 := vector2(x1, y1);
-    p3 := vector2(x0, y1);
-    zero := vector2(0.0, 0.0);
-    one := vector2(1.0, 1.0);
-    immediate_quad_corners(p0, p1, p2, p3, color, zero, vector2(1.0, 0.0), one, vector2(0.0, 1.0));
+  p0 := vector2(x0, y0);
+  p1 := vector2(x1, y0);
+  p2 := vector2(x1, y1);
+  p3 := vector2(x0, y1);
+  zero := vector2(0.0, 0.0);
+  one := vector2(1.0, 1.0);
+  immediate_quad_corners(p0, p1, p2, p3, color, zero, vector2(1.0, 0.0), one, vector2(0.0, 1.0));
 }
 
 /// A quad from four arbitrary corners with texture coordinates, in one colour.
@@ -282,27 +282,27 @@ immediate_quad :: (x0: float32, y0: float32, x1: float32, y1: float32, color: Ve
 /// no defaulted aggregate, so this is a distinct name and every argument is explicit. Corner order is
 /// the observed order: `p0` bottom-left, then anticlockwise.
 immediate_quad_corners :: (
-    p0: Vector2,
-    p1: Vector2,
-    p2: Vector2,
-    p3: Vector2,
-    color: Vector4,
-    uv0: Vector2,
-    uv1: Vector2,
-    uv2: Vector2,
-    uv3: Vector2,
+  p0: Vector2,
+  p1: Vector2,
+  p2: Vector2,
+  p3: Vector2,
+  color: Vector4,
+  uv0: Vector2,
+  uv1: Vector2,
+  uv2: Vector2,
+  uv3: Vector2,
 ) {
-    // Two triangles, six vertices, no index list — matching the inspected source, whose `Immediate_Vertex`
-    // buffer is drawn with `glDrawArrays(GL_TRIANGLES, …)`.
-    if vertex_count + 6 > MAX_VERTICES {
-        immediate_flush();
-    }
-    push_vertex(p0, uv0, color);
-    push_vertex(p1, uv1, color);
-    push_vertex(p2, uv2, color);
-    push_vertex(p0, uv0, color);
-    push_vertex(p2, uv2, color);
-    push_vertex(p3, uv3, color);
+  // Two triangles, six vertices, no index list — matching the inspected source, whose `Immediate_Vertex`
+  // buffer is drawn with `glDrawArrays(GL_TRIANGLES, …)`.
+  if vertex_count + 6 > MAX_VERTICES {
+    immediate_flush();
+  }
+  push_vertex(p0, uv0, color);
+  push_vertex(p1, uv1, color);
+  push_vertex(p2, uv2, color);
+  push_vertex(p0, uv0, color);
+  push_vertex(p2, uv2, color);
+  push_vertex(p3, uv3, color);
 }
 
 /// A single triangle in one colour.
@@ -310,31 +310,31 @@ immediate_quad_corners :: (
 /// The inspected `immediate_triangle` takes `Vector3` positions and three separate colours. This takes
 /// 2D points and one colour; the familiar name says which conceptual operation it narrows.
 immediate_triangle :: (p0: Vector2, p1: Vector2, p2: Vector2, color: Vector4) {
-    if vertex_count + 3 > MAX_VERTICES {
-        immediate_flush();
-    }
-    zero := vector2(0.0, 0.0);
-    push_vertex(p0, zero, color);
-    push_vertex(p1, zero, color);
-    push_vertex(p2, zero, color);
+  if vertex_count + 3 > MAX_VERTICES {
+    immediate_flush();
+  }
+  zero := vector2(0.0, 0.0);
+  push_vertex(p0, zero, color);
+  push_vertex(p1, zero, color);
+  push_vertex(p2, zero, color);
 }
 
 /// Draws everything pushed since the last flush.
 ///
 /// **Returns nothing**, matching the inspected signature — it used to return `bool #must`.
 immediate_flush :: () {
-    if vertex_count == 0 {
-        in_batch = false;
-        return;
-    }
-    if the_program == 0 {
-        vertex_count = 0;
-        in_batch = false;
-        return;
-    }
-    draw_batch();
+  if vertex_count == 0 {
+    in_batch = false;
+    return;
+  }
+  if the_program == 0 {
     vertex_count = 0;
     in_batch = false;
+    return;
+  }
+  draw_batch();
+  vertex_count = 0;
+  in_batch = false;
 }
 
 /// Presents the frame.
@@ -348,19 +348,19 @@ immediate_flush :: () {
 /// per context rather than per swap, so changing it every frame is not free and a caller who cares should
 /// pass the same value each time.
 swap_buffers :: (window: *Window.Window, vsync: bool = true) {
-    flush_if_open();
-    if window.handle == null {
-        return;
-    }
-    interval := 0;
-    if vsync {
-        interval = 1;
-    }
-    if interval != swap_interval {
-        sdl_gl_set_swap_interval(cast(s32, interval));
-        swap_interval = interval;
-    }
-    sdl_gl_swap_window(window.handle);
+  flush_if_open();
+  if window.handle == null {
+    return;
+  }
+  interval := 0;
+  if vsync {
+    interval = 1;
+  }
+  if interval != swap_interval {
+    sdl_gl_set_swap_interval(cast(s32, interval));
+    swap_interval = interval;
+  }
+  sdl_gl_swap_window(window.handle);
 }
 
 /// Releases the GL context.
@@ -369,32 +369,32 @@ swap_buffers :: (window: *Window.Window, vsync: bool = true) {
 /// exists because the integration tests open and close a window repeatedly in one process, and a leaked
 /// context per test is a real leak rather than a tidy-up nobody sees.
 destroy_render_target :: () {
-    if the_gl_context != null {
-        sdl_gl_delete_context(the_gl_context);
-    }
-    the_gl_context = null;
-    the_window = null;
-    the_program = 0;
-    vertex_count = 0;
-    in_batch = false;
+  if the_gl_context != null {
+    sdl_gl_delete_context(the_gl_context);
+  }
+  the_gl_context = null;
+  the_window = null;
+  the_program = 0;
+  vertex_count = 0;
+  in_batch = false;
 }
 
 /// A colour from four channels in 0..1.
 vector4 :: (r: float32, g: float32, b: float32, a: float32) -> Vector4 {
-    v: Vector4;
-    v.x = r;
-    v.y = g;
-    v.z = b;
-    v.w = a;
-    return v;
+  v: Vector4;
+  v.x = r;
+  v.y = g;
+  v.z = b;
+  v.w = a;
+  return v;
 }
 
 /// A 2D point.
 vector2 :: (x: float32, y: float32) -> Vector2 {
-    v: Vector2;
-    v.x = x;
-    v.y = y;
-    return v;
+  v: Vector2;
+  v.x = x;
+  v.y = y;
+  return v;
 }
 
 /// Whether a GL context exists and the shaders compiled.
@@ -402,7 +402,7 @@ vector2 :: (x: float32, y: float32) -> Vector2 {
 /// The question every routine above answers silently by doing nothing. A caller that wants to *know* —
 /// a test, or a program that falls back to no rendering — asks this.
 is_ready :: () -> bool {
-    return the_gl_context != null && the_program != 0;
+  return the_gl_context != null && the_program != 0;
 }
 
 /// Asserts this module's `Vertex` is the 32 bytes the vertex shader's strides assume.
@@ -490,28 +490,28 @@ FRAGMENT_SHADER_SOURCE :: "#version 120\nvarying vec4 frag_color;\nvarying vec2 
 /// "do nothing" rather than as a trap: a program that cannot compile a shader should report it, and
 /// `is_ready` is how a caller asks.
 compile_shaders :: () -> bool {
-    vertex := compile_shader(GL.VERTEX_SHADER, VERTEX_SHADER_SOURCE);
-    if vertex == 0 {
-        return false;
-    }
-    fragment := compile_shader(GL.FRAGMENT_SHADER, FRAGMENT_SHADER_SOURCE);
-    if fragment == 0 {
-        return false;
-    }
-    program := GL.create_program();
-    GL.attach_shader(program, vertex);
-    GL.attach_shader(program, fragment);
-    GL.link_program(program);
-    if !GL.program_linked(program) {
-        return false;
-    }
-    the_program = program;
-    GL.use_program(program);
-    projection_uniform = GL.uniform_location(program, "projection");
-    sampler_uniform = GL.uniform_location(program, "sampler");
-    textured_uniform = GL.uniform_location(program, "textured");
-    the_buffer = GL.create_buffer();
-    return true;
+  vertex := compile_shader(GL.VERTEX_SHADER, VERTEX_SHADER_SOURCE);
+  if vertex == 0 {
+    return false;
+  }
+  fragment := compile_shader(GL.FRAGMENT_SHADER, FRAGMENT_SHADER_SOURCE);
+  if fragment == 0 {
+    return false;
+  }
+  program := GL.create_program();
+  GL.attach_shader(program, vertex);
+  GL.attach_shader(program, fragment);
+  GL.link_program(program);
+  if !GL.program_linked(program) {
+    return false;
+  }
+  the_program = program;
+  GL.use_program(program);
+  projection_uniform = GL.uniform_location(program, "projection");
+  sampler_uniform = GL.uniform_location(program, "sampler");
+  textured_uniform = GL.uniform_location(program, "textured");
+  the_buffer = GL.create_buffer();
+  return true;
 }
 
 /// Compiles one shader stage.
@@ -521,18 +521,18 @@ compile_shaders :: () -> bool {
 /// null made the shader compile to nothing while `glGetError` reported success. Recorded in this
 /// module's own docs because the failure looks like a broken shader rather than a broken call.
 compile_shader :: (kind: u32, source: string) -> u32 {
-    shader := GL.create_shader(kind);
-    if shader == 0 {
-        return 0;
-    }
-    if !GL.set_shader_source(shader, source) {
-        return 0;
-    }
-    GL.compile_shader(shader);
-    if !GL.shader_compiled(shader) {
-        return 0;
-    }
-    return shader;
+  shader := GL.create_shader(kind);
+  if shader == 0 {
+    return 0;
+  }
+  if !GL.set_shader_source(shader, source) {
+    return 0;
+  }
+  GL.compile_shader(shader);
+  if !GL.shader_compiled(shader) {
+    return 0;
+  }
+  return shader;
 }
 
 // ---------------------------------------------------------------------------
@@ -546,84 +546,84 @@ compile_shader :: (kind: u32, source: string) -> u32 {
 /// `immediate_set_2d_projection` builds. So the coordinate system is one matrix and not a flip applied
 /// per quad — a per-quad flip is how two call sites come to disagree about which way is up.
 update_projection :: () {
-    if the_program == 0 || the_window == null {
-        return;
-    }
-    w: s32;
-    h: s32;
-    sdl_gl_get_drawable_size(the_window, *w, *h);
-    if w <= 0 || h <= 0 {
-        return;
-    }
-    GL.set_viewport(0, 0, cast(s64, w), cast(s64, h));
-    width := cast(float32, cast(s64, w));
-    height := cast(float32, cast(s64, h));
-    m: [16]float32 = ---;
-    // Column-major, which is what `glUniformMatrix4fv` reads with `transpose = false`.
-    i := 0;
-    while i < 16 {
-        m[i] = 0.0;
-        i = i + 1;
-    }
-    m[0] = 2.0 / width;
-    m[5] = 2.0 / height;
-    m[10] = -1.0;
-    m[12] = -1.0;
-    m[13] = -1.0;
-    m[15] = 1.0;
-    if coordinate_system == LEFT_HANDED {
-        // Flip y: the origin moves to the top and y grows downwards.
-        m[5] = -m[5];
-        m[13] = 1.0;
-    }
-    GL.set_uniform_matrix4(projection_uniform, *m[0]);
+  if the_program == 0 || the_window == null {
+    return;
+  }
+  w: s32;
+  h: s32;
+  sdl_gl_get_drawable_size(the_window, *w, *h);
+  if w <= 0 || h <= 0 {
+    return;
+  }
+  GL.set_viewport(0, 0, cast(s64, w), cast(s64, h));
+  width := cast(float32, cast(s64, w));
+  height := cast(float32, cast(s64, h));
+  m: [16]float32 = ---;
+  // Column-major, which is what `glUniformMatrix4fv` reads with `transpose = false`.
+  i := 0;
+  while i < 16 {
+    m[i] = 0.0;
+    i = i + 1;
+  }
+  m[0] = 2.0 / width;
+  m[5] = 2.0 / height;
+  m[10] = -1.0;
+  m[12] = -1.0;
+  m[13] = -1.0;
+  m[15] = 1.0;
+  if coordinate_system == LEFT_HANDED {
+    // Flip y: the origin moves to the top and y grows downwards.
+    m[5] = -m[5];
+    m[13] = 1.0;
+  }
+  GL.set_uniform_matrix4(projection_uniform, *m[0]);
 }
 
 /// Appends one vertex to the batch.
 push_vertex :: (position: Vector2, uv: Vector2, color: Vector4) {
-    if vertex_count >= MAX_VERTICES {
-        return;
-    }
-    v: Vertex;
-    v.position = position;
-    v.color = color;
-    v.uv = uv;
-    vertices[vertex_count] = v;
-    vertex_count = vertex_count + 1;
+  if vertex_count >= MAX_VERTICES {
+    return;
+  }
+  v: Vertex;
+  v.position = position;
+  v.color = color;
+  v.uv = uv;
+  vertices[vertex_count] = v;
+  vertex_count = vertex_count + 1;
 }
 
 /// Uploads the batch and draws it.
 draw_batch :: () {
-    GL.use_program(the_program);
-    if current_texture == 0 {
-        GL.set_uniform_int(textured_uniform, 0);
-    } else {
-        GL.set_uniform_int(textured_uniform, 1);
-        GL.set_uniform_int(sampler_uniform, 0);
-        GL.bind_texture_unit_0(current_texture);
-    }
-    GL.bind_array_buffer(the_buffer);
-    // The batch as bytes. `GL.upload_array_buffer` takes a `*u8` because the element type belongs to
-    // this module, not to the GL binding — see its docs for why a typed pointer there was worse.
-    GL.upload_array_buffer(vertex_count * size_of(Vertex), untyped(*vertices[0]));
-    // Three attributes, at the offsets `Vertex`'s field order gives. `VERTEX_LAYOUT_IS_32` pins the
-    // total, and these offsets are the running sum of the field sizes — written as literals because a
-    // `#foreign` boundary takes a byte offset and the language has no `offset_of`.
-    stride := size_of(Vertex);
-    GL.enable_vertex_attribute(0, 2, stride, 0);
-    GL.enable_vertex_attribute(1, 4, stride, 8);
-    GL.enable_vertex_attribute(2, 2, stride, 24);
-    GL.draw_triangles(vertex_count);
-    GL.disable_vertex_attribute(0);
-    GL.disable_vertex_attribute(1);
-    GL.disable_vertex_attribute(2);
+  GL.use_program(the_program);
+  if current_texture == 0 {
+    GL.set_uniform_int(textured_uniform, 0);
+  } else {
+    GL.set_uniform_int(textured_uniform, 1);
+    GL.set_uniform_int(sampler_uniform, 0);
+    GL.bind_texture_unit_0(current_texture);
+  }
+  GL.bind_array_buffer(the_buffer);
+  // The batch as bytes. `GL.upload_array_buffer` takes a `*u8` because the element type belongs to
+  // this module, not to the GL binding — see its docs for why a typed pointer there was worse.
+  GL.upload_array_buffer(vertex_count * size_of(Vertex), untyped(*vertices[0]));
+  // Three attributes, at the offsets `Vertex`'s field order gives. `VERTEX_LAYOUT_IS_32` pins the
+  // total, and these offsets are the running sum of the field sizes — written as literals because a
+  // `#foreign` boundary takes a byte offset and the language has no `offset_of`.
+  stride := size_of(Vertex);
+  GL.enable_vertex_attribute(0, 2, stride, 0);
+  GL.enable_vertex_attribute(1, 4, stride, 8);
+  GL.enable_vertex_attribute(2, 2, stride, 24);
+  GL.draw_triangles(vertex_count);
+  GL.disable_vertex_attribute(0);
+  GL.disable_vertex_attribute(1);
+  GL.disable_vertex_attribute(2);
 }
 
 /// Flushes when a batch is open, so a shader change or a swap sees the drawing before it.
 flush_if_open :: () {
-    if vertex_count > 0 {
-        immediate_flush();
-    }
+  if vertex_count > 0 {
+    immediate_flush();
+  }
 }
 
 // ---------------------------------------------------------------------------
