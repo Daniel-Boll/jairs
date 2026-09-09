@@ -44,6 +44,19 @@ pub const FILE_NAME: &str = "jairs.toml";
 /// The default entry point a project's `[project] entry` falls back to.
 pub const DEFAULT_ENTRY: &str = "src/main.jr";
 
+/// The formatter configuration for projects that do not override `[fmt]`.
+///
+/// This is deliberately separate from [`jr_fmt::Config::default`]: the formatter crate's direct
+/// callers include the repository's four-space canonical corpus, while the user-facing project
+/// default is two spaces (ADR-0221).
+#[must_use]
+pub fn default_fmt_config() -> jr_fmt::Config {
+    jr_fmt::Config {
+        indent_width: 2,
+        ..jr_fmt::Config::default()
+    }
+}
+
 /// A parsed `jairs.toml`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -220,10 +233,10 @@ impl Located {
     }
 
     /// The formatter configuration, with anything the manifest leaves out taken from
-    /// [`jr_fmt::Config::default`].
+    /// [`default_fmt_config`].
     #[must_use]
     pub fn fmt_config(&self) -> jr_fmt::Config {
-        let mut config = jr_fmt::Config::default();
+        let mut config = default_fmt_config();
         if let Some(style) = self.manifest.fmt.indent_style {
             config.indent_style = style.into();
         }
@@ -350,7 +363,7 @@ mod tests {
     fn an_empty_manifest_is_all_defaults() {
         let l = located("");
         assert_eq!(l.entry(), Path::new("/proj/src/main.jr"));
-        assert_eq!(l.fmt_config().indent_width, 4);
+        assert_eq!(l.fmt_config().indent_width, 2);
         assert_eq!(l.fmt_config().indent_style, jr_fmt::IndentStyle::Space);
         assert_eq!(
             l.fmt_config().case_block_style,
@@ -416,7 +429,7 @@ mod tests {
         let l = located("[fmt]\nmax_width = 60\n");
         assert_eq!(l.fmt_config().max_width, 60);
         // Setting one key must not disturb the others.
-        assert_eq!(l.fmt_config().indent_width, 4);
+        assert_eq!(l.fmt_config().indent_width, 2);
     }
 
     #[test]
@@ -434,7 +447,7 @@ mod tests {
             l.fmt_config().case_block_style,
             jr_fmt::CaseBlockStyle::SameLine
         );
-        assert_eq!(l.fmt_config().indent_width, 4);
+        assert_eq!(l.fmt_config().indent_width, 2);
     }
 
     #[test]

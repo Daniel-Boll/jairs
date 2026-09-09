@@ -2705,8 +2705,8 @@ fn formatting_without_a_manifest_uses_the_default() {
         .first()
         .expect("the source is unindented, so it changes");
     assert!(
-        edit.new_text.contains("\n    a := 1;"),
-        "expected four spaces, got {:?}",
+        edit.new_text.contains("\n  a := 1;"),
+        "expected two spaces, got {:?}",
         edit.new_text
     );
 }

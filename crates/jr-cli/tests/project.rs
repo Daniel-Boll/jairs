@@ -506,8 +506,8 @@ fn an_explicit_path_still_works_with_no_manifest_anywhere() {
     assert!(
         std::fs::read_to_string(&file)
             .expect("read")
-            .contains("    n := 1;"),
-        "the default is four spaces with no manifest"
+            .contains("  n := 1;"),
+        "the default is two spaces with no manifest"
     );
 }
 

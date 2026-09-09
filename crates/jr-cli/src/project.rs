@@ -126,5 +126,5 @@ pub fn find_for(path: &Path) -> Result<Option<jr_manifest::Located>> {
 pub fn fmt_config(path: &Path) -> Result<jr_fmt::Config> {
     Ok(find_for(path)?
         .map(|located| located.fmt_config())
-        .unwrap_or_default())
+        .unwrap_or_else(jr_manifest::default_fmt_config))
 }

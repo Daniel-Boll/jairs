@@ -1952,6 +1952,18 @@ same-line style only when the block has neither statements nor comments. A comme
 ordinary multiline block formatter, because moving or dropping it would turn a style option into a
 source rewrite.
 
+**ADR-0221 keeps 1333 tests (1344 under gate 7) and 291 corpus files.** It explicitly amends
+ADR-0220 §3: the project-facing manifest-free formatter default moves from four spaces to two, so
+generated projects, empty manifests and CLI/LSP scratch files have one answer. Explicit widths
+still override it, and tabs still ignore it. `jr_fmt::Config::default()` stays four for direct
+library callers and the canonical corpus, which is why this amendment does not reformat 154 valid
+programs.
+
+**The split default was short-lived and was not edited out of history.** ADR-0220 records why four
+spaces were initially preserved; ADR-0221 records the decider's reversal. Six existing assertions
+move with the default and no test is added. The decider explicitly waived rerunning every gate for
+this amendment, so focused formatter, manifest, CLI and LSP checks are the evidence attached to it.
+
 ## House style
 
 Enforced by the first four gates, so it is not a matter of taste:

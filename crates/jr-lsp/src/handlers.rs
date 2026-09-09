@@ -110,7 +110,7 @@ pub(crate) fn formatting_config(path: &Path) -> jr_fmt::Config {
         .ok()
         .flatten()
         .map(|located| located.fmt_config())
-        .unwrap_or_default()
+        .unwrap_or_else(jr_manifest::default_fmt_config)
 }
 
 /// Every diagnostic for one file, as the protocol wants them.

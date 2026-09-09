@@ -290,11 +290,10 @@ mod tests {
             manifest: parsed,
         };
         let config = located.fmt_config();
-        let default = jr_fmt::Config::default();
-        // New projects deliberately start at two spaces. The no-manifest formatter default remains
-        // four for compatibility with existing scratch files and repositories.
+        let default = jr_manifest::default_fmt_config();
+        // Generated projects and manifest-free files share the same two-space default.
         assert_eq!(config.indent_width, 2);
-        assert_eq!(default.indent_width, 4);
+        assert_eq!(default.indent_width, 2);
         assert_eq!(config.indent_style, default.indent_style);
         assert_eq!(config.case_block_style, default.case_block_style);
         assert_eq!(config.max_width, default.max_width);
