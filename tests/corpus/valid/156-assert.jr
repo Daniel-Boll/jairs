@@ -1,0 +1,7 @@
+#import "Basic";
+
+main :: () {
+  assert(true);
+  assert(1 + 1 == 2, "arithmetic stays arithmetic");
+  exit(0);
+}

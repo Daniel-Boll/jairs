@@ -169,6 +169,13 @@ pub enum Instr {
         /// The number of elements.
         len: Operand,
     },
+    /// Traps unless `condition` is true (ADR-0224).
+    Assert {
+        /// The boolean condition to test.
+        condition: Operand,
+        /// The optional decoded static message.
+        message: Option<String>,
+    },
     /// Traps unless the variant at `place` has its tag set to `case` (ADR-0068 §4).
     ///
     /// The place is a plan whose steps end at the variant itself — the tag is at its offset 0 — so the

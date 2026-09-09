@@ -20,9 +20,9 @@ use std::{
 };
 
 use jr_db::{
-    Db as _, InMemoryModules, JairsDatabase, ModuleCatalog, SourceFile, checked, file_diagnostics,
-    file_exports, file_hir, file_signatures, imports_of, module_file, parse_diagnostics,
-    parse_file, resolved,
+    Db as _, InMemoryModules, JairsDatabase, ModuleCatalog, SourceFile, checked, file_consts,
+    file_diagnostics, file_exports, file_hir, file_signatures, imports_of, module_file,
+    parse_diagnostics, parse_file, resolved,
 };
 use jr_project::{
     ModuleCatalog as ProjectModuleCatalog, ModuleEntry as ProjectModuleEntry, ModuleOrigin,
@@ -1612,6 +1612,58 @@ fn checking_records_the_types_it_learned() {
         "the checker must record the types it computed"
     );
     assert!(result.types.local_count() >= 2);
+}
+
+/// The unresolved intrinsic record must cross both query boundaries: sema → `CheckResult` and
+/// `CheckResult` → MIR's `ConstValues`.
+#[test]
+fn checking_records_assertions_for_mir() {
+    let (mut db, sp) = make_module_db_with_corpus();
+    let file = add_file(
+        &mut db,
+        "assert.jr",
+        "main :: () {\n    assert(true, \"decoded\\nmessage\");\n}\n",
+    );
+    let result = checked(&db, file, sp);
+    let (&(scope, expr), message) = result
+        .assertions
+        .iter()
+        .next()
+        .expect("sema must record the unresolved-name assertion");
+    assert_eq!(message.as_deref(), Some("decoded\nmessage"));
+
+    let consts = file_consts(&db, file, sp);
+    assert_eq!(
+        consts.values.assertion(scope, expr),
+        Some(Some("decoded\nmessage")),
+        "the decoded message must reach MIR's input table"
+    );
+}
+
+#[test]
+fn compile_time_todo_diagnostic_preserves_its_static_description() {
+    let (mut db, sp) = make_module_db_with_corpus();
+    let file = add_file(
+        &mut db,
+        "todo.jr",
+        "unfinished :: () -> s64 { todo(\"compile-time unfinished\"); }\n\
+         VALUE :: #run unfinished();\n\
+         main :: () { }\n",
+    );
+    let diagnostics = file_diagnostics(&db, file, sp);
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == Some("E0230")
+                && diagnostic
+                    .message
+                    .contains("reached todo: compile-time unfinished")
+        }),
+        "E0230 lost the static todo description: {:?}",
+        diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.code, diagnostic.message.clone()))
+            .collect::<Vec<_>>()
+    );
 }
 
 /// **A diagnostic inside an instantiation names the call that demanded it** (ADR-0128).

@@ -920,6 +920,19 @@ pub enum Statement {
         /// Where it came from — the span of the *index*, so the trap names it.
         span: MirSpan,
     },
+    /// Traps unless `condition` is true (ADR-0224).
+    ///
+    /// Like [`Statement::BoundsCheck`], this is an explicit, effectful check rather than a
+    /// value-producing expression. DCE must preserve it even when the condition's definition has
+    /// no other users, because failure is the whole effect.
+    Assert {
+        /// The boolean condition that must hold.
+        condition: Operand,
+        /// The decoded call-site message, if one was supplied.
+        message: Option<String>,
+        /// The assertion call's source span.
+        span: MirSpan,
+    },
     /// Traps unless a `variant`'s tag names the case being read (ADR-0068 §4).
     ///
     /// An explicit statement rather than a side effect of [`Projection::Field`], for the reason
@@ -984,13 +997,19 @@ impl Target {
 
 /// Why control cannot continue.
 ///
-/// The distinction is kept because the three cases mean different things to a
-/// reader of a MIR dump and, later, to codegen: only [`Unreachable::Trap`] is a
-/// program the compiler believes is well-formed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// The distinction is kept because the cases mean different things to a reader
+/// of a MIR dump and, later, to codegen. [`Unreachable::Trap`] and
+/// [`Unreachable::Todo`] are source programs doing what they requested; the
+/// remaining variants record compiler diagnostics or refusal paths.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Unreachable {
     /// A deliberate runtime trap.
     Trap,
+    /// A source `todo` statement was reached (ADR-0223, ADR-0226).
+    ///
+    /// Distinct from [`Self::Trap`] because a reader asked for `todo`, not a generic
+    /// compiler-created trap path, and the VM/native differential compares the reason.
+    Todo(Option<String>),
     /// A `break` or `continue` that was not inside a loop.
     ///
     /// Nothing rejects this today: `jr-hir` lowers both unconditionally without
@@ -1030,7 +1049,16 @@ pub enum Terminator {
     /// Returns from the procedure. `None` for a `void` return.
     Return(Option<Operand>),
     /// Control does not continue.
-    Unreachable(Unreachable),
+    ///
+    /// The terminal event owns its span (ADR-0223). A source `todo;` therefore cannot
+    /// lose its location merely because an unreachable terminator has no operand, while
+    /// compiler-created placeholders state that they are [`MirSpan::Synthetic`].
+    Unreachable {
+        /// Why execution stops.
+        reason: Unreachable,
+        /// The source construct responsible, or [`MirSpan::Synthetic`] when none exists.
+        span: MirSpan,
+    },
 }
 
 impl Terminator {
@@ -1044,7 +1072,7 @@ impl Terminator {
                 then_,
                 else_,
             } => vec![then_, else_],
-            Self::Return(_) | Self::Unreachable(_) => Vec::new(),
+            Self::Return(_) | Self::Unreachable { .. } => Vec::new(),
         }
     }
 }
@@ -1077,7 +1105,10 @@ impl BlockData {
         Self {
             params: Vec::new(),
             stmts: Vec::new(),
-            term: Terminator::Unreachable(Unreachable::Trap),
+            term: Terminator::Unreachable {
+                reason: Unreachable::Trap,
+                span: MirSpan::Synthetic,
+            },
         }
     }
 }
@@ -1265,7 +1296,13 @@ impl MirBody {
     pub fn refused(proc: ProcRef, params: &[PoolId], ret: PoolId) -> Self {
         let mut body = Self::new(proc, ret);
         let entry = body.entry();
-        body.set_terminator(entry, Terminator::Unreachable(Unreachable::Refused));
+        body.set_terminator(
+            entry,
+            Terminator::Unreachable {
+                reason: Unreachable::Refused,
+                span: MirSpan::Synthetic,
+            },
+        );
         let values = params
             .iter()
             .map(|ty| body.push_value(*ty, MirSpan::Synthetic))
@@ -1555,6 +1592,9 @@ impl MirBody {
                         remap_operand_slots(index, &remap);
                         remap_operand_slots(len, &remap);
                     }
+                    Statement::Assert { condition, .. } => {
+                        remap_operand_slots(condition, &remap);
+                    }
                     Statement::TagCheck { place, .. } => remap_place_slots(place, &remap),
                     Statement::Nop => {}
                 }
@@ -1640,7 +1680,7 @@ fn targets_mut(term: &mut Terminator) -> Vec<&mut Target> {
             then_,
             else_,
         } => vec![then_, else_],
-        Terminator::Return(_) | Terminator::Unreachable(_) => Vec::new(),
+        Terminator::Return(_) | Terminator::Unreachable { .. } => Vec::new(),
     }
 }
 
@@ -1848,7 +1888,10 @@ mod tests {
         assert_eq!(stub.block_count(), 1);
         assert_eq!(
             stub.block(stub.entry()).term,
-            Terminator::Unreachable(Unreachable::Refused),
+            Terminator::Unreachable {
+                reason: Unreachable::Refused,
+                span: MirSpan::Synthetic,
+            },
             "a refused stub must be distinguishable from a deliberate trap"
         );
     }
@@ -1859,7 +1902,10 @@ mod tests {
         assert_eq!(mir.block_count(), 1);
         assert_eq!(
             mir.block(mir.entry()).term,
-            Terminator::Unreachable(Unreachable::Trap),
+            Terminator::Unreachable {
+                reason: Unreachable::Trap,
+                span: MirSpan::Synthetic,
+            },
             "an unfinished block must be a loud trap, not a silent fallthrough"
         );
     }

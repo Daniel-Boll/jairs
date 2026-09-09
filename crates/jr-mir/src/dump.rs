@@ -363,6 +363,22 @@ impl Dumper<'_> {
                     self.span(*span)
                 )
             }
+            Statement::Assert {
+                condition,
+                message,
+                span,
+            } => {
+                let message = message
+                    .as_ref()
+                    .map(|text| format!(" {:?}", text))
+                    .unwrap_or_default();
+                format!(
+                    "assert {}{}{}",
+                    self.operand(*condition),
+                    message,
+                    self.span(*span)
+                )
+            }
             Statement::TagCheck { place, case, span } => {
                 format!(
                     "tag_check {}.tag == {case}{}",
@@ -400,12 +416,14 @@ impl Dumper<'_> {
                 Some(operand) => format!("return {}", self.operand(*operand)),
                 None => String::from("return"),
             },
-            Terminator::Unreachable(why) => {
-                let why = match why {
-                    Unreachable::Trap => "trap",
-                    Unreachable::StrayJump => "stray jump",
-                    Unreachable::FellOffEnd => "fell off the end",
-                    Unreachable::Refused => "refused",
+            Terminator::Unreachable { reason, span: _ } => {
+                let why = match reason {
+                    Unreachable::Trap => "trap".to_owned(),
+                    Unreachable::Todo(Some(message)) => format!("todo: {message:?}"),
+                    Unreachable::Todo(None) => "todo".to_owned(),
+                    Unreachable::StrayJump => "stray jump".to_owned(),
+                    Unreachable::FellOffEnd => "fell off the end".to_owned(),
+                    Unreachable::Refused => "refused".to_owned(),
                 };
                 format!("unreachable // {why}")
             }
@@ -928,7 +946,13 @@ proc <0> -> s64 {
         );
         mir.set_terminator(mir.entry(), Terminator::Return(None));
         let orphan = mir.push_block();
-        mir.set_terminator(orphan, Terminator::Unreachable(Unreachable::Trap));
+        mir.set_terminator(
+            orphan,
+            Terminator::Unreachable {
+                reason: Unreachable::Trap,
+                span: MirSpan::Synthetic,
+            },
+        );
         let text = dump_body(&mir, &pool, &signatures());
         assert!(text.contains("bb1():  // unreachable"), "got:\n{text}");
         assert!(text.contains("unreachable // trap"));

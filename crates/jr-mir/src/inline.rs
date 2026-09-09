@@ -271,6 +271,7 @@ fn direct_calls(body: &MirBody) -> Vec<ProcRef> {
                 Statement::Store { .. }
                 | Statement::Zero { .. }
                 | Statement::BoundsCheck { .. }
+                | Statement::Assert { .. }
                 | Statement::TagCheck { .. }
                 | Statement::Nop => continue,
             };
@@ -382,6 +383,7 @@ fn next_site(body: &MirBody, block: BlockId, callees: &Callees<'_>) -> Option<Si
             Statement::Store { .. }
             | Statement::Zero { .. }
             | Statement::BoundsCheck { .. }
+            | Statement::Assert { .. }
             | Statement::TagCheck { .. }
             | Statement::Nop => continue,
         };
@@ -428,7 +430,7 @@ fn next_site(body: &MirBody, block: BlockId, callees: &Callees<'_>) -> Option<Si
 fn returns_a_value(callee: &MirBody) -> bool {
     callee.blocks().iter().all(|block| match &block.term {
         Terminator::Return(value) => value.is_some(),
-        Terminator::Goto(_) | Terminator::Branch { .. } | Terminator::Unreachable(_) => true,
+        Terminator::Goto(_) | Terminator::Branch { .. } | Terminator::Unreachable { .. } => true,
     })
 }
 
@@ -666,6 +668,15 @@ impl Splice {
                 len: self.operand(len),
                 span: self.span(),
             },
+            Statement::Assert {
+                condition,
+                message,
+                span: _,
+            } => Statement::Assert {
+                condition: self.operand(condition),
+                message: message.clone(),
+                span: self.span(),
+            },
             // The case index is a constant that travels unchanged; only the place is remapped into the
             // caller's value space, and the span becomes the call's (ADR-0021 §3).
             Statement::TagCheck {
@@ -714,11 +725,13 @@ impl Splice {
                 };
                 Terminator::Goto(Target::with_args(cont, args))
             }
-            // A trap inside the callee stays a trap. A terminator carries no
-            // `MirSpan` of its own, so there is nothing to rewrite here; the traps
-            // ADR-0021 §3 is about are the arithmetic ones, and those live in
-            // statements, which `stmt` has already re-spanned.
-            Terminator::Unreachable(reason) => Terminator::Unreachable(*reason),
+            // A terminal path inside the callee stays terminal, and its source becomes
+            // the call site for the same reason every inlined statement's does
+            // (ADR-0021 §3, ADR-0223).
+            Terminator::Unreachable { reason, span: _ } => Terminator::Unreachable {
+                reason: reason.clone(),
+                span: self.span(),
+            },
         }
     }
 }

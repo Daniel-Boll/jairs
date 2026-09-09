@@ -1624,6 +1624,13 @@ impl Formatter {
                 self.emit(";");
                 self.newline();
             }
+            TODO_STMT => {
+                self.emit_indent();
+                self.format_todo_stmt(node);
+                self.emit_trailing_comment(node);
+                self.emit(";");
+                self.newline();
+            }
             BLOCK => {
                 self.emit_indent();
                 self.format_block(node);
@@ -1634,6 +1641,24 @@ impl Formatter {
                 self.emit(&node.text().to_string());
                 self.newline();
             }
+        }
+    }
+
+    /// Formats the spelling before `todo`'s semicolon.
+    ///
+    /// This is shared by block and braceless statement formatting so neither path
+    /// can silently discard the optional static description (ADR-0226 §4).
+    fn format_todo_stmt(&mut self, node: &SyntaxNode) {
+        self.emit("todo");
+        if node
+            .children_with_tokens()
+            .any(|element| element.kind() == L_PAREN)
+        {
+            self.emit("(");
+            if let Some(message) = node.children().find(|child| child.kind() == LITERAL_EXPR) {
+                self.format_expr(&message);
+            }
+            self.emit(")");
         }
     }
 
@@ -1756,6 +1781,10 @@ impl Formatter {
             CONTINUE_STMT => {
                 self.emit("continue");
                 self.emit_jump_label(node);
+                self.emit(";");
+            }
+            TODO_STMT => {
+                self.format_todo_stmt(node);
                 self.emit(";");
             }
             // A `defer` can be the single braceless statement of an `if` — `if bad  defer f();`
@@ -2292,6 +2321,7 @@ fn is_stmt_kind(kind: SyntaxKind) -> bool {
             | RETURN_STMT
             | BREAK_STMT
             | CONTINUE_STMT
+            | TODO_STMT
             | BLOCK
     )
 }
@@ -2752,6 +2782,18 @@ mod tests {
         let src = "f :: (ok: bool) {\nif ok   then   return;\n}\n";
         let out = fmt(src);
         assert!(out.contains("if ok then return;"), "got: {out}");
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn assertion_calls_preserve_both_forms() {
+        let src = "f :: (ok: bool) {\nassert( ok );\nassert(ok,\"the invariant\");\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("assert(ok);\n  assert(ok, \"the invariant\");"),
+            "got:\n{out}"
+        );
         assert_idempotent(src);
         assert_parses(&out);
     }
@@ -3313,6 +3355,27 @@ mod tests {
         let out = fmt(src);
         assert!(out.contains("break;"), "got: {out}");
         assert!(out.contains("continue;"), "got: {out}");
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn todo_stmt_is_preserved_and_canonicalised() {
+        let src = "f :: () {\ntodo ;\ntodo ( ) ;\ntodo ( \"Not implemented\" ) ;\nif true then todo ( \"later\" ) ;\ndefer todo ( ) ;\n}\n";
+        let out = fmt(src);
+        assert_eq!(
+            out.matches("todo;").count(),
+            1,
+            "formatter dropped or duplicated `todo`: {out}"
+        );
+        assert_eq!(
+            out.matches("todo();").count(),
+            2,
+            "formatter dropped or duplicated empty call-shaped todos: {out}"
+        );
+        assert!(out.contains("todo(\"Not implemented\");"), "got: {out}");
+        assert!(out.contains("if true then todo(\"later\");"), "got: {out}");
+        assert!(out.contains("defer todo();"), "got: {out}");
         assert_idempotent(src);
         assert_parses(&out);
     }

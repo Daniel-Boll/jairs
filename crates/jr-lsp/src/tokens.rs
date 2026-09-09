@@ -227,20 +227,7 @@ fn collect(node: &SyntaxNode, hir: &FileHir, out: &mut Vec<Classified>) {
 /// `,` as an operator would fight the editor's own theme for no information gained.
 fn classify(token: &SyntaxToken, hir: &FileHir) -> Option<Classified> {
     let kind = token.kind();
-    let simple = match kind {
-        SyntaxKind::LINE_COMMENT
-        | SyntaxKind::BLOCK_COMMENT
-        | SyntaxKind::DOC_COMMENT
-        | SyntaxKind::MODULE_DOC_COMMENT => Some(Kind::Comment),
-        SyntaxKind::STRING_LITERAL => Some(Kind::String),
-        SyntaxKind::INT_LITERAL | SyntaxKind::FLOAT_LITERAL => Some(Kind::Number),
-        SyntaxKind::DIRECTIVE => Some(Kind::Macro),
-        // `true`, `false` and `null` are keywords in the grammar and *values* to a reader. Reported as
-        // keywords, because that is what an editor's theme expects of them and what every other language
-        // server does — the alternative would make `true` a different colour from `if`, which surprises.
-        _ if kind.is_keyword() => Some(Kind::Keyword),
-        _ => None,
-    };
+    let simple = simple_kind(kind);
     if let Some(kind) = simple {
         return Some(Classified {
             start: token.text_range().start(),
@@ -259,6 +246,24 @@ fn classify(token: &SyntaxToken, hir: &FileHir) -> Option<Classified> {
         kind,
         modifiers,
     })
+}
+
+/// Classification that depends only on a token's lexical kind.
+fn simple_kind(kind: SyntaxKind) -> Option<Kind> {
+    match kind {
+        SyntaxKind::LINE_COMMENT
+        | SyntaxKind::BLOCK_COMMENT
+        | SyntaxKind::DOC_COMMENT
+        | SyntaxKind::MODULE_DOC_COMMENT => Some(Kind::Comment),
+        SyntaxKind::STRING_LITERAL => Some(Kind::String),
+        SyntaxKind::INT_LITERAL | SyntaxKind::FLOAT_LITERAL => Some(Kind::Number),
+        SyntaxKind::DIRECTIVE => Some(Kind::Macro),
+        // `true`, `false` and `null` are keywords in the grammar and *values* to a reader. Reported as
+        // keywords, because that is what an editor's theme expects of them and what every other language
+        // server does — the alternative would make `true` a different colour from `if`, which surprises.
+        _ if kind.is_keyword() => Some(Kind::Keyword),
+        _ => None,
+    }
 }
 
 /// An identifier's kind and modifiers, from its syntactic context first.
@@ -488,4 +493,46 @@ fn encode(tokens: &[Classified], positions: &Positions<'_>) -> Vec<SemanticToken
         previous_start = start.character;
     }
     data
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn call_shaped_todos_are_parsed_and_classified() {
+        let source = "main :: () {\n  todo();\n  todo(\"Not implemented\");\n}\n";
+        let parsed = jr_syntax::parse(source, jr_base::FileId::from_usize(0));
+        assert!(
+            parsed.diagnostics().is_empty(),
+            "the LSP parser rejected call-shaped todo statements: {:?}",
+            parsed.diagnostics()
+        );
+
+        let mut kinds = Vec::new();
+        fn collect_simple(node: &SyntaxNode, out: &mut Vec<Kind>) {
+            for element in node.children_with_tokens() {
+                match element {
+                    jr_syntax::kind::SyntaxElement::Token(token) => {
+                        if let Some(kind) = simple_kind(token.kind()) {
+                            out.push(kind);
+                        }
+                    }
+                    jr_syntax::kind::SyntaxElement::Node(child) => collect_simple(&child, out),
+                }
+            }
+        }
+        collect_simple(&parsed.syntax(), &mut kinds);
+
+        assert_eq!(
+            kinds.iter().filter(|kind| **kind == Kind::Keyword).count(),
+            2,
+            "both `todo` tokens must remain semantic keywords"
+        );
+        assert_eq!(
+            kinds.iter().filter(|kind| **kind == Kind::String).count(),
+            1,
+            "the static description must be a semantic string"
+        );
+    }
 }

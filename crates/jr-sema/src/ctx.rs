@@ -209,6 +209,11 @@ pub(crate) struct Ctx<'a> {
     pub(crate) pointer_views: FxHashMap<(ExprScope, jr_hir::ExprId), PoolId>,
     /// Which atomic operation each `atomic_*` call performs, as an `AtomicOp` code (ADR-0176 §3).
     pub(crate) atomics: FxHashMap<(ExprScope, jr_hir::ExprId), u8>,
+    /// Each compiler-recognised `assert` call and its optional decoded static message (ADR-0224 §2).
+    ///
+    /// The callee resolves to nothing by design, so MIR cannot rediscover the operation from resolution.
+    /// Keyed by scope and expression for the same arena-identity reason as `atomics`.
+    pub(crate) assertions: FxHashMap<(ExprScope, jr_hir::ExprId), Option<String>>,
     /// Calls folded to a value here rather than downstream — `has_note`, `note_value` (ADR-0099 §2).
     pub(crate) folded_calls: FxHashMap<(ExprScope, jr_hir::ExprId), PoolId>,
     /// The same values keyed by span, so an *expanded* tree can still find them (ADR-0101 §3).
@@ -323,6 +328,7 @@ impl<'a> Ctx<'a> {
             folded_calls: FxHashMap::default(),
             pointer_views: FxHashMap::default(),
             atomics: FxHashMap::default(),
+            assertions: FxHashMap::default(),
             folded_call_spans: FxHashMap::default(),
             type_bindings: FxHashMap::default(),
             instantiations: FxHashMap::default(),

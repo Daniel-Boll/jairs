@@ -1,0 +1,31 @@
+// ADR-0223/0226: every `todo` spelling is terminal on its path, including in valued procedures and comptime code.
+
+unfinished :: () -> s64 {
+  todo("Not implemented");
+}
+
+pick :: (take_unfinished: bool) -> s64 {
+  if take_unfinished {
+    todo();
+  }
+  return 42;
+}
+
+comptime_pick :: () -> s64 {
+  if false {
+    todo;
+  }
+  return 7;
+}
+
+COMPTIME_PICK :: #run comptime_pick();
+
+main :: () -> s64 {
+  if COMPTIME_PICK != 7 {
+    return 1;
+  }
+  if pick(false) != 42 {
+    return 2;
+  }
+  return 0;
+}

@@ -106,6 +106,8 @@
   ; silent mis-colour rather than an ERROR node — the trap `context`, `push_context` and `switch` each
   ; record. The `variant_type` node is what makes it a keyword rather than a text predicate.
   "variant"
+  ; `todo` is terminal control flow (ADR-0223), not an identifier or macro call.
+  "todo"
 ] @keyword
 
 ; Boolean literals are keywords in Jairs

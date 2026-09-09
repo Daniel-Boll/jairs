@@ -11,7 +11,7 @@
 //     C string, and a Jairs `string` is `{data, count}` with no NUL (ADR-0004), so nothing could turn one
 //     into the other without counting bytes by hand at every call site.
 //   * `wildcard_match` is what a build script uses to select files.
-//   * `string_to_float` is `to_integer`'s missing sibling.
+//   * `to_float` is `to_integer`'s remainder-aware sibling.
 //   * `find_nocase` and `contains_nocase` closed a real **asymmetry**: `equal_nocase`, `compare_nocase`,
 //     `starts_with_nocase` and `ends_with_nocase` all existed while the two *search* routines did not, so a
 //     case-insensitive match meant lowering a copy of the whole haystack first.
@@ -127,28 +127,28 @@ main :: () {
   //
   // Folded as integers throughout. `value * 100` compared against an exact integer says the parse landed
   // on the right number without this file ever comparing two floats.
-  v1, ok1, rest1 := S.string_to_float("3.25rest");
+  v1, ok1, rest1 := S.to_float("3.25rest");
   if ok1 && cast(s64, v1 * 100.0) == 325 && S.equal(rest1, "rest") {
     total = total + 1024;
   }
-  v2, ok2, _ := S.string_to_float("-0.5");
+  v2, ok2, _ := S.to_float("-0.5");
   if ok2 && cast(s64, v2 * 100.0) == -50 {
     total = total + 2048;
   }
   // An exponent, and the reason the extent is computed here rather than left to `strtod`.
-  v3, ok3, _ := S.string_to_float("1.5e2");
+  v3, ok3, _ := S.to_float("1.5e2");
   if ok3 && cast(s64, v3) == 150 {
     total = total + 4096;
   }
   // An **incomplete** exponent is not part of the number: `"1e"` is the number 1 followed by an `e`.
-  v4, ok4, rest4 := S.string_to_float("1e");
+  v4, ok4, rest4 := S.to_float("1e");
   if ok4 && cast(s64, v4) == 1 && S.equal(rest4, "e") {
     total = total + 8192;
   }
   // Nothing readable: no digits at all, and a lone `.`. Both must report failure and leave `s` whole,
   // rather than reporting success with 0.
-  _, ok5, rest5 := S.string_to_float("abc");
-  _, ok6, _ := S.string_to_float(".");
+  _, ok5, rest5 := S.to_float("abc");
+  _, ok6, _ := S.to_float(".");
   if !ok5 && !ok6 && S.equal(rest5, "abc") {
     total = total + 16384;
   }

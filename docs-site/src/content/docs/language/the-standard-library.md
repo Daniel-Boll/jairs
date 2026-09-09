@@ -46,26 +46,37 @@ deep and a field that is itself an aggregate shows as `..` — `{i = 7, xs = ..}
 
 ## String
 
-String operations, split into a non-allocating half and an allocating half. The
-non-allocating ones just read:
+String operations are byte-wise and state their ownership. Read-only operations and borrowed views
+allocate nothing:
 
 ```jr
 equal(a, b) -> bool          starts_with(s, prefix) -> bool
 compare(a, b) -> s64         ends_with(s, suffix) -> bool
 find(haystack, needle) -> s64 (or -1)   contains(h, n) -> bool
 byte_at(s, index) -> s64 (or -1)        is_empty(s) -> bool
+slice(s, start, count) -> string         // borrowed, strict bounds
 ```
 
 `equal` is what `==`-on-strings points you to (recall strings don't compare with `==`).
 `byte_at` exists because `s.data[i]` doesn't compile — reading a byte from a `*u8` needs help.
+`slice` preserves pointer identity into its source and traps on a negative or out-of-range extent.
+Trims, split pieces and parse remainders are borrowed for the same reason.
 
-The allocating half produces new strings through `context.allocator`, which the caller frees:
+Owned operations produce independent storage through `context.allocator`, which the caller frees:
 
 ```jr
 concat(a, b) -> string       substring(s, start, count) -> string
+copy_string(s) -> string
 to_upper_copy(s) -> string   to_lower_copy(s) -> string
 free_string(s: string)       // free one you got from the above
 ```
+
+The pinned Way-to-Jai guide's non-overload names are also available: `begins_with`,
+`compare_strings`, `find_index_from_left`, `find_index_from_right`, `replace_chars`, `is_any`,
+`string_to_int`, `string_to_float`, and consuming `parse_int(*string)`. They delegate to the
+existing implementations. The richer prefix parsers are `to_integer` and `to_float`, which also
+return the borrowed remainder. Byte/string overload families wait for general procedure
+overloading rather than being faked with a second set of algorithms.
 
 Two related routines mutate bytes you already have rather than allocating —
 `to_upper_in_place(s: string)` and `to_lower_in_place(s: string)` — and are the ones to reach for

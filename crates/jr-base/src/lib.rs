@@ -14,7 +14,7 @@ mod trap;
 pub use intern::{Interner, Symbol};
 pub use source::{FileId, LineCol, SourceFile, SourceMap};
 pub use span::Span;
-pub use trap::{render_location, trap_message};
+pub use trap::{assertion_reason, render_location, todo_reason, trap_message};
 
 /// Re-exported so downstream crates agree with `rowan` on offset types without
 /// each depending on `text-size` directly.

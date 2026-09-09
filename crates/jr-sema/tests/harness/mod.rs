@@ -15,6 +15,7 @@ use jr_diag::Diagnostics;
 use jr_hir::{FileHir, ItemScope, ResolveMap};
 use jr_pool::{Pool, PoolId};
 use jr_sema::{FileSignatures, ImportedFile, TypeMap};
+use rustc_hash::FxHashMap;
 
 /// One analysed file: everything a test might want to assert about.
 pub struct Analysis {
@@ -30,6 +31,8 @@ pub struct Analysis {
     pub sema_diagnostics: Diagnostics,
     /// Diagnostics from every earlier phase.
     pub earlier_diagnostics: Diagnostics,
+    /// Compiler-recognised assertions, keyed by the call expression.
+    pub assertions: FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), Option<String>>,
 }
 
 impl Analysis {
@@ -157,6 +160,7 @@ impl Program {
             types,
             sema_diagnostics,
             earlier_diagnostics: earlier,
+            assertions: checked.assertions,
         }
     }
 

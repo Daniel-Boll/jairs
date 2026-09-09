@@ -169,6 +169,7 @@ ast_node!(LoopLabel, LOOP_LABEL);
 ast_node!(ReturnStmt, RETURN_STMT);
 ast_node!(BreakStmt, BREAK_STMT);
 ast_node!(ContinueStmt, CONTINUE_STMT);
+ast_node!(TodoStmt, TODO_STMT);
 ast_node!(LiteralExpr, LITERAL_EXPR);
 ast_node!(NameExpr, NAME_EXPR);
 ast_node!(BinaryExpr, BINARY_EXPR);
@@ -354,6 +355,8 @@ pub enum Stmt {
     Break(BreakStmt),
     /// `continue;` or `continue label;`
     Continue(ContinueStmt),
+    /// `todo;`
+    Todo(TodoStmt),
     /// `for x: buf { … }` (ADR-0049 §1)
     For(ForStmt),
     /// `defer stmt;` (ADR-0049 §3)
@@ -381,6 +384,7 @@ impl AstNode for Stmt {
                 | RETURN_STMT
                 | BREAK_STMT
                 | CONTINUE_STMT
+                | TODO_STMT
                 | FOR_STMT
                 | DEFER_STMT
                 | PUSH_CONTEXT_STMT
@@ -400,6 +404,7 @@ impl AstNode for Stmt {
             RETURN_STMT => Some(Self::Return(ReturnStmt(node))),
             BREAK_STMT => Some(Self::Break(BreakStmt(node))),
             CONTINUE_STMT => Some(Self::Continue(ContinueStmt(node))),
+            TODO_STMT => Some(Self::Todo(TodoStmt(node))),
             FOR_STMT => Some(Self::For(ForStmt(node))),
             DEFER_STMT => Some(Self::Defer(DeferStmt(node))),
             PUSH_CONTEXT_STMT => Some(Self::PushContext(PushContextStmt(node))),
@@ -421,6 +426,7 @@ impl AstNode for Stmt {
             Self::Return(n) => n.syntax(),
             Self::Break(n) => n.syntax(),
             Self::Continue(n) => n.syntax(),
+            Self::Todo(n) => n.syntax(),
             Self::For(n) => n.syntax(),
             Self::Defer(n) => n.syntax(),
             Self::PushContext(n) => n.syntax(),
@@ -1516,6 +1522,18 @@ impl ContinueStmt {
     }
 }
 
+impl TodoStmt {
+    /// The optional static description inside `todo("…");`.
+    pub fn message(&self) -> Option<LiteralExpr> {
+        child_node(&self.0)
+    }
+
+    /// Whether the call-shaped spelling (`todo()` or `todo("…")`) was written.
+    pub fn has_parentheses(&self) -> bool {
+        child_token(&self.0, L_PAREN).is_some()
+    }
+}
+
 impl ReturnStmt {
     /// The return value, if present.
     pub fn expr(&self) -> Option<Expr> {
@@ -1827,6 +1845,30 @@ mod tests {
         };
         assert!(switch.is_complete_if());
         assert_eq!(switch.arms().count(), 2);
+    }
+
+    #[test]
+    fn todo_has_a_typed_statement_variant_and_static_message() {
+        let p = parse("f :: () { todo(\"Not implemented\"); }", file());
+        let sf = SourceFile::cast(p.syntax()).unwrap();
+        let Item::Const(decl) = sf.items().next().unwrap() else {
+            panic!("expected procedure declaration")
+        };
+        let stmt = decl
+            .proc()
+            .and_then(|proc| proc.body())
+            .and_then(|body| body.stmts().next())
+            .expect("todo statement");
+        let Stmt::Todo(todo) = stmt else {
+            panic!("expected typed todo statement")
+        };
+        assert!(todo.has_parentheses());
+        assert_eq!(
+            todo.message()
+                .and_then(|message| message.token())
+                .map(|token| token.text().to_owned()),
+            Some("\"Not implemented\"".to_owned())
+        );
     }
 
     #[test]

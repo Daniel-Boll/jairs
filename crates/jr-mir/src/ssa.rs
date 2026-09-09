@@ -419,6 +419,9 @@ impl SsaBuilder {
                         replace_operand(index, old, replacement);
                         replace_operand(len, old, replacement);
                     }
+                    Statement::Assert { condition, .. } => {
+                        replace_operand(condition, old, replacement);
+                    }
                     Statement::TagCheck { place, .. } => {
                         replace_in_place(place, old, replacement);
                     }
@@ -442,7 +445,7 @@ impl SsaBuilder {
                         replace_operand(operand, old, replacement);
                     }
                 }
-                Terminator::Unreachable(_) => {}
+                Terminator::Unreachable { .. } => {}
             }
         }
     }
@@ -506,7 +509,7 @@ fn push_argument(mir: &mut MirBody, edge: Edge, value: Operand) {
             1,
         ) => else_,
         (Terminator::Goto(_) | Terminator::Branch { .. }, _)
-        | (Terminator::Return(_) | Terminator::Unreachable(_), _) => return,
+        | (Terminator::Return(_) | Terminator::Unreachable { .. }, _) => return,
     };
     target.args.push(value);
 }
@@ -535,7 +538,7 @@ fn remove_parameter(mir: &mut MirBody, block: BlockId, index: usize) {
                 1,
             ) => else_,
             (Terminator::Goto(_) | Terminator::Branch { .. }, _)
-            | (Terminator::Return(_) | Terminator::Unreachable(_), _) => continue,
+            | (Terminator::Return(_) | Terminator::Unreachable { .. }, _) => continue,
         };
         if index < target.args.len() {
             target.args.remove(index);

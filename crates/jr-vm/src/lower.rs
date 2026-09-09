@@ -257,17 +257,15 @@ impl Compiler<'_> {
 
     /// The span a terminator's instructions belong to.
     ///
-    /// A [`Terminator`] carries no span of its own, but its operand is a value and
-    /// every value does — so a branch reports the condition that was tested and a
-    /// return reports the expression that produced the result. A terminator with no
-    /// operand has no source text of its own, and says so.
+    /// A branch reports the condition that was tested and a return reports the
+    /// expression that produced the result. An unreachable terminator owns its span
+    /// directly so a source `todo;` cannot lose its location (ADR-0223).
     fn terminator_span(&self, term: &Terminator) -> MirSpan {
         match term {
             Terminator::Branch { cond, .. } => self.operand_span(*cond),
             Terminator::Return(Some(operand)) => self.operand_span(*operand),
-            Terminator::Goto(_) | Terminator::Return(None) | Terminator::Unreachable(_) => {
-                MirSpan::Synthetic
-            }
+            Terminator::Unreachable { span, .. } => *span,
+            Terminator::Goto(_) | Terminator::Return(None) => MirSpan::Synthetic,
         }
     }
 
@@ -340,6 +338,17 @@ impl Compiler<'_> {
                 self.emit(Instr::BoundsCheck {
                     index: *index,
                     len: *len,
+                });
+                Ok(())
+            }
+            Statement::Assert {
+                condition,
+                message,
+                span: _,
+            } => {
+                self.emit(Instr::Assert {
+                    condition: *condition,
+                    message: message.clone(),
                 });
                 Ok(())
             }
@@ -480,8 +489,8 @@ impl Compiler<'_> {
             Terminator::Return(value) => {
                 self.emit(Instr::Return(*value));
             }
-            Terminator::Unreachable(reason) => {
-                self.emit(Instr::Trap(*reason));
+            Terminator::Unreachable { reason, span: _ } => {
+                self.emit(Instr::Trap(reason.clone()));
             }
         }
         Ok(())
@@ -934,6 +943,7 @@ fn statement_span(stmt: &Statement) -> MirSpan {
         | Statement::Discard { span, .. }
         | Statement::Zero { span, .. }
         | Statement::BoundsCheck { span, .. }
+        | Statement::Assert { span, .. }
         | Statement::TagCheck { span, .. } => *span,
         Statement::Nop => MirSpan::Synthetic,
     }

@@ -161,6 +161,9 @@ fn is_intrinsic_name(name: &str) -> bool {
             | "atomic_store"
             | "atomic_add"
             | "atomic_compare_exchange"
+            // `assert`'s arguments are ordinary values, unlike the type-bearing intrinsic family.
+            // It still has no declaration, so resolution must withhold E0201 for the callee itself.
+            | "assert"
     )
 }
 
@@ -817,7 +820,12 @@ impl<'a> ResolveCtx<'a> {
         let Some(Expr::Name { name, .. }) = expr else {
             return false;
         };
-        is_intrinsic_name(self.interner.resolve(*name)) && self.hir.scope.get(*name).is_none()
+        let text = self.interner.resolve(*name);
+        // This predicate controls the **type-position** walk of the arguments, not merely whether
+        // the callee is compiler-known. `assert` is compiler-known but both of its arguments are
+        // values; marking them as type positions would suppress an unresolved-name diagnostic in
+        // `assert(unknown)`.
+        is_intrinsic_name(text) && text != "assert" && self.hir.scope.get(*name).is_none()
     }
 
     /// Resolves `Alias.member` against the module the alias names (ADR-0179 §4).
@@ -1424,7 +1432,7 @@ impl<'a> ResolveCtx<'a> {
                     self.resolve_body_stmt(body_id, arm.body);
                 }
             }
-            Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
+            Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Todo { .. } | Stmt::Error(_) => {}
         }
     }
 

@@ -162,6 +162,11 @@ pub struct ConstValues {
     pointer_views: FxHashMap<(ExprScope, ExprId), PoolId>,
     /// Which atomic operation each `atomic_*` call performs (ADR-0176 §3).
     atomics: FxHashMap<(ExprScope, ExprId), crate::AtomicOp>,
+    /// The optional static message of each compiler-recognised `assert` call (ADR-0224).
+    ///
+    /// Presence in the map distinguishes `assert(condition)` from an ordinary unresolved call;
+    /// the value distinguishes its no-message form from `assert(condition, "message")`.
+    assertions: FxHashMap<(ExprScope, ExprId), Option<String>>,
     /// The procedure a polymorphic call was instantiated to (ADR-0082, DECISIONS fork 4).
     ///
     /// A call to a `$T` procedure is redirected here to the *instantiated* `ProcRef` appended to the
@@ -324,6 +329,16 @@ impl ConstValues {
         for (expr, ty) in views {
             self.pointer_views.entry((to, expr)).or_insert(ty);
         }
+
+        let assertions: Vec<(ExprId, Option<String>)> = self
+            .assertions
+            .iter()
+            .filter(|((scope, _), _)| *scope == from)
+            .map(|((_, expr), message)| (*expr, message.clone()))
+            .collect();
+        for (expr, message) in assertions {
+            self.assertions.entry((to, expr)).or_insert(message);
+        }
     }
 
     /// The value of a file-level item, if one is known.
@@ -393,6 +408,23 @@ impl ConstValues {
     #[must_use]
     pub fn atomic(&self, scope: ExprScope, expr: ExprId) -> Option<crate::AtomicOp> {
         self.atomics.get(&(scope, expr)).copied()
+    }
+
+    /// Records a compiler-recognised `assert` and its optional decoded static message (ADR-0224).
+    pub fn set_assertion(&mut self, scope: ExprScope, expr: ExprId, message: Option<String>) {
+        self.assertions.insert((scope, expr), message);
+    }
+
+    /// The assertion message when this is an `assert` call.
+    ///
+    /// The outer option means "this call is an assertion"; the inner option means "it has a
+    /// message". Keeping those facts distinct prevents a message-less assertion from looking like
+    /// an ordinary unresolved call.
+    #[must_use]
+    pub fn assertion(&self, scope: ExprScope, expr: ExprId) -> Option<Option<&str>> {
+        self.assertions
+            .get(&(scope, expr))
+            .map(|message| message.as_deref())
     }
 
     /// Records that a polymorphic call was instantiated to `target` (ADR-0082).
@@ -465,6 +497,8 @@ impl ConstValues {
         self.pointer_views
             .retain(|(recorded, _), _| *recorded != scope);
         self.atomics.retain(|(recorded, _), _| *recorded != scope);
+        self.assertions
+            .retain(|(recorded, _), _| *recorded != scope);
         self.variadic_calls
             .retain(|(recorded, _), _| *recorded != scope);
         self.soa_fields

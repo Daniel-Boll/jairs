@@ -15,6 +15,13 @@ use jr_pool::PoolId;
 // ---------------------------------------------------------------------------
 
 #[test]
+fn todo_requires_no_expression_type_even_in_a_valued_procedure() {
+    let mut program = Program::new();
+    let analysis = program.analyse("unfinished :: () -> s64 {\n    todo;\n}\n");
+    analysis.assert_silent();
+}
+
+#[test]
 fn an_integer_literal_takes_its_type_from_its_context() {
     // The rule that makes `valid/005-decl-typed.jr` legal in a subset with no
     // `cast`. If this regresses, that corpus file stops checking.
@@ -372,6 +379,67 @@ fn a_constant_cycle_is_reported_once() {
 // ---------------------------------------------------------------------------
 // Calls
 // ---------------------------------------------------------------------------
+
+#[test]
+fn assert_records_an_unmessaged_check() {
+    let mut program = Program::new();
+    let analysis = program.analyse("main :: () {\n    assert(true);\n}\n");
+    analysis.assert_silent();
+    assert_eq!(analysis.assertions.len(), 1);
+    assert_eq!(analysis.assertions.values().next(), Some(&None));
+}
+
+#[test]
+fn assert_records_the_decoded_literal_message() {
+    let mut program = Program::new();
+    let analysis = program.analyse("main :: () {\n    assert(false, \"first\\nsecond\");\n}\n");
+    analysis.assert_silent();
+    assert_eq!(
+        analysis.assertions.values().next(),
+        Some(&Some("first\nsecond".to_owned()))
+    );
+}
+
+#[test]
+fn assert_requires_one_or_two_arguments() {
+    let mut program = Program::new();
+    let analysis = program.analyse("main :: () {\n    assert();\n}\n");
+    assert_eq!(analysis.codes(), vec!["E0216"]);
+    assert!(analysis.assertions.is_empty());
+}
+
+#[test]
+fn assert_requires_a_boolean_condition() {
+    let mut program = Program::new();
+    let analysis = program.analyse("main :: () {\n    assert(1);\n}\n");
+    assert_eq!(analysis.codes(), vec!["E0214"]);
+}
+
+#[test]
+fn assert_requires_a_literal_message() {
+    let mut program = Program::new();
+    let analysis = program
+        .analyse("main :: () {\n    message := \"computed\";\n    assert(true, message);\n}\n");
+    assert_eq!(analysis.codes(), vec!["E0297"]);
+    assert!(analysis.assertions.is_empty());
+}
+
+#[test]
+fn a_declared_assert_shadows_the_intrinsic() {
+    let mut program = Program::new();
+    let analysis =
+        program.analyse("assert :: (condition: bool) {\n}\n\nmain :: () {\n    assert(true);\n}\n");
+    analysis.assert_silent();
+    assert!(analysis.assertions.is_empty());
+}
+
+#[test]
+fn assert_has_no_named_parameters() {
+    let mut program = Program::new();
+    let analysis = program.analyse("main :: () {\n    assert(condition = true);\n}\n");
+    assert_eq!(analysis.codes(), vec!["E0252"]);
+    assert!(analysis.assertions.is_empty());
+}
 
 #[test]
 fn a_call_checks_its_arguments_against_the_parameters() {

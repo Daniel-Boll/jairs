@@ -9,12 +9,13 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1333** workspace tests (**1344** under gate 7), with all six ordinary gates green for ADR-0222.
-- **291** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
-  (**302** counting those).
-- **222** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **1362** workspace tests (**1375** under gate 7), with all six ordinary gates and gate 7 green
+  for ADR-0226.
+- **294** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
+  (**305** counting those).
+- **225** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **25** standard library modules under `modules/`.
-- Diagnostic codes run **E0001–E0296**; **E0297** is the first free one
+- Diagnostic codes run **E0001–E0297**; **E0298** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership
   table, and `crates/jr-cli/tests/codes.rs` is what makes the "first free"
   claim fail a test when it rots).
@@ -42,6 +43,7 @@ behind them — that narrative is not duplicated here):
 | Own a game-loop foundation | `Game.open`, `begin_frame`, `end_frame`, `close` | One explicit `Game.App` owns SDL/window/Simp startup, one event drain, close latching, monotonic delta time, presentation and idempotent teardown (ADR-0210). Only one App may be open because Simp has one process-global renderer, and its lifecycle stays on one thread. Held input, primitive helpers, textures, PNG, text and audio are later slices |
 | Print anything | `print("x = %, ok = %\n", 42, true)` from `modules/Basic` | Written in Jairs (ADR-0189, ADR-0193). Every integer width signed and unsigned including `S64_MIN`, floats, `bool`, `string`, pointers as hex, a struct one level deep, an array's and a view's elements, and an enum by **member name**. A nested aggregate or enum *field* still prints `..`: a field's type is an *id* and an id cannot be resolved to a `*Type_Info` |
 | Build text incrementally | `Basic.String_Builder`, `append`, `print_to_builder`, `builder_to_string`, `free_buffers` | A zero value lazily captures the active allocator triple; explicit initialization resets first. Private buffers stay chained and stable, conversion copies through the caller's current allocator, and cleanup is idempotent. `print_to_builder` uses the same renderer as `print`, supports one-based `%1`/`%2` selection, and bypasses `format`'s 4096-byte staging limit. Byte and pointer-length append have explicit names until general procedure overloading exists (ADR-0217) |
+| Borrow, copy, search and parse byte strings | `String.slice`, `copy_string`, `begins_with`, `compare_strings`, `find_index_from_left` / `_right`, `replace_chars`, `is_any`, `string_to_int`, `string_to_float`, `to_float`, `parse_int` | `slice` is a strict borrowed view and preserves pointer identity; `copy_string` is owned and freed with `free_string`. The compatibility spellings delegate to existing algorithms. `parse_int(*string)` advances its input only on success. Exact byte/string overload families remain deferred to general procedure overloading (ADR-0225) |
 | Call libc from Jairs | `#foreign` / `#system_library` | Through libffi at run time (refused at comptime, ADR-0006). `modules/Basic` binds `write`, `exit`, `malloc`, `free`; the VM satisfies `malloc`/`free` from its own region (ADR-0061) so a pointer round-trips there too. A library is named by `#system_library "SDL2"` or, on macOS, `#framework "OpenGL"` — **two different linker arguments**, and neither is a fallback for the other, because a compiler cannot know which a name means and guessing would link a program for a reason its source never stated (ADR-0183) |
 | Read or replace a whole file | `File.read_entire_file`, `File.write_entire_file`, `File.append_entire_file` | A successful read is owned and NUL-terminated even when the file is empty; release it with `String.free_string`. `File_Utilities` now contains path-text operations only (ADR-0216) |
 | Fold a compile-time call | `COMPUTED :: #run add(2, 3)`, or `n := #run add(2, 3)` in a body | Nested calls, arithmetic around a call, a loop in the callee and an **imported** callee all work (ADR-0069). Still refused: a `#foreign` call (ADR-0006), an operator overload, a default or named argument, and reading another file's constant — all because const-eval precedes the check phase |
@@ -118,6 +120,8 @@ The authoritative version of this list is
 | using a type where a **runtime** value is expected is refused (E0261) | — |
 | `#import`, `#foreign`, `#system_library`; `#complete` switch spelling; `#expand` macros; `#modify` predicates; `#bake_arguments` specialisations | — |
 | `@note` metadata on a declaration, read by `has_note` / `note_value`, queried by `noted_count` / `noted_name`, and used to generate code by `noted_insert` (ADR-0098–0101) | run-time **inspection** — a loop reading declarations as values |
+| `todo;`, `todo()` and `todo("static description")` — terminal, source-located unfinished paths with one byte-identical optional reason in the VM, Cranelift and LLVM (ADR-0223, ADR-0226) | computed or formatted descriptions; using `todo` as an expression |
+| `assert(condition)` and `assert(condition, "static message")` — a shadowable compiler intrinsic whose failure is source-located and byte-identical in the VM, Cranelift and LLVM (ADR-0224) | computed or formatted messages; a test declaration/discovery model |
 | overflow traps with a source location, and a **call chain** of the frames that were live (ADR-0002, ADR-0020, ADR-0066) | a per-frame line number; inlined frames, which have no runtime existence |
 | `context` — a hidden parameter passed by pointer; `#c_call` opts out and gets none | — |
 | `push_context { … }` — a block with its own copy of the context (ADR-0063) | — |

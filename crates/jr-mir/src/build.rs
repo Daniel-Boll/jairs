@@ -459,7 +459,7 @@ impl Reach {
                         expr_work.push(*value);
                     }
                 }
-                Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
+                Stmt::Todo { .. } | Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Error(_) => {}
             }
         }
 
@@ -577,6 +577,9 @@ fn scan(
                 // An `atomic_*` call names no procedure either (ADR-0176 §3), so refusing the body for its
                 // unresolved callee would refuse every program that uses one.
                 || consts.atomic(scope, *call).is_some()
+                // A compiler-recognised `assert` names no procedure either (ADR-0224). Its whole
+                // effect is the MIR check recorded for the call.
+                || consts.assertion(scope, *call).is_some()
                 // **A call that denotes a *type* is never emitted either** (ADR-0192 §3) — `type_of(x)`,
                 // whose whole result is consumed by the enclosing intrinsic at compile time.
                 //
@@ -621,6 +624,7 @@ fn scan(
             | Stmt::If { .. }
             | Stmt::While { .. }
             | Stmt::Return(_, _)
+            | Stmt::Todo { .. }
             | Stmt::Break(_, _)
             | Stmt::Continue(_, _)
             | Stmt::For { .. }
@@ -1195,7 +1199,10 @@ impl Lower<'_> {
             } else {
                 // Whether this is *reachable* is the missing-`return` diagnostic,
                 // which needs this CFG and which the next wave owns.
-                Terminator::Unreachable(Unreachable::FellOffEnd)
+                Terminator::Unreachable {
+                    reason: Unreachable::FellOffEnd,
+                    span: MirSpan::Synthetic,
+                }
             };
             self.mir.set_terminator(block, term);
         }
@@ -1327,6 +1334,21 @@ impl Lower<'_> {
             Stmt::Defer(inner, _) => self.defers.push(inner),
             Stmt::Return(value, _) => self.return_stmt(value),
             Stmt::ReturnTuple(exprs, _) => self.return_tuple(&exprs),
+            // `todo;` abandons this path rather than leaving its lexical scope, so it deliberately
+            // does not run registered defers (ADR-0223 §2). The terminator owns the statement span;
+            // no engine has to infer a location from a non-existent operand.
+            Stmt::Todo { message, .. } => {
+                if let Some(block) = self.current {
+                    self.mir.set_terminator(
+                        block,
+                        Terminator::Unreachable {
+                            reason: Unreachable::Todo(message),
+                            span: MirSpan::Stmt(self.body_id, id),
+                        },
+                    );
+                }
+                self.current = None;
+            }
             Stmt::LocalTuple { targets, call, .. } => self.local_tuple(&targets, call),
             Stmt::AssignTuple { targets, call, .. } => self.assign_tuple(&targets, call),
             Stmt::Break(label, _) => self.jump(true, label, id),
@@ -1650,8 +1672,9 @@ impl Lower<'_> {
         // indirect call whose callee is not of procedure type". A discarded atomic therefore shows in a dump
         // as an unused definition rather than a `Discard`, which is cosmetic; being lowered as a call to a
         // pointer that is not one is not.
-        let is_atomic = self.consts.atomic(self.scope(), expr).is_some();
-        if !is_atomic
+        let is_intrinsic_check = self.consts.atomic(self.scope(), expr).is_some()
+            || self.consts.assertion(self.scope(), expr).is_some();
+        if !is_intrinsic_check
             && expr.index() < self.body.exprs.len()
             && let Expr::Call {
                 callee,
@@ -1704,8 +1727,13 @@ impl Lower<'_> {
             // reaching here means an upstream invariant broke; a trap is louder
             // than silently dropping the assignment.
             if let Some(block) = self.current {
-                self.mir
-                    .set_terminator(block, Terminator::Unreachable(Unreachable::Trap));
+                self.mir.set_terminator(
+                    block,
+                    Terminator::Unreachable {
+                        reason: Unreachable::Trap,
+                        span: MirSpan::Synthetic,
+                    },
+                );
                 self.current = None;
             }
             return;
@@ -1779,7 +1807,10 @@ impl Lower<'_> {
         } else {
             match operand {
                 Some(operand) => Terminator::Return(Some(operand)),
-                None => Terminator::Unreachable(Unreachable::FellOffEnd),
+                None => Terminator::Unreachable {
+                    reason: Unreachable::FellOffEnd,
+                    span: MirSpan::Synthetic,
+                },
             }
         };
         self.mir.set_terminator(block, term);
@@ -1811,8 +1842,13 @@ impl Lower<'_> {
             // *message* distinguishes them (ADR-0049 §2).
             self.stray.push(MirSpan::Stmt(self.body_id, at));
             if let Some(block) = self.current {
-                self.mir
-                    .set_terminator(block, Terminator::Unreachable(Unreachable::StrayJump));
+                self.mir.set_terminator(
+                    block,
+                    Terminator::Unreachable {
+                        reason: Unreachable::StrayJump,
+                        span: MirSpan::Stmt(self.body_id, at),
+                    },
+                );
             }
             self.current = None;
             return;
@@ -2612,6 +2648,17 @@ impl Lower<'_> {
             && let Expr::Call { args, .. } = self.body.expr(id).clone()
         {
             return self.lower_atomic(op, &args, id, span);
+        }
+        // **A runtime assertion** (ADR-0224), intercepted before the ordinary call path because its
+        // unresolved callee names no procedure. Clone the static message before recursively lowering
+        // the condition so the immutable `ConstValues` borrow does not overlap the mutable builder.
+        if let Some(message) = self
+            .consts
+            .assertion(self.scope(), id)
+            .map(|message| message.map(str::to_owned))
+            && let Expr::Call { args, .. } = self.body.expr(id).clone()
+        {
+            return self.lower_assertion(&args, message, span);
         }
         self.expr_inner(id)
     }
@@ -3547,6 +3594,26 @@ impl Lower<'_> {
         )
     }
 
+    /// Lowers a compiler-recognised `assert(condition[, "message"])` (ADR-0224).
+    fn lower_assertion(
+        &mut self,
+        args: &[ExprId],
+        message: Option<String>,
+        span: MirSpan,
+    ) -> Operand {
+        let Some(condition) = args.first().copied() else {
+            self.give_up("an assertion is missing its condition");
+            return Operand::Constant(PoolId::VOID_VALUE);
+        };
+        let condition = self.expr(condition);
+        self.emit(Statement::Assert {
+            condition,
+            message,
+            span,
+        });
+        Operand::Constant(PoolId::VOID_VALUE)
+    }
+
     fn lower_pointer_view(&mut self, args: &[ExprId], target: PoolId, span: MirSpan) -> Operand {
         // **`view(p, n)` builds a `{data, count}` aggregate** (ADR-0109 §1) rather than retyping a pointer, so it
         // takes the other branch. Recognised by the *target* being a view type, which is the one thing that
@@ -3747,8 +3814,13 @@ impl Lower<'_> {
         self.ssa.seal_block(&mut self.mir, trap_bb);
 
         // The mismatch edge traps, exactly as a wrong-variant read does (ADR-0068 §4).
-        self.mir
-            .set_terminator(trap_bb, Terminator::Unreachable(Unreachable::Trap));
+        self.mir.set_terminator(
+            trap_bb,
+            Terminator::Unreachable {
+                reason: Unreachable::Trap,
+                span,
+            },
+        );
 
         // The matching edge reads `a.data` as `*T` and loads the value.
         self.current = Some(ok_bb);

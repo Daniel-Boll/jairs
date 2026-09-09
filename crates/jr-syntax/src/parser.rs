@@ -179,6 +179,7 @@ const STMT_START: TokenSet = TokenSet::new(&[
     RETURN_KW,
     BREAK_KW,
     CONTINUE_KW,
+    TODO_KW,
 ]);
 
 /// Tokens that can start an expression (primary).
@@ -2023,6 +2024,10 @@ impl<'src> Parser<'src> {
                 self.parse_continue_stmt();
                 true
             }
+            TODO_KW => {
+                self.parse_todo_stmt();
+                true
+            }
             // `using q: Point;` — a local declaration that also promotes (ADR-0050 §1). Its own arm
             // because `parse_decl` dispatches on `nth(1)` assuming the *current* token is the name,
             // and with a `using` prefix the name has moved along by one.
@@ -2418,6 +2423,21 @@ impl<'src> Parser<'src> {
         self.bump(); // `continue`
         if self.at(IDENT) {
             self.parse_name();
+        }
+        self.expect(SEMICOLON);
+        self.finish_node();
+    }
+
+    fn parse_todo_stmt(&mut self) {
+        self.start_node(TODO_STMT);
+        self.bump(); // `todo`
+        if self.eat(L_PAREN) {
+            if !self.at(R_PAREN) {
+                self.start_node(LITERAL_EXPR);
+                self.expect(STRING_LITERAL);
+                self.finish_node();
+            }
+            self.expect(R_PAREN);
         }
         self.expect(SEMICOLON);
         self.finish_node();
@@ -3369,6 +3389,62 @@ mod tests {
     #[test]
     fn break_continue() {
         check_no_errors("f :: () { while true { break; continue; } }");
+    }
+
+    #[test]
+    fn todo_stmt_is_legal_in_blocks_and_braceless_bodies() {
+        for source in [
+            "f :: () { todo; }",
+            "f :: () { todo(); }",
+            "f :: () { todo(\"Not implemented\"); }",
+            "f :: (ok: bool) { if ok then todo; }",
+            "f :: (ok: bool) { while ok todo(); }",
+            "f :: () { defer todo(\"later\"); }",
+        ] {
+            check_no_errors(source);
+            check_round_trip(source);
+            assert!(
+                dump_tree(&parse(source, file()).syntax()).contains("TODO_STMT"),
+                "tree did not retain the dedicated statement for {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn todo_missing_semicolon_recovers_at_the_next_statement() {
+        let source = "f :: () { todo return; }";
+        let parsed = parse(source, file());
+        assert!(
+            parsed
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == Some("E0100")),
+            "missing semicolon should use the ordinary expectation diagnostic"
+        );
+        let tree = dump_tree(&parsed.syntax());
+        assert!(tree.contains("TODO_STMT"), "tree was:\n{tree}");
+        assert!(tree.contains("RETURN_STMT"), "tree was:\n{tree}");
+        assert_eq!(parsed.syntax().text().to_string(), source);
+    }
+
+    #[test]
+    fn todo_is_not_an_expression() {
+        let parsed = parse("f :: () { x := todo; }", file());
+        assert!(parsed.has_errors(), "`todo` must remain statement-only");
+    }
+
+    #[test]
+    fn todo_parentheses_accept_only_zero_or_one_string_literal() {
+        for source in [
+            "f :: () { todo(1); }",
+            "f :: () { todo(message); }",
+            "f :: () { todo(\"one\", \"two\"); }",
+        ] {
+            assert!(
+                parse(source, file()).has_errors(),
+                "`todo` accepted an unsupported argument shape: {source}"
+            );
+        }
     }
 
     #[test]

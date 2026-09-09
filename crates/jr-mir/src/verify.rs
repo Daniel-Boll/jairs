@@ -194,6 +194,7 @@ impl Verifier<'_> {
                     | Statement::Discard { span, .. }
                     | Statement::Zero { span, .. }
                     | Statement::BoundsCheck { span, .. }
+                    | Statement::Assert { span, .. }
                     | Statement::TagCheck { span, .. } => *span,
                     Statement::Nop => continue,
                 };
@@ -317,6 +318,7 @@ impl Verifier<'_> {
                 self.check_operand_ids(at, *index);
                 self.check_operand_ids(at, *len);
             }
+            Statement::Assert { condition, .. } => self.check_operand_ids(at, *condition),
             Statement::TagCheck { place, .. } => self.check_place_ids(at, place),
             Statement::Nop => {}
         }
@@ -443,7 +445,7 @@ impl Verifier<'_> {
                     self.check_operand_ids(at, *operand);
                 }
             }
-            Terminator::Unreachable(_) => {}
+            Terminator::Unreachable { .. } => {}
         }
     }
 
@@ -502,6 +504,7 @@ impl Verifier<'_> {
                         mark_operand(*index, &mut used);
                         mark_operand(*len, &mut used);
                     }
+                    Statement::Assert { condition, .. } => mark_operand(*condition, &mut used),
                     Statement::TagCheck { place, .. } => mark_place(place, &mut used),
                     Statement::Nop => {}
                 }
@@ -522,7 +525,7 @@ impl Verifier<'_> {
                         mark_operand(*operand, &mut used);
                     }
                 }
-                Terminator::Unreachable(_) => {}
+                Terminator::Unreachable { .. } => {}
             }
         }
 
@@ -762,6 +765,17 @@ impl Verifier<'_> {
                                     format!("the {which} of a bounds check must be an integer"),
                                 );
                             }
+                        }
+                    }
+                    Statement::Assert { condition, .. } => {
+                        if let Some(ty) = self.operand_type(*condition)
+                            && ty != PoolId::BOOL
+                        {
+                            self.report(
+                                Some(at),
+                                "assertion on a non-bool",
+                                "an assertion condition must be bool".to_owned(),
+                            );
                         }
                     }
                     Statement::Store {
@@ -1051,7 +1065,7 @@ impl Verifier<'_> {
                     }
                 }
             },
-            Terminator::Goto(_) | Terminator::Unreachable(_) => {}
+            Terminator::Goto(_) | Terminator::Unreachable { .. } => {}
         }
     }
 }

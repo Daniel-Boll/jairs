@@ -647,7 +647,11 @@ mod tests {
     #[test]
     fn keywords_are_distinguished_from_identifiers() {
         assert_eq!(kinds("struct"), [STRUCT_KW]);
+        assert_eq!(kinds("todo"), [TODO_KW]);
+        assert!(TODO_KW.is_keyword());
+        assert!(!TODO_KW.is_reserved_keyword());
         assert_eq!(kinds("structure"), [IDENT]);
+        assert_eq!(kinds("todo_work"), [IDENT]);
         assert_eq!(kinds("if_"), [IDENT]);
         assert_eq!(kinds("_if"), [IDENT]);
         assert_eq!(kinds("If"), [IDENT]);

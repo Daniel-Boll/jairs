@@ -179,6 +179,7 @@ fn used_values(body: &MirBody) -> FxHashSet<ValueId> {
                     note_operand(index, &mut used);
                     note_operand(len, &mut used);
                 }
+                Statement::Assert { condition, .. } => note_operand(condition, &mut used),
                 Statement::TagCheck { place, .. } => note_place(place, &mut used),
                 Statement::Nop => {}
             }
@@ -195,7 +196,7 @@ fn used_values(body: &MirBody) -> FxHashSet<ValueId> {
                     note_operand(operand, &mut used);
                 }
             }
-            Terminator::Unreachable(_) => {}
+            Terminator::Unreachable { .. } => {}
         }
     }
     used
@@ -331,6 +332,7 @@ fn drop_dead_stores(body: &mut MirBody) -> bool {
                 Statement::Store { .. }
                 | Statement::Zero { .. }
                 | Statement::BoundsCheck { .. }
+                | Statement::Assert { .. }
                 | Statement::Nop => {}
             }
         }
@@ -404,7 +406,7 @@ fn drop_unused_slots(body: &mut MirBody) -> bool {
                 Statement::Store { place, .. }
                 | Statement::Zero { place, .. }
                 | Statement::TagCheck { place, .. } => note_place_slots(place, &mut used),
-                Statement::BoundsCheck { .. } => {}
+                Statement::BoundsCheck { .. } | Statement::Assert { .. } => {}
                 Statement::Nop => {}
             }
         }

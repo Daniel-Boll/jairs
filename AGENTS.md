@@ -2119,7 +2119,7 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0297 is the first free code**; E0135 is the first free *parser* code. **E0134** refuses a
+**E0298 is the first free code**; E0135 is the first free *parser* code. **E0134** refuses a
 `case` after an `else` in `switch` or `if #complete` (ADR-0215) — **owned by `jr-syntax`**,
 because preserving arm order is a source-grammar obligation and lowering must never silently move
 the catch-all. **E0296** refuses a

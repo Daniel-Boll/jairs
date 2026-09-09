@@ -78,6 +78,7 @@ fn calls_left(
                 jr_mir::Statement::Store { .. }
                 | jr_mir::Statement::Zero { .. }
                 | jr_mir::Statement::BoundsCheck { .. }
+                | jr_mir::Statement::Assert { .. }
                 | jr_mir::Statement::TagCheck { .. }
                 | jr_mir::Statement::Nop => continue,
             };
@@ -441,6 +442,7 @@ fn write_only_slots(body: &jr_mir::MirBody) -> usize {
                     | jr_mir::Rvalue::Undef => {}
                 },
                 jr_mir::Statement::BoundsCheck { .. }
+                | jr_mir::Statement::Assert { .. }
                 | jr_mir::Statement::TagCheck { .. }
                 | jr_mir::Statement::Nop => {}
             }

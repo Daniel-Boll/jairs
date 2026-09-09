@@ -519,6 +519,19 @@ impl<'ctx> Translator<'ctx, '_> {
                     )?;
                 self.trap_if(out_of_range, TrapKind::IndexOutOfBounds)
             }
+            Statement::Assert {
+                condition, message, ..
+            } => {
+                let condition = self.read_int(*condition)?;
+                let failed = built(self.builder.build_int_compare(
+                    IntPredicate::EQ,
+                    condition,
+                    condition.get_type().const_zero(),
+                    "assert_failed",
+                ))?;
+                let reason = jr_base::assertion_reason(message.as_deref());
+                self.trap_if_reason(failed, &reason)
+            }
             // The tag is one byte at the variant's own address (ADR-0068 §3).
             Statement::TagCheck { place, case, .. } => {
                 let address = self.address(place)?;
@@ -2326,20 +2339,23 @@ impl<'ctx> Translator<'ctx, '_> {
                 }
                 Ok(())
             }
-            Terminator::Unreachable(reason) => {
+            Terminator::Unreachable { reason, span: _ } => {
                 // Only `Trap` is a program the compiler believes well-formed; the other two
                 // are statically reported (E0228, E0229) and reaching one means the program
                 // was run without being checked.
-                let kind = match reason {
-                    Unreachable::Trap => TrapKind::Deliberate,
-                    Unreachable::StrayJump => TrapKind::StrayJump,
-                    Unreachable::FellOffEnd => TrapKind::FellOffEnd,
+                match reason {
+                    Unreachable::Todo(message) => {
+                        let reason = jr_base::todo_reason(message.as_deref());
+                        self.report_reason(&reason)?;
+                    }
+                    Unreachable::Trap => self.report(TrapKind::Deliberate)?,
+                    Unreachable::StrayJump => self.report(TrapKind::StrayJump)?,
+                    Unreachable::FellOffEnd => self.report(TrapKind::FellOffEnd)?,
                     // The stub a refused body gets (`jr_mir::MirBody::refused`), so that the
                     // `Export` symbol the declare phase promised exists. Both back ends need this
                     // arm for the same reason, which is why it is not a Cranelift detail.
-                    Unreachable::Refused => TrapKind::Refused,
-                };
-                self.report(kind)?;
+                    Unreachable::Refused => self.report(TrapKind::Refused)?,
+                }
                 built(self.builder.build_unreachable())?;
                 Ok(())
             }
@@ -2376,6 +2392,11 @@ impl<'ctx> Translator<'ctx, '_> {
     /// The shape is a compare-and-branch to a dedicated block that calls the runtime helper,
     /// per ADR-0019 §2. The branch is what keeps the fast path free of the call.
     fn trap_if(&mut self, cond: IntValue<'ctx>, kind: TrapKind) -> Result<(), CodegenError> {
+        self.trap_if_reason(cond, kind.reason())
+    }
+
+    /// Traps when `cond` is true, using a call-site-owned reason.
+    fn trap_if_reason(&mut self, cond: IntValue<'ctx>, reason: &str) -> Result<(), CodegenError> {
         let trap_block = self.context.append_basic_block(self.function, "trap");
         let continue_block = self.context.append_basic_block(self.function, "cont");
         built(
@@ -2384,7 +2405,7 @@ impl<'ctx> Translator<'ctx, '_> {
         )?;
 
         self.builder.position_at_end(trap_block);
-        self.report(kind)?;
+        self.report_reason(reason)?;
         built(self.builder.build_unreachable())?;
 
         self.builder.position_at_end(continue_block);
@@ -2410,8 +2431,13 @@ impl<'ctx> Translator<'ctx, '_> {
     /// Cranelift back end call — three engines rendering at different *times* must still
     /// agree exactly, and the differential harness compares them (ADR-0020 §2).
     fn report(&mut self, kind: TrapKind) -> Result<(), CodegenError> {
+        self.report_reason(kind.reason())
+    }
+
+    /// Calls the runtime helper with an already-constructed reason.
+    fn report_reason(&mut self, reason: &str) -> Result<(), CodegenError> {
         let location = self.shared.locations.location(self.current);
-        let message = jr_base::trap_message(kind.reason(), location.as_deref(), &[]);
+        let message = jr_base::trap_message(reason, location.as_deref(), &[]);
         let global = self.message_data(&message)?;
 
         let word = pointer_int(self.context, self.shared.target);
@@ -2510,17 +2536,15 @@ impl<'ctx> Translator<'ctx, '_> {
 
     /// The span a terminator's instructions belong to.
     ///
-    /// A [`Terminator`] carries no span, but its operand is a value and every value does — so
-    /// a branch reports the condition tested and a return reports the expression that
-    /// produced the result. Mirrors the other two engines, because all three must attribute a
-    /// trap to the same construct or their messages differ.
+    /// A branch reports the condition tested and a return reports the expression that
+    /// produced the result. An unreachable terminator owns its span directly so all
+    /// three engines attribute a source `todo;` identically (ADR-0223).
     fn terminator_span(&self, term: &Terminator) -> MirSpan {
         match term {
             Terminator::Branch { cond, .. } => self.span_of(*cond),
             Terminator::Return(Some(operand)) => self.span_of(*operand),
-            Terminator::Goto(_) | Terminator::Return(None) | Terminator::Unreachable(_) => {
-                MirSpan::Synthetic
-            }
+            Terminator::Unreachable { span, .. } => *span,
+            Terminator::Goto(_) | Terminator::Return(None) => MirSpan::Synthetic,
         }
     }
 
@@ -2679,6 +2703,7 @@ pub(crate) fn statement_span(stmt: &Statement) -> MirSpan {
         | Statement::Discard { span, .. }
         | Statement::Zero { span, .. }
         | Statement::BoundsCheck { span, .. }
+        | Statement::Assert { span, .. }
         | Statement::TagCheck { span, .. } => *span,
         Statement::Nop => MirSpan::Synthetic,
     }

@@ -569,6 +569,7 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> Con
         && checked_file.any_calls.is_empty()
         && checked_file.pointer_views.is_empty()
         && checked_file.atomics.is_empty()
+        && checked_file.assertions.is_empty()
     {
         return ConstResult {
             values: Arc::new(ConstValues::new()),
@@ -1024,6 +1025,12 @@ pub(crate) fn record_checked_folds(
     // receives, so a separate one would be another thing to thread through every caller.
     for ((scope, expr), code) in checked_file.atomics.iter() {
         values.set_atomic(*scope, *expr, *code);
+    }
+    // Assertions are real code, but their unresolved callee makes the record a prerequisite for lowering
+    // just like an atomic's operation code. The decoded message is cloned into MIR's owned input table so
+    // const-eval and ordinary lowering read the same text.
+    for ((scope, expr), message) in checked_file.assertions.iter() {
+        values.set_assertion(*scope, *expr, message.clone());
     }
 
     for ((scope, expr), (op, ty)) in checked_file.any_calls.iter() {

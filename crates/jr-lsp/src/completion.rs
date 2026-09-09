@@ -45,7 +45,7 @@ use crate::render::{Decl, container_of, type_name};
 /// are lexed but refused with a "arrives in wave Wn" diagnostic, so completing them
 /// would be offering the user an error.
 const KEYWORDS: &[&str] = &[
-    "struct", "if", "else", "while", "return", "break", "continue", "true", "false",
+    "struct", "if", "else", "while", "return", "break", "continue", "todo", "true", "false",
 ];
 
 /// The builtin type names that are not integers.
@@ -57,6 +57,13 @@ const KEYWORDS: &[&str] = &[
 /// They are ordinary identifiers rather than keywords (`docs/spec/01-lexical.md`), which is
 /// why they are a separate list with a different completion kind.
 const BUILTIN_TYPES: &[&str] = &["bool", "string"];
+
+/// Compiler-recognised calls with no declaration to discover through ordinary completion.
+const COMPILER_INTRINSICS: &[(&str, &str, &str)] = &[(
+    "assert",
+    "assert(condition: bool, message?: string) -> void",
+    "assert(${1:condition})$0",
+)];
 
 /// Every builtin type name, integers included.
 fn builtin_type_names() -> impl Iterator<Item = &'static str> {
@@ -440,6 +447,18 @@ fn names_at(
     // and an unimported name should never come first in either reading.
     out.extend(unimported);
 
+    out.extend(
+        COMPILER_INTRINSICS
+            .iter()
+            .map(|(name, detail, snippet)| CompletionItem {
+                label: (*name).to_owned(),
+                kind: Some(CompletionItemKind::FUNCTION),
+                detail: Some((*detail).to_owned()),
+                insert_text: Some((*snippet).to_owned()),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                ..CompletionItem::default()
+            }),
+    );
     out.extend(KEYWORDS.iter().map(|kw| CompletionItem {
         label: (*kw).to_owned(),
         kind: Some(CompletionItemKind::KEYWORD),
@@ -873,5 +892,18 @@ mod tests {
             "add(${1:a}, ${2:b})$0"
         );
         assert_eq!(call_snippet("f", &[], &interner), "f()$0");
+    }
+
+    #[test]
+    fn todo_is_offered_as_a_keyword() {
+        assert!(KEYWORDS.contains(&"todo"));
+    }
+
+    #[test]
+    fn assert_is_offered_as_a_compiler_function() {
+        let (name, detail, snippet) = COMPILER_INTRINSICS[0];
+        assert_eq!(name, "assert");
+        assert!(detail.contains("bool"));
+        assert_eq!(snippet, "assert(${1:condition})$0");
     }
 }

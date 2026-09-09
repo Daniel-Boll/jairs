@@ -67,7 +67,7 @@ src/jairs.rs                    supplies the `jr lsp` command — the only Rust 
 languages/jairs/config.toml     name, suffixes, comments, brackets
 languages/jairs/highlights.scm  GENERATED from tree-sitter-jairs/queries by generate-queries.sh
 languages/jairs/brackets.scm    Zed-only
-languages/jairs/indents.scm     Zed-only dialect (@outdent, not @dedent)
+languages/jairs/indents.scm     Zed-only dialect (@indent/@outdent, not Neovim's captures)
 languages/jairs/outline.scm     Zed-only
 generate-queries.sh             translates the Neovim highlights query into Zed's dialect
 sync-grammar-rev.sh             pins the grammar revision Zed clones

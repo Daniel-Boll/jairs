@@ -147,6 +147,11 @@ pub struct CheckResult {
     /// cannot recognise the call and would otherwise have to compare interned names against a second copy
     /// of `resolve.rs`'s list.
     pub atomics: Arc<rustc_hash::FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), u8>>,
+    /// Each compiler-recognised `assert` call and its optional decoded static message (ADR-0224 §2).
+    ///
+    /// Carried beside `atomics` because both are unresolved-name intrinsics whose meaning MIR cannot
+    /// recover from resolution. `file_consts` copies these into `ConstValues` before lowering.
+    pub assertions: Arc<rustc_hash::FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), Option<String>>>,
     /// Calls `jr-sema` already folded to a value — `has_note`, `note_value` (ADR-0099 §2).
     ///
     /// Carried through rather than recomputed because the answer lives in the HIR's `Proc::notes`, which
@@ -1153,6 +1158,7 @@ fn translate_check_output(
         filled_args: Arc::new(filled_args),
         pointer_views: Arc::new(output.pointer_views),
         atomics: Arc::new(output.atomics),
+        assertions: Arc::new(output.assertions),
         folded_calls: Arc::new(output.folded_calls),
         folded_call_spans: Arc::new(output.folded_call_spans),
         type_info_calls: Arc::new(output.type_info_calls),

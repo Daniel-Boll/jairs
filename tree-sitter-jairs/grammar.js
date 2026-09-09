@@ -545,6 +545,7 @@ module.exports = grammar({
         $.return_stmt,
         $.break_stmt,
         $.continue_stmt,
+        $.todo_stmt,
         $.decl_stmt,
         $.destructuring_stmt,
         $.assign_stmt,
@@ -598,6 +599,7 @@ module.exports = grammar({
         $.return_stmt,
         $.break_stmt,
         $.continue_stmt,
+        $.todo_stmt,
         $.destructuring_stmt,
         $.assign_stmt,
         $.expr_stmt,
@@ -695,6 +697,13 @@ module.exports = grammar({
     break_stmt: ($) => seq("break", optional(field("label", $.identifier)), ";"),
 
     continue_stmt: ($) => seq("continue", optional(field("label", $.identifier)), ";"),
+
+    todo_stmt: ($) =>
+      seq(
+        "todo",
+        optional(seq("(", optional(field("message", $.string_literal)), ")")),
+        ";",
+      ),
 
     // `q, ok := f();` and `q, ok = f();` (ADR-0052 §2). A `_` is an ordinary identifier in Jairs, so
     // a discard needs no separate rule — lowering recognises the text.

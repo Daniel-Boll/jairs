@@ -425,7 +425,8 @@ The exit code is **7**. `trim` sits beside `trim_left`, `trim_right`, and the `_
 (`trim_chars`, `trim_left_chars`, `trim_right_chars`) that all three borrow, so a caller trimming a
 specific set of bytes rather than whitespace has the same shape available. `find_nocase` and
 `contains_nocase` close the case-insensitive search pair that `equal_nocase`/`compare_nocase` started.
-`string_to_float` is `to_integer`'s sibling, reading a leading float and the remainder the same way.
+`to_float` is `to_integer`'s sibling, reading a leading float and the remainder the same way.
+`string_to_float` is the two-result compatibility form when the remainder is not needed.
 `wildcard_match` does glob matching with `*` and `?` (no escape, matching Jai) — what a build script uses
 to select files.
 

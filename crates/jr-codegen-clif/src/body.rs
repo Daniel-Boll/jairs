@@ -367,6 +367,14 @@ impl Translator<'_, '_> {
                         .icmp(IntCC::UnsignedGreaterThanOrEqual, index, len);
                 self.trap_if(out_of_range, TrapKind::IndexOutOfBounds)
             }
+            Statement::Assert {
+                condition, message, ..
+            } => {
+                let condition = self.read_scalar(*condition)?;
+                let failed = self.builder.ins().icmp_imm_s(IntCC::Equal, condition, 0);
+                let reason = jr_base::assertion_reason(message.as_deref());
+                self.trap_if_reason(failed, &reason)
+            }
             // The tag is one byte at the variant's own address (ADR-0068 §3), so this loads a byte and
             // compares. Phrased as `tag != case` so `trap_if`'s cold trap block is reused, exactly as
             // the bounds check above reuses it rather than gaining an inverted twin.
@@ -2106,20 +2114,23 @@ impl Translator<'_, '_> {
                 }
                 Ok(())
             }
-            Terminator::Unreachable(reason) => {
+            Terminator::Unreachable { reason, span: _ } => {
                 // Only `Trap` is a program the compiler believes well-formed; `StrayJump` and
                 // `FellOffEnd` are statically reported (E0228, E0229) and reaching one means the
                 // program was run without being checked. `Refused` is the fourth case and the
                 // only one this back end *itself* is handed deliberately: the driver builds a
                 // stub for a body lowering refused, so that the `Export` symbol phase 1 promised
                 // exists (`jr_mir::MirBody::refused`).
-                let kind = match reason {
-                    Unreachable::Trap => TrapKind::Deliberate,
-                    Unreachable::StrayJump => TrapKind::StrayJump,
-                    Unreachable::FellOffEnd => TrapKind::FellOffEnd,
-                    Unreachable::Refused => TrapKind::Refused,
-                };
-                self.report(kind)?;
+                match reason {
+                    Unreachable::Todo(message) => {
+                        let reason = jr_base::todo_reason(message.as_deref());
+                        self.report_reason(&reason)?;
+                    }
+                    Unreachable::Trap => self.report(TrapKind::Deliberate)?,
+                    Unreachable::StrayJump => self.report(TrapKind::StrayJump)?,
+                    Unreachable::FellOffEnd => self.report(TrapKind::FellOffEnd)?,
+                    Unreachable::Refused => self.report(TrapKind::Refused)?,
+                }
                 self.builder.ins().trap(TrapCode::user(1).unwrap());
                 Ok(())
             }
@@ -2151,6 +2162,11 @@ impl Translator<'_, '_> {
     /// helper, per ADR-0019 §2. The branch is what keeps the fast path free of the
     /// call.
     fn trap_if(&mut self, cond: ClifValue, kind: TrapKind) -> Result<(), CodegenError> {
+        self.trap_if_reason(cond, kind.reason())
+    }
+
+    /// Traps when `cond` is non-zero, using a call-site-owned reason.
+    fn trap_if_reason(&mut self, cond: ClifValue, reason: &str) -> Result<(), CodegenError> {
         let trap_block = self.builder.create_block();
         let continue_block = self.builder.create_block();
         self.builder
@@ -2160,7 +2176,7 @@ impl Translator<'_, '_> {
         self.builder.switch_to_block(trap_block);
         // Cold, because a trap block is by construction the path not taken.
         self.builder.set_cold_block(trap_block);
-        self.report(kind)?;
+        self.report_reason(reason)?;
         self.builder.ins().trap(TrapCode::user(1).unwrap());
         self.builder.seal_block(trap_block);
 
@@ -2193,8 +2209,13 @@ impl Translator<'_, '_> {
     /// calls — the two engines render at different *times* and must still agree
     /// exactly, and `differential.rs` compares them (ADR-0020 §2).
     fn report(&mut self, kind: TrapKind) -> Result<(), CodegenError> {
+        self.report_reason(kind.reason())
+    }
+
+    /// Calls the runtime helper with an already-constructed reason.
+    fn report_reason(&mut self, reason: &str) -> Result<(), CodegenError> {
         let location = self.ctx.locations.location(self.current);
-        let message = jr_base::trap_message(kind.reason(), location.as_deref(), &[]);
+        let message = jr_base::trap_message(reason, location.as_deref(), &[]);
         let data = self.message_data(&message)?;
 
         let pointer = pointer_type(self.ctx.target);
@@ -2418,6 +2439,7 @@ pub(crate) fn statement_span(stmt: &Statement) -> MirSpan {
         | Statement::Discard { span, .. }
         | Statement::Zero { span, .. }
         | Statement::BoundsCheck { span, .. }
+        | Statement::Assert { span, .. }
         | Statement::TagCheck { span, .. } => *span,
         Statement::Nop => MirSpan::Synthetic,
     }
@@ -2426,17 +2448,15 @@ pub(crate) fn statement_span(stmt: &Statement) -> MirSpan {
 impl Translator<'_, '_> {
     /// The span a terminator's instructions belong to.
     ///
-    /// A [`Terminator`] carries no span, but its operand is a value and every value
-    /// does — so a branch reports the condition tested and a return reports the
-    /// expression that produced the result. Mirrors `jr-vm`'s lowering, because the two
-    /// engines must attribute a trap to the same construct or their messages differ.
+    /// A branch reports the condition tested and a return reports the expression that
+    /// produced the result. An unreachable terminator owns its span directly so a
+    /// source `todo;` is attributed identically in every engine (ADR-0223).
     fn terminator_span(&self, term: &Terminator) -> MirSpan {
         match term {
             Terminator::Branch { cond, .. } => self.span_of(*cond),
             Terminator::Return(Some(operand)) => self.span_of(*operand),
-            Terminator::Goto(_) | Terminator::Return(None) | Terminator::Unreachable(_) => {
-                MirSpan::Synthetic
-            }
+            Terminator::Unreachable { span, .. } => *span,
+            Terminator::Goto(_) | Terminator::Return(None) => MirSpan::Synthetic,
         }
     }
 

@@ -107,8 +107,18 @@ pub enum Trap {
     DivideByZero,
     /// A shift count was negative or `>=` the type's width (ADR-0042 §3).
     ShiftOutOfRange,
-    /// `Terminator::Unreachable(Unreachable::Trap)` was reached.
+    /// `Terminator::Unreachable { reason: Unreachable::Trap, .. }` was reached.
     Deliberate,
+    /// A source `todo` statement was reached (ADR-0223, ADR-0226).
+    Todo {
+        /// The optional decoded static description from the statement.
+        message: Option<String>,
+    },
+    /// A compiler-recognised source assertion evaluated to false (ADR-0224).
+    Assertion {
+        /// The optional decoded static message from the call site.
+        message: Option<String>,
+    },
     /// The stub a **refused** body gets (`jr_mir::MirBody::refused`) was reached.
     ///
     /// Its own kind rather than [`Self::Deliberate`], because the two mean opposite things:
@@ -181,6 +191,12 @@ impl fmt::Display for Trap {
             Self::DivideByZero => write!(f, "division by zero"),
             Self::ShiftOutOfRange => write!(f, "shift count out of range"),
             Self::Deliberate => write!(f, "reached a deliberate trap"),
+            Self::Todo { message } => {
+                write!(f, "{}", jr_base::todo_reason(message.as_deref()))
+            }
+            Self::Assertion { message } => {
+                write!(f, "{}", jr_base::assertion_reason(message.as_deref()))
+            }
             Self::Refused => write!(
                 f,
                 "this procedure could not be compiled; the compiler reported a gap in it"

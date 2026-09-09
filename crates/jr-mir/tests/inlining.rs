@@ -37,6 +37,7 @@ fn spans(body: &MirBody) -> Vec<MirSpan> {
                 | Statement::Discard { span, .. }
                 | Statement::Zero { span, .. }
                 | Statement::BoundsCheck { span, .. }
+                | Statement::Assert { span, .. }
                 | Statement::TagCheck { span, .. } => out.push(*span),
                 Statement::Nop => {}
             }
@@ -55,6 +56,7 @@ fn calls(body: &MirBody) -> usize {
                 Statement::Store { .. }
                 | Statement::Zero { .. }
                 | Statement::BoundsCheck { .. }
+                | Statement::Assert { .. }
                 | Statement::TagCheck { .. }
                 | Statement::Nop => continue,
             };
