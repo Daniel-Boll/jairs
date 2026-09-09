@@ -1,0 +1,5 @@
+#import "Basic";
+
+main :: () {
+    print("Olá, 世界 — \u03C0\n");
+}

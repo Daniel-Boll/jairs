@@ -1,0 +1,17 @@
+#import "Basic";
+Compiler :: #import "Compiler";
+
+main :: () {
+    target := Compiler.create_target("compatibility-child");
+    options := Compiler.options(target);
+    options.output = "compatibility-child";
+    options.opt_level = 0;
+    Compiler.set_options(target, options);
+    Compiler.add_file(target, "child.jr");
+
+    if !Compiler.build(target) {
+        Compiler.report("compatibility child did not build");
+        exit(1);
+    }
+    exit(0);
+}

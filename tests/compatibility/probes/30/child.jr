@@ -1,0 +1,6 @@
+#import "Basic";
+
+main :: () {
+    print("built child\n");
+    exit(42);
+}

@@ -1,0 +1,4 @@
+#add_context compatibility_value := 1;
+
+main :: () {
+}

@@ -90,6 +90,12 @@ executable source and gates still outrank every hand-maintained table.
   `#scope_file` redundant; build-message polling, Jai workspaces, plugin hooks,
   and a packaged VS Code extension have been declined; Jairs' generated build
   source is a `Build` module rather than shared global scope.
+- ADR-0219 turns the first parity baseline into a required test: one owned probe
+  for each of the guide's 35 example-bearing top-level chapters. Six selected
+  examples check unchanged at the pinned revision; every other row records a
+  runnable port, an exact blocker, or an intentional divergence. The submodule
+  remains provenance only, and this representative set does not support a
+  percentage claim.
 
 ## Chapter-by-chapter matrix
 
@@ -203,17 +209,24 @@ work and primary evidence respectively.
 The guide alone is insufficient to certify either against real Jai, but it is
 large enough to order the work.
 
-### P0 — Establish executable compatibility probes
+### P0 — Establish executable compatibility probes — done in ADR-0219
 
-1. Select a representative local example set per chapter, preserving the pinned
-   source path and expected output in a manifest.
-2. Record whether each failure is lexical, syntactic, semantic, library,
-   toolchain, platform, or intentionally divergent.
-3. Add checks that detect stale compatibility prose, starting with the current
-   `#must`, `#c_call` type, and array-literal contradictions.
+[`tests/compatibility/probes.toml`](../../tests/compatibility/probes.toml)
+contains exactly one representative for each of the 35 example-bearing
+top-level chapters: 03–31 except 32, plus 33–35 and 50–52. A strict typed runner
+copies each Jairs-owned probe and its fixtures into an isolated temporary
+directory, then exercises the real `jr check`, `run`, `build`, or native
+build-and-run boundary.
 
-This is the prerequisite for percentage claims. Counting keywords or modules is
-not evidence that an example works.
+The manifest records the pinned upstream path, compatibility status, earliest
+useful classification, reason, and exact observable result. Blockers pin
+diagnostic codes rather than prose. Six entries begin `source-compatible`; the
+remainder are ports, blockers, or intentional divergences. Ordinary tests never
+read the submodule.
+
+This is the prerequisite for later percentage claims, not such a claim itself:
+35 representatives establish executable chapter coverage, not support for all
+315 guide examples or unpublished Jai.
 
 ### P1 — Finish the high-leverage everyday language surface
 

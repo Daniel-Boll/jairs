@@ -1,0 +1,577 @@
+schema = 1
+
+[upstream]
+repository = "https://github.com/Ivo-Balbaert/The_Way_to_Jai.git"
+revision = "19cb4b7acb0de2798c769f9ad73313a4d15f4056"
+
+[[probe]]
+id = "03-hello-sailor"
+chapter = "03"
+upstream_path = "examples/03/3.1_hello_sailor.jai"
+jairs_path = "probes/03/hello-sailor.jr"
+status = "source-compatible"
+classification = "runtime"
+reason = "The selected hello program checks unchanged; the owned probe pins executable output without making the guide a test input."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "hello from the compatibility probe\n"
+stderr = ""
+
+[[probe]]
+id = "04-public-memcpy"
+chapter = "04"
+upstream_path = "examples/04/4.2_intrinsics.jai"
+jairs_path = "probes/04/public-memcpy.jr"
+status = "divergent"
+classification = "intentional-divergence"
+reason = "Jairs may lower aggregate copies to memcpy internally but exposes no Preload-style source intrinsic."
+mode = "check"
+formatted = true
+
+[probe.expect]
+exit = 1
+stdout = ""
+codes = ["E0201"]
+
+[[probe]]
+id = "05-unicode-printing"
+chapter = "05"
+upstream_path = "examples/05/5.9_printing_unicode.jai"
+jairs_path = "probes/05/unicode-printing.jr"
+status = "source-compatible"
+classification = "runtime"
+reason = "UTF-8 bytes in string literals and printing already check unchanged for the selected guide example."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "Olá, 世界 — π\n"
+stderr = ""
+
+[[probe]]
+id = "06-bitwise"
+chapter = "06"
+upstream_path = "examples/06/6.4_bitwise.jai"
+jairs_path = "probes/06/bitwise.jr"
+status = "ported"
+classification = "syntactic"
+reason = "Ordinary bitwise operations work; Jai's rotate spelling is replaced by the explicit operations Jairs supports."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "bits 24 126 102 165 180 22 180\n"
+stderr = ""
+
+[[probe]]
+id = "07-shadowing"
+chapter = "07"
+upstream_path = "examples/07/7.2_shadowing.jai"
+jairs_path = "probes/07/shadowing.jr"
+status = "source-compatible"
+classification = "runtime"
+reason = "The selected block-shadowing example checks unchanged."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "inner 99\nouter 42\n"
+stderr = ""
+
+[[probe]]
+id = "08-load"
+chapter = "08"
+upstream_path = "examples/08/8.1_main.jai"
+jairs_path = "probes/08/load-refusal.jr"
+status = "blocked"
+classification = "syntactic"
+reason = "Jairs has a project-owned import catalog but no Jai #load directive."
+mode = "check"
+formatted = false
+
+[probe.expect]
+exit = 1
+stdout = ""
+codes = ["E0101"]
+
+[[probe]]
+id = "09-first-class-type"
+chapter = "09"
+upstream_path = "examples/09/9.1_types.jai"
+jairs_path = "probes/09/type-annotation.jr"
+status = "blocked"
+classification = "semantic"
+reason = "Types can be values in supported intrinsic positions, but Type is not a source annotation."
+mode = "check"
+formatted = true
+
+[probe.expect]
+exit = 1
+stdout = ""
+codes = ["E0212"]
+
+[[probe]]
+id = "10-pointers"
+chapter = "10"
+upstream_path = "examples/10/10.1_pointers.jai"
+jairs_path = "probes/10/pointers.jr"
+status = "ported"
+classification = "syntactic"
+reason = "Typed pointers and mutation work with Jairs' postfix dereference and address spelling."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "pointer 42 7\n"
+stderr = ""
+
+[[probe]]
+id = "11-defer"
+chapter = "11"
+upstream_path = "examples/11/11.1_defer.jai"
+jairs_path = "probes/11/defer.jr"
+status = "source-compatible"
+classification = "runtime"
+reason = "The selected defer example checks unchanged; the owned probe pins nested execution order."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "start\nbody\ninner\nlast\n"
+stderr = ""
+
+[[probe]]
+id = "12-pointer-to-struct"
+chapter = "12"
+upstream_path = "examples/12/12.5_pointer_to_struct.jai"
+jairs_path = "probes/12/pointer-to-struct.jr"
+status = "ported"
+classification = "syntactic"
+reason = "Struct pointers work after replacing inferred struct literals and Jai's dereference spelling."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "pointer:43\n"
+stderr = ""
+
+[[probe]]
+id = "13-enum-flags"
+chapter = "13"
+upstream_path = "examples/13/13.3_enum_flags.jai"
+jairs_path = "probes/13/enum-flags.jr"
+status = "ported"
+classification = "syntactic"
+reason = "Enum flags and bitwise composition work; the underlying-width and using spellings differ."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "flags:7\n"
+stderr = ""
+
+[[probe]]
+id = "14-ifx"
+chapter = "14"
+upstream_path = "examples/14/14.2_ifx.jai"
+jairs_path = "probes/14/ifx.jr"
+status = "blocked"
+classification = "syntactic"
+reason = "Jairs has if, then and complete switching, but no ifx expression."
+mode = "check"
+formatted = false
+
+[probe.expect]
+exit = 1
+stdout = ""
+codes = ["E0100"]
+
+[[probe]]
+id = "15-ranges"
+chapter = "15"
+upstream_path = "examples/15/15.3_for.jai"
+jairs_path = "probes/15/ranges.jr"
+status = "ported"
+classification = "syntactic"
+reason = "Forward, nested and indexed ranges work after translating Jai's cast spelling."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "ranges:14:57:21:6\n"
+stderr = ""
+
+[[probe]]
+id = "16-type-info"
+chapter = "16"
+upstream_path = "examples/16/16.2_type_info_proc.jai"
+jairs_path = "probes/16/type-info.jr"
+status = "ported"
+classification = "syntactic"
+reason = "Jairs exposes structural type information through its own pointer and metadata spelling."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "type:Record:16:8:2:8\n"
+stderr = ""
+
+[[probe]]
+id = "17-general-overloading"
+chapter = "17"
+upstream_path = "examples/17/17.6_overloading.jai"
+jairs_path = "probes/17/general-overloading.jr"
+status = "blocked"
+classification = "semantic"
+reason = "The parser and HIR admit both procedures, but name resolution still rejects a same-name overload set."
+mode = "check"
+formatted = true
+
+[probe.expect]
+exit = 1
+stdout = ""
+codes = ["E0200"]
+
+[[probe]]
+id = "18-pointer-iteration"
+chapter = "18"
+upstream_path = "examples/18/18.5_array_for.jai"
+jairs_path = "probes/18/pointer-iteration.jr"
+status = "blocked"
+classification = "syntactic"
+reason = "Array iteration works by value and index, but for *element pointer iteration has no grammar."
+mode = "check"
+formatted = false
+
+[probe.expect]
+exit = 1
+stdout = ""
+codes = ["E0114", "E0116"]
+
+[[probe]]
+id = "19-string-builder"
+chapter = "19"
+upstream_path = "examples/19/19.3_string_builder.jai"
+jairs_path = "probes/19/string-builder.jr"
+status = "source-compatible"
+classification = "runtime"
+reason = "The selected String_Builder example checks unchanged after ADR-0217."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "builder:16:16:One!Two!Three!:7\n"
+stderr = ""
+
+[[probe]]
+id = "20-runtime-trap"
+chapter = "20"
+upstream_path = "examples/20/20.1_crash.jai"
+jairs_path = "probes/20/division-by-zero.jr"
+status = "ported"
+classification = "runtime"
+reason = "Jairs reports a division-by-zero trap with the source location and live procedure frame."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 4
+stdout = ""
+stderr_contains = [
+    "error: division by zero",
+    "--> division-by-zero.jr:7:9",
+    "  in main",
+]
+
+[[probe]]
+id = "21-temporary-storage"
+chapter = "21"
+upstream_path = "examples/21/21.1_temp_storage.jai"
+jairs_path = "probes/21/temporary-storage.jr"
+status = "ported"
+classification = "library"
+reason = "Context temporary storage allocates, resets and reuses memory through Jairs' Basic API."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = ""
+stderr = ""
+
+[[probe]]
+id = "22-polymorphic-array-sum"
+chapter = "22"
+upstream_path = "examples/22/22.3_polyproc3.jai"
+jairs_path = "probes/22/polymorphic-array-sum.jr"
+status = "ported"
+classification = "semantic"
+reason = "Polymorphic procedures instantiate for multiple element types with Jairs' explicit array setup."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = ""
+stderr = ""
+
+[[probe]]
+id = "23-inferred-array-length"
+chapter = "23"
+upstream_path = "examples/23/23.1_array_polymorph.jai"
+jairs_path = "probes/23/inferred-array-length.jr"
+status = "blocked"
+classification = "semantic"
+reason = "Jairs can bake an explicit $N parameter into [N]T, but does not infer N from the array argument."
+mode = "check"
+formatted = true
+
+[probe.expect]
+exit = 1
+stdout = ""
+codes = ["E0216"]
+
+[[probe]]
+id = "24-vector-operators"
+chapter = "24"
+upstream_path = "examples/24/24.1_overloading_vec.jai"
+jairs_path = "probes/24/vector-operators.jr"
+status = "ported"
+classification = "syntactic"
+reason = "Binary vector operators work through Math; inferred struct literals and some direct operator spellings differ."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = ""
+stderr = ""
+
+[[probe]]
+id = "25-add-context"
+chapter = "25"
+upstream_path = "examples/25/25.1_context.jai"
+jairs_path = "probes/25/add-context.jr"
+status = "blocked"
+classification = "syntactic"
+reason = "Jairs has a fixed hidden Context ABI and push_context, but no #add_context extension."
+mode = "check"
+formatted = false
+
+[probe.expect]
+exit = 1
+stdout = ""
+codes = ["E0101"]
+
+[[probe]]
+id = "26-expand-macro"
+chapter = "26"
+upstream_path = "examples/26/26.7A_macros_intro.jai"
+jairs_path = "probes/26/expand-macro.jr"
+status = "source-compatible"
+classification = "runtime"
+reason = "The selected introductory #expand macro checks unchanged."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "expanded in caller\n"
+stderr = ""
+
+[[probe]]
+id = "27-copy-file"
+chapter = "27"
+upstream_path = "examples/27/27.3_copy_files.jai"
+jairs_path = "probes/27/copy-file.jr"
+status = "ported"
+classification = "library"
+reason = "Whole-file reads and writes compose into a copy operation through Jairs' File and String APIs."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = ""
+stderr = ""
+
+[[probe]]
+id = "28-inline-assembly"
+chapter = "28"
+upstream_path = "examples/28/28.1_jai_asm1.jai"
+jairs_path = "probes/28/inline-assembly.jr"
+status = "blocked"
+classification = "syntactic"
+reason = "Jairs has SIMD and atomics but deliberately exposes no inline-assembly construct yet."
+mode = "check"
+formatted = true
+
+[probe.expect]
+exit = 1
+stdout = ""
+codes = ["E0209"]
+
+[[probe]]
+id = "29-c-call-context"
+chapter = "29"
+upstream_path = "examples/29/29.3_c_call.jai"
+jairs_path = "probes/29/c-call-context.jr"
+status = "divergent"
+classification = "intentional-divergence"
+reason = "A #c_call procedure has no hidden Jairs context, so push_context is intentionally refused."
+mode = "check"
+formatted = true
+
+[probe.expect]
+exit = 1
+stdout = ""
+codes = ["E0254"]
+
+[[probe]]
+id = "30-build-target"
+chapter = "30"
+upstream_path = "examples/30/30.3_build.jai"
+jairs_path = "probes/30/build-target.jr"
+status = "ported"
+classification = "toolchain"
+reason = "Jairs build scripts use Compiler.Target rather than Jai workspaces, but produce and run a real child artifact."
+mode = "build"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = ""
+stderr = "note: built compatibility-child\n"
+
+[probe.artifact]
+path = "compatibility-child"
+
+[probe.artifact.expect]
+exit = 42
+stdout = "built child\n"
+stderr = ""
+
+[[probe]]
+id = "31-basic-threads"
+chapter = "31"
+upstream_path = "examples/31/31.1_basic_threads.jai"
+jairs_path = "probes/31/basic-threads.jr"
+status = "ported"
+classification = "platform"
+reason = "Jairs exposes native spawn and join through Thread; the VM cannot materialize a C-callable procedure address."
+mode = "build-run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "counter=3000\n"
+stderr = ""
+
+[[probe]]
+id = "33-simp-window"
+chapter = "33"
+upstream_path = "examples/33/33.2A_simp_window.jai"
+jairs_path = "probes/33/simp-window.jr"
+status = "ported"
+classification = "library"
+reason = "The Simp-shaped subset and Window/Input types check without opening a display; exact Jai APIs differ."
+mode = "check"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = ""
+stderr = ""
+
+[[probe]]
+id = "34-sorting"
+chapter = "34"
+upstream_path = "examples/34/34.1_sorting.jai"
+jairs_path = "probes/34/sorting.jr"
+status = "ported"
+classification = "library"
+reason = "Jairs Sort provides deterministic integer sorting with explicit typed array spelling."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "-12 -4 0 3 5 7 7 9\n"
+stderr = ""
+
+[[probe]]
+id = "35-raylib-module"
+chapter = "35"
+upstream_path = "examples/35/35.1_raylib_sample.jai"
+jairs_path = "probes/35/raylib-module.jr"
+status = "blocked"
+classification = "library"
+reason = "The language can express many fixed-arity C bindings, but no Raylib module or package is shipped."
+mode = "check"
+formatted = true
+
+[probe.expect]
+exit = 1
+stdout = ""
+codes = ["E0210"]
+
+[[probe]]
+id = "50-guessing-game"
+chapter = "50"
+upstream_path = "examples/50/50.1_guessing_game_linux.jai"
+jairs_path = "probes/50/guessing-game.jr"
+status = "ported"
+classification = "syntactic"
+reason = "The control flow ports directly once console input, ifx and named-return dependencies are replaced by deterministic fixtures."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "40: low\n60: high\n42: correct in 3 guesses\n"
+stderr = ""
+
+[[probe]]
+id = "51-game-of-life"
+chapter = "51"
+upstream_path = "examples/51/51.1_game_of_life.jai"
+jairs_path = "probes/51/game-of-life.jr"
+status = "ported"
+classification = "library"
+reason = "A finite headless generation is executable with typed arrays and loops; display, sleep and helper APIs differ."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "00000\n00100\n00100\n00100\n00000\n"
+stderr = ""
+
+[[probe]]
+id = "52-pong-simulation"
+chapter = "52"
+upstream_path = "examples/52/52.1_simp_pong.jai"
+jairs_path = "probes/52/pong-simulation.jr"
+status = "ported"
+classification = "syntactic"
+reason = "A deterministic headless Pong simulation is executable; inferred literals and the exact graphics/input APIs differ."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "steps=1542 walls=8 paddles=8 score=9-0\n"
+stderr = ""

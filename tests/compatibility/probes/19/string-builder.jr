@@ -1,0 +1,26 @@
+#import "Basic";
+
+main :: () -> s64 {
+    builder: String_Builder;
+    init_string_builder(*builder);
+
+    ok := append(*builder, "One!") && append(*builder, "Two!") && append(*builder, "Three!") && print_to_builder(
+        *builder,
+        ":%",
+        7,
+    );
+    length := builder_string_length(*builder);
+    result := builder_to_string(*builder);
+    print("builder:%:%:%\n", length, result.count, result);
+
+    valid := ok && length == 16 && result.count == 16;
+    free_buffers(*builder);
+    if result.data != null {
+        context.allocator_free(result.data);
+    }
+
+    if valid {
+        return 0;
+    }
+    return 1;
+}

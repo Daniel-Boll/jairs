@@ -1,0 +1,27 @@
+#import "Basic";
+
+main :: () {
+    first := talloc(8);
+    second := talloc(8);
+    if first == null || second == null {
+        exit(1);
+    }
+
+    first.* = cast(u8, 11);
+    second.* = cast(u8, 22);
+    if first.* != cast(u8, 11) || second.* != cast(u8, 22) {
+        exit(2);
+    }
+
+    reset_temporary_storage();
+    reused := talloc(8);
+    if reused == null || reused != first {
+        exit(3);
+    }
+
+    reused.* = cast(u8, 33);
+    if first.* != cast(u8, 33) {
+        exit(4);
+    }
+    exit(0);
+}

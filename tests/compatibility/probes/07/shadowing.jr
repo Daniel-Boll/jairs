@@ -1,0 +1,10 @@
+#import "Basic";
+
+main :: () {
+    value := 42;
+    {
+        value := 99;
+        print("inner %\n", value);
+    }
+    print("outer %\n", value);
+}

@@ -1,0 +1,24 @@
+#import "Basic";
+
+Record :: struct {
+    count: s64;
+    enabled: bool;
+}
+
+main :: () -> s64 {
+    info := type_info(Record);
+    second_offset := info.fields[1].offset;
+    print(
+        "type:%:%:%:%:%\n",
+        info.name,
+        info.size,
+        info.alignment,
+        info.fields.count,
+        second_offset,
+    );
+
+    if info.kind == Type_Info_Kind.STRUCT && info.size == 16 && info.alignment == 8 && info.fields.count == 2 && second_offset == 8 {
+        return 0;
+    }
+    return 1;
+}

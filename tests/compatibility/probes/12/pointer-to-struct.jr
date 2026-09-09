@@ -1,0 +1,22 @@
+#import "Basic";
+
+Pair :: struct {
+    left: s64;
+    right: s64;
+}
+
+main :: () -> s64 {
+    value: Pair;
+    value.left = 19;
+    value.right = 23;
+
+    pointer := *value;
+    pointer.left = pointer.left + 1;
+    total := pointer.left + pointer.right;
+    print("pointer:%\n", total);
+
+    if value.left == 20 && pointer.right == 23 && total == 43 {
+        return 0;
+    }
+    return 1;
+}

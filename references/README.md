@@ -26,3 +26,9 @@ commit and distinguish:
 The submodule must never be added to Jairs' build, module search path, test
 corpus, or install artefacts. A nested checkout is deliberately excluded from
 workspace discovery (ADR-0203).
+
+ADR-0219 keeps the executable compatibility baseline in
+[`../tests/compatibility/probes.toml`](../tests/compatibility/probes.toml).
+That manifest records paths and the pinned revision as provenance, but ordinary
+tests execute only the small Jairs-owned files below `tests/compatibility/probes/`.
+The suite therefore remains complete when the submodule is not initialized.

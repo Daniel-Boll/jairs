@@ -1,0 +1,6 @@
+ifx :: 0;
+
+main :: () {
+    value := ifx true;
+    _ = value;
+}

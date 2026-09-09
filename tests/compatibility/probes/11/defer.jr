@@ -1,0 +1,14 @@
+#import "Basic";
+
+work :: () {
+    print("start\n");
+    defer print("last\n");
+    {
+        defer print("inner\n");
+        print("body\n");
+    }
+}
+
+main :: () {
+    work();
+}

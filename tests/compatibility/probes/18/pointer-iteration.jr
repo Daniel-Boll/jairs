@@ -1,0 +1,5 @@
+main :: () {
+    values: [3]s64;
+    value := *values;
+    for *value: values;
+}

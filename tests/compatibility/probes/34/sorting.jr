@@ -1,0 +1,17 @@
+#import "Basic";
+Sort :: #import "Sort";
+
+main :: () {
+    values := s64.[9, -4, 7, 7, 0, 3, -12, 5];
+    Sort.sort_ints(values[]);
+
+    i := 0;
+    while i < values.count {
+        if i > 0 {
+            print(" ");
+        }
+        print("%", values[i]);
+        i = i + 1;
+    }
+    print("\n");
+}

@@ -1,0 +1,33 @@
+#import "Basic";
+
+array_sum :: (items: []$T) -> T {
+    result := items[0];
+    index := 1;
+    while index < items.count {
+        result = result + items[index];
+        index = index + 1;
+    }
+    return result;
+}
+
+main :: () {
+    integers: [4]s64;
+    integers[0] = 45;
+    integers[1] = 42;
+    integers[2] = 43;
+    integers[3] = 100;
+
+    fractions: [4]float64;
+    fractions[0] = 4.5;
+    fractions[1] = 4.0;
+    fractions[2] = 4.5;
+    fractions[3] = 10.0;
+
+    if array_sum(integers[]) != 230 {
+        exit(1);
+    }
+    if array_sum(fractions[]) != 23.0 {
+        exit(2);
+    }
+    exit(0);
+}
