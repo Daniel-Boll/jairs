@@ -119,7 +119,7 @@ silently skips. **Run gate 7 in any wave that touches MIR, `jr-pool`'s layout, `
 either back end** — those are exactly the places where a third engine has something to say.
 
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
-visible. **It is 1326 today (1337 under gate 7), with 291 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
+visible. **It is 1333 today (1344 under gate 7), with 291 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
 only the corpus one, which is the pattern every wave whose deliverable a `.jr` program can observe
 follows, and the reason the two counts are tracked apart. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
 → 969 (W5 sub-waves 1–4) → 974 (W5 sub-wave 5, polymorphic structs) → 976 (W5 sub-wave 6a, `$N` surface)
@@ -1933,6 +1933,36 @@ itself. Additional probes may deepen a chapter without changing that minimum. Bl
 diagnostic codes rather than prose, and every probe uses the command-line boundary rather than
 reaching around it into compiler crates; the evidence therefore moves when a user-visible capability
 moves.
+
+**ADR-0220 reaches 1333 tests (1344 under gate 7) and holds at 291 corpus files.** The formatter
+gains one style choice, not a second formatting path: `CaseBlockStyle` is copied once from the
+manifest into `jr_fmt::Config`, and both the CLI and LSP already consume that result. A
+`same_line` arm must contain exactly one direct block; otherwise the old layout wins. That
+restriction is what keeps `case x; { ... } later();` from visually claiming the block contains
+statements it does not.
+
+**A generated default and a global default answer different compatibility questions.** New
+manifests now write `indent_width = 2`, which is explicit policy for code that does not exist yet.
+The formatter's no-manifest default stays four, so an old repository or a scratch file does not
+reindent because `jr new` changed. The scaffold test asserts both numbers rather than claiming they
+must agree.
+
+**An empty block is compact only when it is actually empty.** `case .TAG; {}` is emitted under the
+same-line style only when the block has neither statements nor comments. A comment keeps the
+ordinary multiline block formatter, because moving or dropping it would turn a style option into a
+source rewrite.
+
+**ADR-0221 keeps 1333 tests (1344 under gate 7) and 291 corpus files.** It explicitly amends
+ADR-0220 §3: the project-facing manifest-free formatter default moves from four spaces to two, so
+generated projects, empty manifests and CLI/LSP scratch files have one answer. Explicit widths
+still override it, and tabs still ignore it. `jr_fmt::Config::default()` stays four for direct
+library callers and the canonical corpus, which is why this amendment does not reformat 154 valid
+programs.
+
+**The split default was short-lived and was not edited out of history.** ADR-0220 records why four
+spaces were initially preserved; ADR-0221 records the decider's reversal. Six existing assertions
+move with the default and no test is added. The decider explicitly waived rerunning every gate for
+this amendment, so focused formatter, manifest, CLI and LSP checks are the evidence attached to it.
 
 ## House style
 

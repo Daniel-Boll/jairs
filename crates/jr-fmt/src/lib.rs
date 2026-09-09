@@ -72,6 +72,23 @@ pub enum IndentStyle {
     Tab,
 }
 
+/// Where a switch arm's sole braced block begins.
+///
+/// This is an enum rather than a `bool` so the configuration reads as a formatting choice at
+/// every call site, and so another supported placement would make the formatter's decisions
+/// exhaustive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaseBlockStyle {
+    /// Put the block on the line below `case value;` or `else;`.
+    #[default]
+    NextLine,
+    /// Put the opening brace after `case value;` or `else;`.
+    ///
+    /// An empty block with no comments is emitted as `{}`. The setting applies only when the arm's
+    /// entire body is one direct block; ordinary arm statements retain their existing layout.
+    SameLine,
+}
+
 /// Formatting configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -80,6 +97,8 @@ pub struct Config {
     /// Number of spaces per indentation level, when [`Config::indent_style`] is
     /// [`IndentStyle::Space`].
     pub indent_width: usize,
+    /// Where a switch arm's sole braced block begins.
+    pub case_block_style: CaseBlockStyle,
     /// The column a line should not exceed.
     ///
     /// **What this covers, exactly.** A call's argument list and a procedure's parameter list are
@@ -103,6 +122,7 @@ impl Default for Config {
         Self {
             indent_style: IndentStyle::Space,
             indent_width: 4,
+            case_block_style: CaseBlockStyle::NextLine,
             max_width: 100,
         }
     }
@@ -154,6 +174,8 @@ struct Formatter {
     indent_unit: String,
     /// The column a line should not exceed; see [`Config::max_width`] for exactly what it covers.
     max_width: usize,
+    /// Where a switch arm's sole braced block begins.
+    case_block_style: CaseBlockStyle,
 }
 
 impl Formatter {
@@ -166,6 +188,7 @@ impl Formatter {
                 IndentStyle::Tab => "\t".to_owned(),
             },
             max_width: config.max_width,
+            case_block_style: config.case_block_style,
         }
     }
 
@@ -1502,11 +1525,24 @@ impl Formatter {
                         }
                         self.emit(";");
                     }
+
+                    let statements: Vec<SyntaxNode> =
+                        arm.children().filter(|n| is_stmt_kind(n.kind())).collect();
+                    if self.case_block_style == CaseBlockStyle::SameLine
+                        && statements.len() == 1
+                        && statements[0].kind() == BLOCK
+                    {
+                        self.emit(" ");
+                        self.format_case_block_same_line(&statements[0]);
+                        self.newline();
+                        continue;
+                    }
+
                     self.newline();
                     // The arm's statements, indented under its header. Each is a full statement, so
                     // `format_stmt` emits its own indent and newline.
                     self.indent += 1;
-                    for stmt in arm.children().filter(|n| is_stmt_kind(n.kind())) {
+                    for stmt in statements {
                         self.format_stmt(&stmt);
                     }
                     self.indent -= 1;
@@ -1598,6 +1634,24 @@ impl Formatter {
                 self.emit(&node.text().to_string());
                 self.newline();
             }
+        }
+    }
+
+    /// Formats the sole block in a switch arm after the already-emitted arm header.
+    ///
+    /// [`Formatter::format_block`] deliberately gives every empty block a two-line shape. The
+    /// same-line arm style is the one exception: a comment-free empty body has no information that
+    /// needs its own line, so it is the compact `{}` the setting promises.
+    fn format_case_block_same_line(&mut self, block: &SyntaxNode) {
+        let has_statements = block.children().any(|node| is_stmt_kind(node.kind()));
+        let has_comments = block
+            .children_with_tokens()
+            .filter_map(|element| element.into_token())
+            .any(|token| token.kind().is_comment());
+        if !has_statements && !has_comments {
+            self.emit("{}");
+        } else {
+            self.format_block(block);
         }
     }
 
@@ -2711,6 +2765,57 @@ mod tests {
             "got: {out}"
         );
         assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn case_blocks_stay_on_the_next_line_by_default() {
+        let src = "f :: (n: s64) {\nif #complete n == {\ncase 0; { return; }\nelse; {}\n}\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains(
+                "case 0;\n            {\n                return;\n            }\n        else;\n            {\n            }"
+            ),
+            "got:\n{out}"
+        );
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn case_blocks_can_begin_on_the_header_line() {
+        let src = "f :: (n: s64) {\nif #complete n == {\ncase 0; { return; }\ncase 1; { // keep\n}\nelse; {}\n}\n}\n";
+        let config = Config {
+            case_block_style: CaseBlockStyle::SameLine,
+            ..Config::default()
+        };
+        let out = format(src, file(), &config).expect("format failed");
+        assert!(
+            out.contains("case 0; {\n            return;\n        }"),
+            "got:\n{out}"
+        );
+        assert!(
+            out.contains("case 1; {\n            // keep\n        }"),
+            "a comment must keep the empty block multiline:\n{out}"
+        );
+        assert!(out.contains("else; {}"), "got:\n{out}");
+        let twice = format(&out, file(), &config).expect("second format failed");
+        assert_eq!(out, twice, "same-line case blocks must be idempotent");
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn same_line_case_blocks_do_not_move_ordinary_arm_statements() {
+        let src = "f :: (n: s64) {\nswitch n {\ncase 0; return;\nelse; return;\n}\n}\n";
+        let config = Config {
+            case_block_style: CaseBlockStyle::SameLine,
+            ..Config::default()
+        };
+        let out = format(src, file(), &config).expect("format failed");
+        assert!(
+            out.contains("case 0;\n            return;\n        else;\n            return;"),
+            "got:\n{out}"
+        );
         assert_parses(&out);
     }
 

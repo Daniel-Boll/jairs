@@ -44,6 +44,19 @@ pub const FILE_NAME: &str = "jairs.toml";
 /// The default entry point a project's `[project] entry` falls back to.
 pub const DEFAULT_ENTRY: &str = "src/main.jr";
 
+/// The formatter configuration for projects that do not override `[fmt]`.
+///
+/// This is deliberately separate from [`jr_fmt::Config::default`]: the formatter crate's direct
+/// callers include the repository's four-space canonical corpus, while the user-facing project
+/// default is two spaces (ADR-0221).
+#[must_use]
+pub fn default_fmt_config() -> jr_fmt::Config {
+    jr_fmt::Config {
+        indent_width: 2,
+        ..jr_fmt::Config::default()
+    }
+}
+
 /// A parsed `jairs.toml`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -97,6 +110,8 @@ pub struct Fmt {
     /// it looks. Documented here and in the scaffolded manifest, so the interaction is stated
     /// rather than discovered.
     pub indent_width: Option<usize>,
+    /// Whether a switch arm's sole braced block begins on the next line or the arm's line.
+    pub case_block_style: Option<CaseBlockStyle>,
     /// The column a line should not exceed.
     ///
     /// **Read the scope before setting it.** It breaks a call's argument list and a procedure's
@@ -129,6 +144,29 @@ impl From<IndentStyle> for jr_fmt::IndentStyle {
         match style {
             IndentStyle::Space => Self::Space,
             IndentStyle::Tab => Self::Tab,
+        }
+    }
+}
+
+/// The placement of a switch arm's sole braced block, as spelled in the manifest.
+///
+/// Kept separate from [`jr_fmt::CaseBlockStyle`] for the same compatibility reason as
+/// [`IndentStyle`]: these exact strings are part of the manifest file format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum CaseBlockStyle {
+    /// Put the block below the arm header.
+    #[serde(rename = "next_line")]
+    NextLine,
+    /// Put the opening brace on the arm header's line.
+    #[serde(rename = "same_line")]
+    SameLine,
+}
+
+impl From<CaseBlockStyle> for jr_fmt::CaseBlockStyle {
+    fn from(style: CaseBlockStyle) -> Self {
+        match style {
+            CaseBlockStyle::NextLine => Self::NextLine,
+            CaseBlockStyle::SameLine => Self::SameLine,
         }
     }
 }
@@ -195,15 +233,18 @@ impl Located {
     }
 
     /// The formatter configuration, with anything the manifest leaves out taken from
-    /// [`jr_fmt::Config::default`].
+    /// [`default_fmt_config`].
     #[must_use]
     pub fn fmt_config(&self) -> jr_fmt::Config {
-        let mut config = jr_fmt::Config::default();
+        let mut config = default_fmt_config();
         if let Some(style) = self.manifest.fmt.indent_style {
             config.indent_style = style.into();
         }
         if let Some(width) = self.manifest.fmt.indent_width {
             config.indent_width = width;
+        }
+        if let Some(style) = self.manifest.fmt.case_block_style {
+            config.case_block_style = style.into();
         }
         if let Some(width) = self.manifest.fmt.max_width {
             config.max_width = width;
@@ -309,7 +350,7 @@ pub fn find(from: &Path) -> Result<Option<Located>, Error> {
 mod tests {
     use std::path::Path;
 
-    use super::{Error, FILE_NAME, IndentStyle, Located, Manifest, find};
+    use super::{CaseBlockStyle, Error, FILE_NAME, IndentStyle, Located, Manifest, find};
 
     fn located(text: &str) -> Located {
         Located {
@@ -322,8 +363,12 @@ mod tests {
     fn an_empty_manifest_is_all_defaults() {
         let l = located("");
         assert_eq!(l.entry(), Path::new("/proj/src/main.jr"));
-        assert_eq!(l.fmt_config().indent_width, 4);
+        assert_eq!(l.fmt_config().indent_width, 2);
         assert_eq!(l.fmt_config().indent_style, jr_fmt::IndentStyle::Space);
+        assert_eq!(
+            l.fmt_config().case_block_style,
+            jr_fmt::CaseBlockStyle::NextLine
+        );
         assert_eq!(l.fmt_config().max_width, 100);
         assert!(l.module_paths().is_empty());
         assert!(l.exact_dependencies().is_empty());
@@ -384,7 +429,7 @@ mod tests {
         let l = located("[fmt]\nmax_width = 60\n");
         assert_eq!(l.fmt_config().max_width, 60);
         // Setting one key must not disturb the others.
-        assert_eq!(l.fmt_config().indent_width, 4);
+        assert_eq!(l.fmt_config().indent_width, 2);
     }
 
     #[test]
@@ -393,6 +438,16 @@ mod tests {
         assert_eq!(l.fmt_config().indent_width, 2);
         // Unset keys must not be disturbed by a set one.
         assert_eq!(l.fmt_config().indent_style, jr_fmt::IndentStyle::Space);
+    }
+
+    #[test]
+    fn case_block_style_is_read() {
+        let l = located("[fmt]\ncase_block_style = \"same_line\"\n");
+        assert_eq!(
+            l.fmt_config().case_block_style,
+            jr_fmt::CaseBlockStyle::SameLine
+        );
+        assert_eq!(l.fmt_config().indent_width, 2);
     }
 
     #[test]
@@ -442,6 +497,13 @@ mod tests {
     }
 
     #[test]
+    fn a_bad_case_block_style_is_refused() {
+        let err = toml::from_str::<Manifest>("[fmt]\ncase_block_style = \"same-line\"\n")
+            .expect_err("only `next_line` and `same_line` are spellings");
+        assert!(err.to_string().contains("same-line"), "got: {err}");
+    }
+
+    #[test]
     fn the_style_spellings_are_exactly_two() {
         assert_eq!(
             toml::from_str::<super::Fmt>("indent_style = \"space\"")
@@ -454,6 +516,22 @@ mod tests {
                 .expect("tab")
                 .indent_style,
             Some(IndentStyle::Tab)
+        );
+    }
+
+    #[test]
+    fn the_case_block_style_spellings_are_exactly_two() {
+        assert_eq!(
+            toml::from_str::<super::Fmt>("case_block_style = \"next_line\"")
+                .expect("next line")
+                .case_block_style,
+            Some(CaseBlockStyle::NextLine)
+        );
+        assert_eq!(
+            toml::from_str::<super::Fmt>("case_block_style = \"same_line\"")
+                .expect("same line")
+                .case_block_style,
+            Some(CaseBlockStyle::SameLine)
         );
     }
 

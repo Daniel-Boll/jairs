@@ -129,7 +129,7 @@ fn run_stdin(renderer: &jr_diag::Renderer, _global: &GlobalArgs) -> Result<i32> 
 
     let fmt_config = crate::project::find()?
         .map(|located| located.fmt_config())
-        .unwrap_or_default();
+        .unwrap_or_else(jr_manifest::default_fmt_config);
     match jr_fmt::format(&text, file_id, &fmt_config) {
         Ok(formatted) => {
             print!("{formatted}");
