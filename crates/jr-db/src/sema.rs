@@ -141,6 +141,13 @@ pub struct CheckResult {
     /// pointer is a store-then-load through a slot, and lowering needs the target type to build the slot.
     pub pointer_views:
         Arc<rustc_hash::FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), jr_pool::PoolId>>,
+    /// Each `New(T)` call as `(result pointer type, byte-count constant)` (ADR-0228).
+    pub allocations: Arc<
+        rustc_hash::FxHashMap<
+            (jr_hir::ExprScope, jr_hir::ExprId),
+            (jr_pool::PoolId, jr_pool::PoolId),
+        >,
+    >,
     /// Which atomic operation each `atomic_*` call performs, as a wire code (ADR-0176 §3).
     ///
     /// Rides beside `pointer_views` for the same reason: an intrinsic's callee resolves to nothing, so MIR
@@ -1157,6 +1164,7 @@ fn translate_check_output(
         operator_calls: Arc::new(operator_calls),
         filled_args: Arc::new(filled_args),
         pointer_views: Arc::new(output.pointer_views),
+        allocations: Arc::new(output.allocations),
         atomics: Arc::new(output.atomics),
         assertions: Arc::new(output.assertions),
         folded_calls: Arc::new(output.folded_calls),

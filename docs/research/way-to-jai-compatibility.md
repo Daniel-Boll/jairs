@@ -96,7 +96,7 @@ executable source and gates still outrank every hand-maintained table.
   source is a `Build` module rather than shared global scope.
 - ADR-0219 turns the first parity baseline into a required test: at least one owned probe
   for each of the guide's 35 example-bearing top-level groups. ADR-0227 adds a second
-  chapter 17 probe, for 36 total. Six selected
+  chapter 17 probe and ADR-0228 a second chapter 11 probe, for 37 total. Six selected
   examples check unchanged at the pinned revision; every other row records a
   runnable port, an exact blocker, or an intentional divergence. The submodule
   remains provenance only, and this representative set does not support a
@@ -115,7 +115,7 @@ assessment layer. The executable layer is intentionally smaller:
 | Blocked | 9 | The representative pins an exact current compiler diagnostic |
 | Divergent | 2 | Jairs deliberately chooses a different architecture or product boundary |
 
-Those 36 probes cover every **example-bearing top-level group** selected by ADR-0219.
+Those 37 probes cover every **example-bearing top-level group** selected by ADR-0219.
 They do not cover every numbered group:
 
 - `00` and `01` are narrative/philosophy, so executable coverage would be artificial.
@@ -159,8 +159,8 @@ one representative outcome is pinned.
 | 08B — Scope directives | `#scope_file`, `#scope_module`, `#scope_export`; [`examples/08/8B/8.2_file_and_global_scopes.jai`](../../references/The_Way_to_Jai/examples/08/8B/8.2_file_and_global_scopes.jai) | **Partial** | `#scope_module` and `#scope_export` work. `#scope_file` is intentionally omitted because one Jairs module is one file, so file scope and module scope are identical. |
 | 09 — First-class types and `Any` | [`examples/09/9.1_types.jai`](../../references/The_Way_to_Jai/examples/09/9.1_types.jai) | **Partial** | Type constants, `size_of`, `type_of`, `type_info`, `Any`, `any_of`, and `any_as` exist. `Type` as an annotation/parameter, type-value chains, implicit bare-value-to-`Any`, and full type comparison/reflection do not. |
 | 10 — Pointers | Address, dereference, pointer chains, null, casts | **Partial** | Typed pointers, `null`, address/deref, element-scaled `+/-`, `typed/untyped`, and FFI pointers exist. Pointer difference, indexing sugar, ordering, and general pointer casts are absent or deliberately constrained. |
-| 11 — Allocation and `defer` | [`examples/11/11.4_memory.jai`](../../references/The_Way_to_Jai/examples/11/11.4_memory.jai) | **Partial** | Default context allocation, `malloc/free`, typed allocation helpers, and `defer` exist. Jai's `New`, allocator modes, and exact Basic allocation API do not. |
-| 12 — Structs | Literals, recursive/anonymous structs, `#as`, alignment, member procs, parameters | **Partial** | Named/nested structs, heap allocation, `using`, polymorphic structs, `#align`, and `#place` exist. Struct literals, recursive structs, anonymous structs, `#as`, member procedures as a language feature, struct-level packing, and several parameter forms are absent. |
+| 11 — Allocation and `defer` | [`examples/11/11.4_memory.jai`](../../references/The_Way_to_Jai/examples/11/11.4_memory.jai) | **Partial** | Default context allocation, `malloc/free`, `New(T)`, typed allocation helpers, and `defer` exist. `New` uses the active context allocator, zeroes success, preserves null failure, and has no Jai-style named allocator argument; allocator modes and the exact Basic allocation API remain absent. |
+| 12 — Structs | Literals, recursive/anonymous structs, `#as`, alignment, member procs, parameters | **Partial** | Named/nested structs, heap allocation, representation-indirect recursive structs, `using`, polymorphic structs, `#align`, and `#place` exist. Struct literals, inline representation recursion, anonymous structs, `#as`, member procedures as a language feature, struct-level packing, and several parameter forms are absent. |
 | 13 — Unions and enums | [`examples/13/13.3_enum_flags.jai`](../../references/The_Way_to_Jai/examples/13/13.3_enum_flags.jai) | **Partial** | Untagged unions, tagged variants, enums, enum flags, explicit values, bare contextual members, and exhaustive switching exist. Anonymous enums, `#specified`, enum methods through general overloading, richer casts, and some cross-file member use remain absent. |
 | 14 — Branching | `if`, `then`, `ifx`, if-case, `#complete`, `#through`; [`examples/14/14.3_if_case.jai`](../../references/The_Way_to_Jai/examples/14/14.3_if_case.jai) | **Partial** | `if/else`, optional `then` on one braceless statement, `switch`, and exact `if #complete value == { ... }` work. `ifx`, truthiness for arbitrary values, `#through`, guards, ranges, and switch expressions do not. |
 | 15 — Loops and reflection | while/for, reverse, pointer iteration, enum/field iteration, notes | **Partial** | `while`, ranges, arrays/views/strings, `for <`, `it/it_index`, labels, break/continue, and declaration notes exist. `for *item`, user-defined for expansion, enum-value iteration, and general runtime field reflection are absent. |
@@ -253,7 +253,7 @@ large enough to order the work.
 [`tests/compatibility/probes.toml`](../../tests/compatibility/probes.toml)
 contains at least one representative for each of the 35 example-bearing
 top-level chapters: 03–31 except 32, plus 33–35 and 50–52. ADR-0227 adds a
-second chapter 17 probe, making 36 total. A strict typed runner
+second chapter 17 probe and ADR-0228 a second chapter 11 probe, making 37 total. A strict typed runner
 copies each Jairs-owned probe and its fixtures into an isolated temporary
 directory, then exercises the real `jr check`, `run`, `build`, or native
 build-and-run boundary.

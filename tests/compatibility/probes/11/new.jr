@@ -1,0 +1,16 @@
+#import "Basic";
+
+main :: () -> s64 {
+  value := New(s64);
+  if value == null {
+    return 1;
+  }
+  defer context.allocator_free(untyped(value));
+
+  if value.* != 0 {
+    return 2;
+  }
+  value.* = 8;
+  print("new:%\n", value.*);
+  return 0;
+}

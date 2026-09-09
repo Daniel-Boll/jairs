@@ -574,6 +574,8 @@ fn scan(
                 // callee stays `Res::Error`, so refusing the body for it would refuse every program that
                 // allocates.
                 || consts.pointer_view(scope, *call).is_some()
+                // `New(T)` also names no procedure: sema recorded the concrete allocation for MIR.
+                || consts.allocation(scope, *call).is_some()
                 // An `atomic_*` call names no procedure either (ADR-0176 §3), so refusing the body for its
                 // unresolved callee would refuse every program that uses one.
                 || consts.atomic(scope, *call).is_some()
@@ -1673,7 +1675,8 @@ impl Lower<'_> {
         // as an unused definition rather than a `Discard`, which is cosmetic; being lowered as a call to a
         // pointer that is not one is not.
         let is_intrinsic_check = self.consts.atomic(self.scope(), expr).is_some()
-            || self.consts.assertion(self.scope(), expr).is_some();
+            || self.consts.assertion(self.scope(), expr).is_some()
+            || self.consts.allocation(self.scope(), expr).is_some();
         if !is_intrinsic_check
             && expr.index() < self.body.exprs.len()
             && let Expr::Call {
@@ -2641,6 +2644,11 @@ impl Lower<'_> {
             && let Expr::Call { args, .. } = self.body.expr(id).clone()
         {
             return self.lower_pointer_view(&args, target, span);
+        }
+        // `New(T)` is an indirect call through `context.allocator`, followed by conditional
+        // whole-place zeroing. It must run before the ordinary call path because `New` has no declaration.
+        if let Some(allocation) = self.consts.allocation(self.scope(), id) {
+            return self.lower_new(allocation, span);
         }
         // **An atomic** (ADR-0176 §3), intercepted here for the same reason: its callee names no procedure,
         // so the ordinary call path would look for one and refuse the body.
@@ -3612,6 +3620,84 @@ impl Lower<'_> {
             span,
         });
         Operand::Constant(PoolId::VOID_VALUE)
+    }
+
+    /// Lowers `New(T)` to the active allocator call plus a null-guarded zero (ADR-0228).
+    fn lower_new(&mut self, allocation: crate::NewAllocation, span: MirSpan) -> Operand {
+        let Some(context) = self.context else {
+            self.give_up("`New` in a procedure that receives no context");
+            return self.define(allocation.pointer, Rvalue::Undef, span);
+        };
+        let Some(field) = jr_pool::Pool::context_field("allocator") else {
+            self.give_up("the canonical context has no allocator field");
+            return self.define(allocation.pointer, Rvalue::Undef, span);
+        };
+        let Some(allocator_ty) = jr_pool::Pool::context_field_type(field) else {
+            self.give_up("the canonical context allocator has no type");
+            return self.define(allocation.pointer, Rvalue::Undef, span);
+        };
+
+        let allocator_place = Place::deref(context).project(Projection::Field(field));
+        let allocator = self.define(allocator_ty, Rvalue::Load(allocator_place), span);
+        let raw = self.define(
+            PoolId::PTR_U8,
+            Rvalue::Call {
+                callee: Callee::Indirect(allocator),
+                args: vec![context, Operand::Constant(allocation.bytes)],
+            },
+            span,
+        );
+
+        // Retype the byte pointer without changing its bits, through the same store/load bridge
+        // `typed` uses. A plain `Use` is deliberately not allowed to change an operand's type.
+        let slot = self.mir.push_slot(allocation.pointer, None, span);
+        self.emit(Statement::Store {
+            place: Place::slot(slot),
+            value: raw,
+            span,
+        });
+        let pointer = self.define(allocation.pointer, Rvalue::Load(Place::slot(slot)), span);
+
+        let null = Operand::Constant(self.pool.int_value(allocation.pointer, 0));
+        let present = self.define(
+            PoolId::BOOL,
+            Rvalue::Binary {
+                op: BinOp::Ne,
+                lhs: pointer,
+                rhs: null,
+            },
+            span,
+        );
+        let Some(head) = self.current else {
+            return pointer;
+        };
+        let zero_bb = self.mir.push_block();
+        let null_bb = self.mir.push_block();
+        let join = self.mir.push_block();
+        self.mir.set_terminator(
+            head,
+            Terminator::Branch {
+                cond: present,
+                then_: Target::new(zero_bb),
+                else_: Target::new(null_bb),
+            },
+        );
+        self.ssa.seal_block(&mut self.mir, zero_bb);
+        self.ssa.seal_block(&mut self.mir, null_bb);
+
+        self.current = Some(zero_bb);
+        self.emit(Statement::Zero {
+            place: Place::deref(pointer),
+            span,
+        });
+        let zero_fell_through = self.goto(join);
+
+        self.current = Some(null_bb);
+        let null_fell_through = self.goto(join);
+
+        self.ssa.seal_block(&mut self.mir, join);
+        self.current = (zero_fell_through || null_fell_through).then_some(join);
+        pointer
     }
 
     fn lower_pointer_view(&mut self, args: &[ExprId], target: PoolId, span: MirSpan) -> Operand {

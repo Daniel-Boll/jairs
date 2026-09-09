@@ -1,0 +1,96 @@
+// ADR-0228 — `New(T)` allocates one zeroed `T` through the active context.
+//
+// The recursive shape is the user-requested one. Its legality predates this wave: nominal structs
+// have identity before their fields resolve, and both a pointer and a dynamic array break layout
+// recursion. This program pins the composition so a later container change cannot accidentally
+// regress it.
+
+#import "Basic";
+
+Table :: struct($K, $V) {
+  slots: *u8;
+  count: s64;
+  capacity: s64;
+}
+
+Node :: struct {
+  name: string;
+  children: [..]*Node;
+  properties: Table(string, string);
+}
+
+// A deliberately dirty backing allocation. If `New` merely calls the allocator and retypes its
+// result, every field below reads all-bits-one rather than the language's zero value.
+DIRTY: [256]u8;
+
+dirty_allocate :: (size: s64) -> *u8 {
+  i := 0;
+  while i < size {
+    DIRTY[i] = 255;
+    i = i + 1;
+  }
+  return *DIRTY[0];
+}
+
+ignore_release :: (allocation: *u8) {
+}
+
+fail_allocate :: (size: s64) -> *u8 {
+  return null;
+}
+
+allocate_like :: (sample: $T) -> *T {
+  return New(T);
+}
+
+main :: () {
+  context.allocator = dirty_allocate;
+  context.allocator_free = ignore_release;
+
+  node := New(Node);
+  if node == null {
+    exit(1);
+  }
+  if node.name.data != null || node.name.count != 0 {
+    exit(2);
+  }
+  if node.children.data != null || node.children.count != 0 || node.children.capacity != 0 {
+    exit(3);
+  }
+  if node.properties.slots != null || node.properties.count != 0 || node.properties.capacity != 0 {
+    exit(4);
+  }
+
+  // The independent stack shape requested with the struct. It is an ordinary native dynamic array
+  // of node pointers; this manually reserves two slots until generic List operations land.
+  stack: [..]*Node;
+  stack.data = typed(*Node, context.allocator(2 * size_of(*Node)));
+  if stack.data == null {
+    exit(5);
+  }
+  stack.capacity = 2;
+  stack.data.* = node;
+  stack.count = 1;
+  if stack.data.* != node {
+    exit(6);
+  }
+
+  context.allocator_free(untyped(stack.data));
+  context.allocator_free(untyped(node));
+
+  // `New(T)` inside a same-file polymorphic procedure is recorded after `T` is bound.
+  number := allocate_like(99);
+  if number == null || number.* != 0 {
+    exit(7);
+  }
+  context.allocator_free(untyped(number));
+
+  // Allocation failure is a value the caller can handle, never a trap or a write through null.
+  context.allocator = fail_allocate;
+  missing := New(Node);
+  if missing != null {
+    exit(8);
+  }
+
+  exit(42);
+}

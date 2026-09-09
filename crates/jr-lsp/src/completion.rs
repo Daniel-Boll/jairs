@@ -59,11 +59,14 @@ const KEYWORDS: &[&str] = &[
 const BUILTIN_TYPES: &[&str] = &["bool", "string"];
 
 /// Compiler-recognised calls with no declaration to discover through ordinary completion.
-const COMPILER_INTRINSICS: &[(&str, &str, &str)] = &[(
-    "assert",
-    "assert(condition: bool, message?: string) -> void",
-    "assert(${1:condition})$0",
-)];
+const COMPILER_INTRINSICS: &[(&str, &str, &str)] = &[
+    (
+        "assert",
+        "assert(condition: bool, message?: string) -> void",
+        "assert(${1:condition})$0",
+    ),
+    ("New", "New(T: type) -> *T", "New(${1:T})$0"),
+];
 
 /// Every builtin type name, integers included.
 fn builtin_type_names() -> impl Iterator<Item = &'static str> {
@@ -901,9 +904,23 @@ mod tests {
 
     #[test]
     fn assert_is_offered_as_a_compiler_function() {
-        let (name, detail, snippet) = COMPILER_INTRINSICS[0];
+        let &(name, detail, snippet) = COMPILER_INTRINSICS
+            .iter()
+            .find(|(name, _, _)| *name == "assert")
+            .unwrap();
         assert_eq!(name, "assert");
         assert!(detail.contains("bool"));
         assert_eq!(snippet, "assert(${1:condition})$0");
+    }
+
+    #[test]
+    fn new_is_offered_as_a_compiler_function() {
+        let &(name, detail, snippet) = COMPILER_INTRINSICS
+            .iter()
+            .find(|(name, _, _)| *name == "New")
+            .unwrap();
+        assert_eq!(name, "New");
+        assert_eq!(detail, "New(T: type) -> *T");
+        assert_eq!(snippet, "New(${1:T})$0");
     }
 }

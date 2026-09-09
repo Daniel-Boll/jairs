@@ -48,6 +48,56 @@ fn duplicate_named_result_labels_are_e0298() {
 }
 
 #[test]
+fn new_accepts_a_recursive_struct_behind_pointer_and_dynamic_array_indirection() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "Table :: struct($K, $V) {\n\
+             count: s64;\n\
+         }\n\
+         Node :: struct {\n\
+             name: string;\n\
+             children: [..]*Node;\n\
+             properties: Table(string, string);\n\
+         }\n\
+         main :: () {\n\
+             node := New(Node);\n\
+             stack: [..]*Node;\n\
+             stack.count = 0;\n\
+             first: *Node = node;\n\
+         }\n",
+    );
+    analysis.assert_silent();
+}
+
+#[test]
+fn new_needs_a_type_argument() {
+    let mut program = Program::new();
+    let analysis = program.analyse("main :: () {\n    value := 1;\n    node := New(value);\n}\n");
+    assert_eq!(analysis.codes(), vec!["E0261"]);
+}
+
+#[test]
+fn new_needs_an_implicit_context() {
+    let mut program = Program::new();
+    let analysis = program.analyse("raw :: () #c_call {\n    node := New(s64);\n}\n");
+    assert_eq!(analysis.codes(), vec!["E0254"]);
+}
+
+#[test]
+fn new_refuses_alignment_the_allocator_protocol_cannot_request() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "Wide :: struct {\n\
+             value: s64 #align 32;\n\
+         }\n\
+         main :: () {\n\
+             value := New(Wide);\n\
+         }\n",
+    );
+    assert_eq!(analysis.codes(), vec!["E0266"]);
+}
+
+#[test]
 fn an_integer_literal_takes_its_type_from_its_context() {
     // The rule that makes `valid/005-decl-typed.jr` legal in a subset with no
     // `cast`. If this regresses, that corpus file stops checking.

@@ -19717,3 +19717,239 @@ proc main -> s64 {
   bb12():
     return 0_s64
 }
+
+========================================
+159-context-new.jr
+========================================
+proc dirty_allocate -> *u8 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    goto bb1(0_s64)
+  bb1(v2: s64):
+    v3: bool = v2 < v1
+    branch v3 ? bb2() : bb3()
+  bb2():
+    bounds_check v2 < 256_s64
+    store g3[v2] <- 255_u8
+    v4: s64 = v2 + 1_s64
+    goto bb1(v4)
+  bb3():
+    goto bb4()
+  bb4():
+    bounds_check 0_s64 < 256_s64
+    v5: *u8 = addr g3[0_s64]
+    return v5
+}
+proc ignore_release -> void {
+  params: v0: *Context, v1: *u8
+  bb0(v0: *Context, v1: *u8):
+    return
+}
+proc fail_allocate -> *u8 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    return 0_*u8
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: *Node  // temporary
+    s1: [..]*Node  // local 1
+    s2: **Node  // temporary
+    s3: *u8  // temporary
+    s4: *u8  // temporary
+    s5: *u8  // temporary
+    s6: *Node  // temporary
+  bb0(v0: *Context):
+    store (v0).*.0 <- proc0
+    store (v0).*.1 <- proc1
+    v1: (s64) -> *u8 = load (v0).*.0
+    v2: *u8 = call (v1)(v0, 64_s64)
+    store s0 <- v2
+    v3: *Node = load s0
+    v4: bool = v3 != 0_*Node
+    branch v4 ? bb1() : bb2()
+  bb1():
+    zero (v3).*
+    goto bb3()
+  bb2():
+    goto bb3()
+  bb3():
+    v5: bool = v3 == 0_*Node
+    branch v5 ? bb4() : bb5()
+  bb4():
+    discard call extern proc1(1_s64)
+    goto bb6()
+  bb5():
+    goto bb6()
+  bb6():
+    v7: *u8 = load (v3).*.0.data
+    v8: bool = v7 != 0_*u8
+    branch v8 ? bb8() : bb7()
+  bb8():
+    goto bb9(true)
+  bb7():
+    v10: s64 = load (v3).*.0.count
+    v11: bool = v10 != 0_s64
+    goto bb9(v11)
+  bb9(v9: bool):
+    branch v9 ? bb10() : bb11()
+  bb10():
+    discard call extern proc1(2_s64)
+    goto bb12()
+  bb11():
+    goto bb12()
+  bb12():
+    v14: **Node = load (v3).*.1.dyn_data
+    v15: bool = v14 != 0_**Node
+    branch v15 ? bb14() : bb13()
+  bb14():
+    goto bb15(true)
+  bb13():
+    v17: s64 = load (v3).*.1.dyn_count
+    v18: bool = v17 != 0_s64
+    goto bb15(v18)
+  bb15(v16: bool):
+    branch v16 ? bb17() : bb16()
+  bb17():
+    goto bb18(true)
+  bb16():
+    v21: s64 = load (v3).*.1.dyn_capacity
+    v22: bool = v21 != 0_s64
+    goto bb18(v22)
+  bb18(v19: bool):
+    branch v19 ? bb19() : bb20()
+  bb19():
+    discard call extern proc1(3_s64)
+    goto bb21()
+  bb20():
+    goto bb21()
+  bb21():
+    v25: *u8 = load (v3).*.2.0
+    v26: bool = v25 != 0_*u8
+    branch v26 ? bb23() : bb22()
+  bb23():
+    goto bb24(true)
+  bb22():
+    v28: s64 = load (v3).*.2.1
+    v29: bool = v28 != 0_s64
+    goto bb24(v29)
+  bb24(v27: bool):
+    branch v27 ? bb26() : bb25()
+  bb26():
+    goto bb27(true)
+  bb25():
+    v32: s64 = load (v3).*.2.2
+    v33: bool = v32 != 0_s64
+    goto bb27(v33)
+  bb27(v30: bool):
+    branch v30 ? bb28() : bb29()
+  bb28():
+    discard call extern proc1(4_s64)
+    goto bb30()
+  bb29():
+    goto bb30()
+  bb30():
+    zero s1
+    v34: (s64) -> *u8 = load (v0).*.0
+    v35: s64 = 2_s64 * 8_s64
+    v36: *u8 = call (v34)(v0, v35)
+    store s2 <- v36
+    v37: **Node = load s2
+    store s1.dyn_data <- v37
+    v38: **Node = load s1.dyn_data
+    v39: bool = v38 == 0_**Node
+    branch v39 ? bb31() : bb32()
+  bb31():
+    discard call extern proc1(5_s64)
+    goto bb33()
+  bb32():
+    goto bb33()
+  bb33():
+    store s1.dyn_capacity <- 2_s64
+    v40: **Node = load s1.dyn_data
+    store (v40).* <- v3
+    store s1.dyn_count <- 1_s64
+    v44: **Node = load s1.dyn_data
+    v45: *Node = load (v44).*
+    v46: bool = v45 != v3
+    branch v46 ? bb34() : bb35()
+  bb34():
+    discard call extern proc1(6_s64)
+    goto bb36()
+  bb35():
+    goto bb36()
+  bb36():
+    v47: (*u8) -> void = load (v0).*.1
+    v48: **Node = load s1.dyn_data
+    store s3 <- v48
+    v49: *u8 = load s3
+    discard call (v47)(v0, v49)
+    v50: (*u8) -> void = load (v0).*.1
+    store s4 <- v3
+    v52: *u8 = load s4
+    discard call (v50)(v0, v52)
+    v53: *s64 = call proc5(v0, 99_s64)
+    v54: bool = v53 == 0_*s64
+    branch v54 ? bb38() : bb37()
+  bb38():
+    goto bb39(true)
+  bb37():
+    v56: s64 = load (v53).*
+    v57: bool = v56 != 0_s64
+    goto bb39(v57)
+  bb39(v55: bool):
+    branch v55 ? bb40() : bb41()
+  bb40():
+    discard call extern proc1(7_s64)
+    goto bb42()
+  bb41():
+    goto bb42()
+  bb42():
+    v58: (*u8) -> void = load (v0).*.1
+    store s5 <- v53
+    v61: *u8 = load s5
+    discard call (v58)(v0, v61)
+    store (v0).*.0 <- proc2
+    v62: (s64) -> *u8 = load (v0).*.0
+    v63: *u8 = call (v62)(v0, 64_s64)
+    store s6 <- v63
+    v64: *Node = load s6
+    v65: bool = v64 != 0_*Node
+    branch v65 ? bb43() : bb44()
+  bb43():
+    zero (v64).*
+    goto bb45()
+  bb44():
+    goto bb45()
+  bb45():
+    v66: bool = v64 != 0_*Node
+    branch v66 ? bb46() : bb47()
+  bb46():
+    discard call extern proc1(8_s64)
+    goto bb48()
+  bb47():
+    goto bb48()
+  bb48():
+    discard call extern proc1(42_s64)
+    return
+}
+proc $inst0 -> *s64 {
+  params: v0: *Context, v1: s64
+  slots:
+    s0: *s64  // temporary
+  bb0(v0: *Context, v1: s64):
+    v2: (s64) -> *u8 = load (v0).*.0
+    v3: *u8 = call (v2)(v0, 8_s64)
+    store s0 <- v3
+    v4: *s64 = load s0
+    v5: bool = v4 != 0_*s64
+    branch v5 ? bb1() : bb2()
+  bb1():
+    zero (v4).*
+    goto bb3()
+  bb2():
+    goto bb3()
+  bb3():
+    return v4
+}

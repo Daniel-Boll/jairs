@@ -87,6 +87,8 @@ enum Intrinsic {
     Untyped,
     /// `view(p, count)` — a `[]T` over `count` elements at `p` (ADR-0109 §1).
     View,
+    /// `New(T)` — one zero-initialised `T` allocated through the active context (ADR-0228).
+    New,
     /// `os()` — the target operating system, as a `Basic.Operating_System` (ADR-0180 §2).
     ///
     /// The only intrinsic that takes **no** arguments, and the only one whose answer comes from the
@@ -112,6 +114,13 @@ enum Intrinsic {
     /// `assert(condition[, "message"])` — a source-located run-time check (ADR-0224).
     Assert,
 }
+
+/// Minimum alignment promised by the context allocator protocol.
+///
+/// The default native allocator is libc `malloc`, and the VM deliberately matches its 16-byte
+/// guarantee. The protocol carries only a byte count, not an alignment, so `New` cannot honestly
+/// request anything stricter from a custom allocator either (ADR-0228 §2).
+const CONTEXT_ALLOCATOR_ALIGNMENT: u32 = 16;
 
 /// How a `Type_Info` field's type is checked.
 #[derive(Debug, Clone, Copy)]
@@ -267,6 +276,12 @@ pub struct CheckOutput {
     /// Real code rather than a fold, so it goes to `jr-mir` rather than into `folded_calls`: a pointer's bits
     /// do not depend on its pointee, and retyping is a store-then-load through a slot.
     pub pointer_views: FxHashMap<(ExprScope, ExprId), PoolId>,
+    /// Each `New(T)` call, carrying `(result pointer type, byte-count constant)` (ADR-0228).
+    ///
+    /// The byte count is interned here because MIR deliberately knows no layout. The result type is
+    /// recorded rather than recovered from syntax so parameterised and instantiated types cross the
+    /// sema-to-MIR boundary once, already resolved.
+    pub allocations: FxHashMap<(ExprScope, ExprId), (PoolId, PoolId)>,
     /// Which atomic operation each `atomic_*` call performs (ADR-0176 §3).
     ///
     /// Recorded here for the reason `pointer_views` is: an intrinsic's callee resolves to nothing, so MIR
@@ -547,6 +562,7 @@ pub fn check_file(
         filled_calls: ctx.filled_calls,
         folded_calls: ctx.folded_calls,
         pointer_views: ctx.pointer_views,
+        allocations: ctx.allocations,
         atomics: ctx.atomics,
         assertions: ctx.assertions,
         folded_call_spans: ctx.folded_call_spans,
@@ -3567,6 +3583,7 @@ impl Ctx<'_> {
             // other boundary intrinsics because its *result* type comes from an argument's pointee rather than
             // from anything the ordinary call path could compute.
             Some(Intrinsic::View) => return self.check_view(scope, id, callee, args, span),
+            Some(Intrinsic::New) => return self.check_new(scope, id, callee, args, span),
             // **`os()` folds to a `Basic.Operating_System` member** (ADR-0180 §2). Intercepted here
             // because it takes no arguments and its *type* is a library enum the compiler has to look up
             // by name — neither of which the ordinary call path can do.
@@ -3981,6 +3998,7 @@ impl Ctx<'_> {
             "typed" => Intrinsic::Typed,
             "untyped" => Intrinsic::Untyped,
             "view" => Intrinsic::View,
+            "New" => Intrinsic::New,
             "os" => Intrinsic::Os,
             "atomic_load" => Intrinsic::AtomicLoad,
             "atomic_store" => Intrinsic::AtomicStore,
@@ -4701,6 +4719,88 @@ impl Ctx<'_> {
         let result = self.pool.pointer_to(described);
         self.pointer_views.insert((scope, id), result);
         self.expect(None, result, span)
+    }
+
+    /// Types `New(T)` and records the concrete allocation for MIR (ADR-0228).
+    fn check_new(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        self.types.set_expr(scope, callee, PoolId::VOID);
+        if args.len() != 1 {
+            self.wrong_intrinsic_arity("New", 1, args.len(), span);
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+
+        self.type_position.insert((scope, args[0]));
+        let described = self.described_type(scope, args[0]);
+        self.types.set_expr(scope, args[0], PoolId::TYPE);
+        let Some(described) = described else {
+            if let Expr::Name { name, .. } = self.expr_of(scope, args[0])
+                && self.poly_var_names.contains(&name)
+            {
+                return PoolId::ERROR;
+            }
+            self.diags.push(
+                Diagnostic::error(span, "`New` needs a type to allocate")
+                    .with_code(E0261)
+                    .with_note("its argument is the allocated type, e.g. `New(Node)`"),
+            );
+            return PoolId::ERROR;
+        };
+        if described == PoolId::ERROR {
+            return PoolId::ERROR;
+        }
+
+        // Reuse the context diagnostic exactly: file scope and `#c_call` bodies have no allocator to call.
+        if self.context_expr_type(scope, span) == PoolId::ERROR {
+            return PoolId::ERROR;
+        }
+
+        let Ok(layout) = jr_pool::layout_of(self.pool, jr_pool::TargetLayout::LP64, described)
+        else {
+            let text = self.describe(described);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`New` cannot allocate `{text}`, which has no runtime layout"),
+                )
+                .with_code(E0266)
+                .with_note("only a run-time value type has storage an allocator can provide"),
+            );
+            return PoolId::ERROR;
+        };
+        if layout.align > CONTEXT_ALLOCATOR_ALIGNMENT {
+            let text = self.describe(described);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!(
+                        "`New` cannot allocate `{text}`, which needs {}-byte alignment",
+                        layout.align
+                    ),
+                )
+                .with_code(E0266)
+                .with_note(
+                    "the context allocator takes only a byte count and promises at least 16-byte alignment",
+                )
+                .with_help("allocate aligned storage explicitly, or use a type aligned to at most 16 bytes"),
+            );
+            return PoolId::ERROR;
+        }
+
+        let result = self.pool.pointer_to(described);
+        let bytes = self.pool.int_value(PoolId::S64, layout.size);
+        self.allocations.insert((scope, id), (result, bytes));
+        self.types.set_expr(scope, id, result);
+        result
     }
 
     /// Types `view(p, count)` — a `[]T` over `count` elements at `p` (ADR-0109 §1).

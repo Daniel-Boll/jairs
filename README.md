@@ -57,7 +57,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0227.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0228.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -101,6 +101,12 @@ but remain positional metadata: they create no body locals, do not change proced
 and do not alter call or return semantics. Duplicate labels are E0298. Jai's broader
 unparenthesized/defaulted named-return forms remain explicit compatibility gaps.
 
+`New(T)` now allocates one zero-initialized `T` through the active context allocator and returns
+`*T`. It preserves a null allocator result, works inside same-file polymorphic procedures, and
+supports representation-indirect recursive shapes such as a `Node` containing `[..]*Node`.
+Release remains explicit through the matching context allocator. The allocator protocol carries
+only a byte count, so `New` refuses types requiring alignment above its 16-byte guarantee.
+
 Every fresh Jairs context now has a working allocator/free pair in the VM, Cranelift and LLVM;
 assigning a custom pair and copying one through `push_context` remain unchanged. Whole-file
 read/write/append operations live in `File`, and every successful read — including an empty file —
@@ -119,8 +125,8 @@ parsers. `parse_int(*string)` consumes the parsed prefix. Exact byte/string over
 wait for general procedure overloading rather than being approximated with more ad-hoc names.
 
 Compatibility claims now have an executable baseline rather than only a prose matrix. One strict
-manifest covers all **35 example-bearing guide groups** with **36** repository-owned probes,
-including a second chapter 17 probe for result labels. Six selected examples are source-compatible at the pinned guide
+manifest covers all **35 example-bearing guide groups** with **37** repository-owned probes,
+including second probes for chapter 11's `New(int)` and chapter 17's result labels. Six selected examples are source-compatible at the pinned guide
 revision; the others pin a working port, an exact blocker, or an intentional divergence. Ordinary
 tests never read the submodule. The guide has 42 numbered groups and 315 examples, so the baseline
 deliberately makes no percentage claim; the full assessment and dependency-ordered plan live in
@@ -190,9 +196,9 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1369** workspace tests (**1382** under gate 7), with all six ordinary gates and gate 7 green
-  for ADR-0227.
-- **296** `.jr` corpus files, **227** accepted ADRs, **25** standard library
+- **1375** workspace tests (**1388** under gate 7), with all six ordinary gates and gate 7 green
+  for ADR-0228.
+- **297** `.jr` corpus files, **228** accepted ADRs, **25** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative

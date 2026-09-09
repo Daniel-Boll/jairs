@@ -325,8 +325,8 @@ Status of each slice component, so this is answerable without reading the tree.
 > arms, preserves project indentation and line endings, and verifies the client diagnostic against
 > the current compiler result before editing. It deliberately offers no `else` shortcut.
 >
-> **Current executable compatibility baseline (ADR-0219, ADR-0227).** One strict manifest covers all 35
-> example-bearing top-level groups in the pinned `The_Way_to_Jai` guide with 36 owned probes.
+> **Current executable compatibility baseline (ADR-0219, ADR-0227, ADR-0228).** One strict manifest covers all 35
+> example-bearing top-level groups in the pinned `The_Way_to_Jai` guide with 37 owned probes.
 > `jr-cli` turns each row
 > into a named test, copies the repository-owned probe and fixtures into an isolated directory, and
 > exercises the real check/run/build boundary. Six representatives are source-compatible at the
@@ -339,6 +339,14 @@ Status of each slice component, so this is answerable without reading the tree.
 > optional names beside, never inside, the interned return type; E0298 rejects duplicates. The
 > formatter, Tree-sitter and LSP preserve the labels, while body scope, call ABI, destructuring and
 > return checking remain positional and unchanged.
+
+> **Current allocation surface (ADR-0228).** `New(T)` is a shadowable unresolved-name intrinsic
+> returning `*T`. It allocates through the active context, preserves a null result, zeroes a
+> successful pointee with the existing MIR whole-place operation, and leaves release explicit.
+> The exact requested `Node { children: [..]*Node; properties: Table(string, string); }` shape
+> already checked before this wave: nominal identity precedes field resolution, while pointers and
+> dynamic arrays break representation recursion. `New` accepts layouts aligned to at most 16 bytes,
+> the guarantee of the size-only allocator protocol, and works inside same-file `$T` instantiations.
 
 > **Current correction to the cumulative component notes.** ADR-0117 superseded the older
 > `jr-sema` sentence that associated E0269 with cross-file parameterised structs. Generic struct
@@ -378,7 +386,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the real-editor verifier — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua` needs an editor CI does not have. The installed parser is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The verifier asserts tree-sitter node kinds and nesting that ADR-0010's error-count gate cannot see, plus live LSP requests against the real server. |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and another LSP client may launch it; the repository packages integrations for Neovim and Zed. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–**0226**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
+Accepted ADRs: 0001–**0228**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
 counts here are why the ADR index row and this line move in the same commit.
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
@@ -679,54 +687,43 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0227 adds declaration-only result labels without a second return model.**
-> `-> (exists: bool)` and mixed named/unnamed lists preserve their labels in source tooling, while
-> procedure type identity, calls, destructuring, body scope and MIR remain exactly positional.
-> A one-result list keeps its label even though its type normalises to the scalar; E0298 rejects
-> duplicate labels. The executable Way-to-Jai baseline now has 36 probes across 35 groups and names
-> the remaining unparenthesized/defaulted/implicit-return gap.
+> **ADR-0228 adds context-allocated `New(T)` without a second allocation model.**
+> `New(Node)` calls the active context allocator, returns null when it does, zeroes success, and
+> releases only when the caller explicitly invokes the matching allocator-free procedure. The exact
+> recursive `Node` and `[..]*Node` stack shapes were probes, not new type-system work: both already
+> compose. The executable Way-to-Jai baseline now has 37 probes across 35 groups.
 
-**1369 workspace tests (1382 under gate 7), 296 corpus files, 227 ADRs and 25 modules.** ADR-0227
-adds six direct Rust tests plus one generated compatibility case, one valid program, one type-error
-fixture and one compatibility probe. All six
-ordinary gates are green; gate 7 is unchanged and green because this wave does not touch MIR,
-layout or a back end. **E0299** is the first free global diagnostic code; **E0135** is the first
-free parser code.
+**1375 workspace tests (1388 under gate 7), 297 corpus files, 228 ADRs and 25 modules.** ADR-0228
+adds four direct sema tests, one generated compatibility case, one valid corpus program and one
+compatibility probe. The corpus program executes the requested recursive node shape, a native
+`[..]*Node` stack, same-file generic `New(T)`, dirty-memory zeroing and null failure. All six
+ordinary gates and gate 7 are green. **E0299** is the first free global diagnostic code;
+**E0135** is the first free parser code.
 
-### Next wave: representation-safe recursive nominal structs
+### Next wave: cross-file generic procedure specialization
 
-This is the substrate for the requested `Node`:
+This is the real compiler blocker for both requested generic containers. `Table(string, string)`
+already names a cross-file polymorphic struct instance, but calling an imported `$K/$V` operation
+is still E0268, and inference currently ignores `TypeRef::Apply`.
 
-```text
-Node :: struct {
-  name: string;
-  children: [..]*Node;
-  properties: Table(string, string);
-}
-```
+The accepted recommended direction is:
 
-The decider accepted the recommended boundary:
-
-1. Predeclare nominal struct identities before resolving their fields, so a field may name its own
-   struct or a mutually recursive peer.
-2. Permit cycles only when a representation-indirect constructor breaks layout recursion: pointers,
-   views and dynamic arrays. `next: *Node` and `children: [..]*Node` are legal; `next: Node` and
-   `[1]Node` remain finite-layout errors.
-3. Diagnose the shortest known inline cycle at the field that closes it. Do not turn an unresolved
-   layout into zero size or an internal error.
-4. Cover direct self-reference, mutual pointer recursion, dynamic arrays of pointers and illegal
-   direct/fixed-array cycles. Run gate 7 because `jr-pool` layout is in scope.
+1. Infer type variables through parameterized nominal types, so a parameter such as
+   `*Table($K, $V)` binds both variables from `*Table(string, string)`.
+2. Key a specialization by the template's full `ProcRef` plus bound types, not by a caller-local
+   `ProcId`.
+3. Materialize the clone in the declaration file, then redirect every importing caller to that
+   owner-file specialization through one root-scoped fixed point.
+4. Keep imported `$N` comptime-value templates refused in this wave; their evaluated arguments add
+   a separate cross-file const-eval dependency.
+5. Pin both `Hash_Table`-shaped inference and ordinary imported generic procedures before converting
+   a library module.
 
 ### Following waves required by the requested container surface
 
-1. **`New(T)`.** A compiler-recognised type argument allocates one zero-initialised `T` through the
-   active context allocator, returns `*T`, returns `null` on failure, and leaves cleanup explicit.
-   It must accept `New(Node)` and `New(Table(string, string))`; gate 7 is mandatory.
-2. **Generic procedure substrate.** Close cross-file polymorphic instantiation and infer `$K/$V`
-   through parameterised nominal types so imported container operations can be genuinely generic.
-3. **Dynamic-array operations.** Generalise `modules/List` to `$T`, including `[..]*Node`, so a
+1. **Dynamic-array operations.** Generalise `modules/List` to `$T`, including `[..]*Node`, so a
    caller can maintain a stack of node pointers without a concrete per-type module.
-4. **`Hash_Table`.** Ship `Table(K, V)` with add/update, find, remove, contains, reserve, clear,
+2. **`Hash_Table`.** Ship `Table(K, V)` with add/update, find, remove, contains, reserve, clear,
    pointer lookup/mutation, explicit iteration and cleanup; string and integer hash/equality helpers;
    captured allocator ownership; unspecified iteration order. Keep `Map` compatible. Exact
    `for table` expansion remains a separate metaprogramming feature rather than a fake special case.

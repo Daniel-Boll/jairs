@@ -207,6 +207,8 @@ pub(crate) struct Ctx<'a> {
     /// depend on its pointee, so retyping is a store-then-load through a slot (the mechanism ADR-0076 §1
     /// already uses), and lowering needs to know the target type to make the slot.
     pub(crate) pointer_views: FxHashMap<(ExprScope, jr_hir::ExprId), PoolId>,
+    /// Each `New(T)` call as `(result pointer type, byte-count constant)` (ADR-0228).
+    pub(crate) allocations: FxHashMap<(ExprScope, jr_hir::ExprId), (PoolId, PoolId)>,
     /// Which atomic operation each `atomic_*` call performs, as an `AtomicOp` code (ADR-0176 §3).
     pub(crate) atomics: FxHashMap<(ExprScope, jr_hir::ExprId), u8>,
     /// Each compiler-recognised `assert` call and its optional decoded static message (ADR-0224 §2).
@@ -327,6 +329,7 @@ impl<'a> Ctx<'a> {
             type_info_calls: FxHashMap::default(),
             folded_calls: FxHashMap::default(),
             pointer_views: FxHashMap::default(),
+            allocations: FxHashMap::default(),
             atomics: FxHashMap::default(),
             assertions: FxHashMap::default(),
             folded_call_spans: FxHashMap::default(),

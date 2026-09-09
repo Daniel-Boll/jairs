@@ -475,6 +475,9 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> MirRes
                 for (scope, _) in unexpanded.pointer_views.keys() {
                     note(*scope);
                 }
+                for (scope, _) in unexpanded.allocations.keys() {
+                    note(*scope);
+                }
                 for (scope, _) in unexpanded.atomics.keys() {
                     note(*scope);
                 }
@@ -623,6 +626,10 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> MirRes
                 // the template's scope *has*, and the template's scope has nothing here.
                 for ((scope, expr), ty) in inst.check.pointer_views.iter() {
                     values.set_pointer_view(*scope, *expr, *ty);
+                }
+                // `New(T)` inside a template is withheld until `T` is bound, exactly like `typed(T, …)`.
+                for ((scope, expr), (pointer, bytes)) in inst.check.allocations.iter() {
+                    values.set_allocation(*scope, *expr, *pointer, *bytes);
                 }
                 // An atomic inside an instantiated template, for the same reason: the template's own scope
                 // records nothing, because `T` is bound only here.

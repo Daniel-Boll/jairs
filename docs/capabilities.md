@@ -9,11 +9,11 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1369** workspace tests (**1382** under gate 7), with all six ordinary gates and gate 7 green
-  for ADR-0227.
-- **296** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
-  (**307** counting those).
-- **227** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **1375** workspace tests (**1388** under gate 7), with all six ordinary gates and gate 7 green
+  for ADR-0228.
+- **297** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
+  (**308** counting those).
+- **228** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **25** standard library modules under `modules/`.
 - Diagnostic codes run **E0001–E0298**; **E0299** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership
@@ -39,7 +39,8 @@ behind them — that narrative is not duplicated here):
 | Inspect tokens or the CST | `jr parse file.jr` | Debug aid |
 | Measure language-server latency | `jr bench file.jr` | Reports min/median/p95 cold, warm and after an edit. **Reports, never judges** — no threshold, not a gate (ADR-0033), so a performance regression is invisible to CI by construction |
 | Measure compile throughput | `jr bench --throughput paths…` | Lines and bytes per second for `check` and `build`, cold only — a compiler is a process, so there is no warm throughput to report (ADR-0146). Same contract: reports, never judges |
-| Run the executable guide-compatibility baseline | `cargo test -p jr-cli --test compatibility` | One strict manifest covers all 35 example-bearing top-level groups in the pinned `The_Way_to_Jai` guide with 36 owned probes; chapter 17 now separately pins declaration-only result labels. Every row runs in an isolated directory and records a source-compatible example, a port, an exact blocker, or an intentional divergence. Six representatives are source-compatible at the pinned revision. The test never reads the submodule, and this sample does **not** justify a percentage claim (ADR-0219, ADR-0222, ADR-0227) |
+| Run the executable guide-compatibility baseline | `cargo test -p jr-cli --test compatibility` | One strict manifest covers all 35 example-bearing top-level groups in the pinned `The_Way_to_Jai` guide with 37 owned probes; chapter 11 separately pins `New(int)` and chapter 17 declaration-only result labels. Every row runs in an isolated directory and records a source-compatible example, a port, an exact blocker, or an intentional divergence. Six representatives are source-compatible at the pinned revision. The test never reads the submodule, and this sample does **not** justify a percentage claim (ADR-0219, ADR-0222, ADR-0227, ADR-0228) |
+| Allocate one zeroed value | `p := New(Point)` | Uses the active context allocator and returns `*Point`; a null allocator result stays null, release is explicit through the matching allocator, and the type's required alignment must be at most 16 bytes. Representation-indirect recursive shapes such as `Node { children: [..]*Node; }` work (ADR-0228) |
 | Own a game-loop foundation | `Game.open`, `begin_frame`, `end_frame`, `close` | One explicit `Game.App` owns SDL/window/Simp startup, one event drain, close latching, monotonic delta time, presentation and idempotent teardown (ADR-0210). Only one App may be open because Simp has one process-global renderer, and its lifecycle stays on one thread. Held input, primitive helpers, textures, PNG, text and audio are later slices |
 | Print anything | `print("x = %, ok = %\n", 42, true)` from `modules/Basic` | Written in Jairs (ADR-0189, ADR-0193). Every integer width signed and unsigned including `S64_MIN`, floats, `bool`, `string`, pointers as hex, a struct one level deep, an array's and a view's elements, and an enum by **member name**. A nested aggregate or enum *field* still prints `..`: a field's type is an *id* and an id cannot be resolved to a `*Type_Info` |
 | Build text incrementally | `Basic.String_Builder`, `append`, `print_to_builder`, `builder_to_string`, `free_buffers` | A zero value lazily captures the active allocator triple; explicit initialization resets first. Private buffers stay chained and stable, conversion copies through the caller's current allocator, and cleanup is idempotent. `print_to_builder` uses the same renderer as `print`, supports one-based `%1`/`%2` selection, and bypasses `format`'s 4096-byte staging limit. Byte and pointer-length append have explicit names until general procedure overloading exists (ADR-0217) |
