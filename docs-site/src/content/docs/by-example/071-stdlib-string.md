@@ -238,6 +238,48 @@ request rather than trapping — asking for more than remains gives what remains
 `byte_at` returns `-1`. Every result is freed, so under the differential harness a leak, a double-free,
 or a wrong copy is a different exit status in one engine. The exit code is **255**.
 
+## Building text incrementally
+
+`String_Builder` lives in `Basic`, matching guide-shaped call sites that use it without a separate
+module. A zero value initializes lazily, or `init_string_builder` captures the current allocator
+explicitly. Its private buffers keep that allocator even if the active context later changes;
+`builder_to_string` instead copies through the allocator active at conversion time.
+
+```jr
+#import "Basic";
+#import "String";
+
+main :: () {
+    builder: String_Builder;
+    defer free_buffers(*builder);
+
+    if !append(*builder, "answer = ") {
+        exit(1);
+    }
+    if !print_to_builder(*builder, "%2, then %1", 42, "ready") {
+        exit(2);
+    }
+
+    text := builder_to_string(*builder);
+    if !equal(text, "answer = ready, then 42") {
+        free_string(text);
+        exit(3);
+    }
+    free_string(text);
+}
+```
+
+`append_bytes` and `append_byte` are the pointer-length and single-byte forms. They have distinct
+names because Jairs does not yet have general procedure overloading. `print_to_builder` shares the
+renderer used by `print`, but writes directly into the builder instead of the 4096-byte staging array
+used by `format`; long generated text is therefore limited by allocation rather than by that buffer.
+`%1`, `%2`, … select arguments one-based and may repeat or reorder them.
+
+`builder_to_string` does not empty the builder, and `free_buffers` never invalidates a string already
+returned from it. Cleanup is idempotent, and a freed builder may be reused with the allocator it
+captured. Exact Jai behavior for the guide's optional destination allocator and
+`extra_bytes_to_prepend` remains unconfirmed and is not guessed (ADR-0217).
+
 ## The C string boundary
 
 A Jairs `string` is counted, and a C string is NUL-terminated — the two conventions do not coerce into

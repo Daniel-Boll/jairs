@@ -297,6 +297,14 @@ Status of each slice component, so this is answerable without reading the tree.
 > `new_context` share the rule, and custom assignment plus `push_context` remain unchanged.
 > `read_entire_file`, `write_entire_file` and `append_entire_file` now live exclusively in `File`;
 > `File_Utilities` is path text only, and a successful empty read still owns one NUL byte.
+>
+> **Current string-builder surface (ADR-0217).** `Basic.String_Builder` is usable from zero,
+> explicitly initializable, and owns a chain of buffers through the allocator/free/data triple it
+> captures. String, pointer-length and byte appends are available; formatted output shares the
+> existing renderer and supports one-based indexed placeholders without the 4096-byte `format`
+> ceiling. Conversion copies through the caller's active allocator, while `free_buffers` is
+> idempotent and affects only the builder's private chain. `references/The_Way_to_Jai` is pinned as
+> a research-only submodule and is excluded from every build and module path.
 
 | Component | Status | Notes |
 |---|---|---|
@@ -331,7 +339,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the real-editor verifier — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua` needs an editor CI does not have. The installed parser is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The verifier asserts tree-sitter node kinds and nesting that ADR-0010's error-count gate cannot see, plus live LSP requests against the real server. |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and another LSP client may launch it; the repository packages integrations for Neovim and Zed. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–**0216**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
+Accepted ADRs: 0001–**0217**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
 counts here are why the ADR index row and this line move in the same commit.
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
@@ -632,45 +640,46 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0216 closes the approved default-allocator and whole-file API wave.** Fresh contexts in
-> the VM, Cranelift and LLVM install a working allocator/free pair without changing custom
-> assignment or `push_context`. Native defaults are Jairs-ABI wrappers rather than raw libc
-> addresses because a Jairs procedure receives the hidden context argument.
+> **ADR-0217 closes the first `String_Builder` compatibility slice.** `Basic` now exposes a
+> zero-value and explicitly initialized builder, string/pointer-length/byte append, unbounded
+> formatted append, length, copy conversion and idempotent cleanup. Builder storage is a chained
+> allocation owned by the captured allocator triple; the result string is a separate allocation
+> owned by the caller's active allocator.
 >
-> **Whole-file operations now belong to `File` alone.** A successful read always owns its storage,
-> including the empty-file case, and the release path uses the active context allocator.
-> `File_Utilities` retains only path-text operations, avoiding duplicate names in the flat import
-> namespace.
+> **The formatter still has one renderer.** `print_to_builder` adds a destination rather than a
+> second implementation, bypasses the 4096-byte staging limit, and adds `%1`, `%2`, … for repeated
+> or reordered arguments. General procedure overloading is still absent, so byte and pointer-length
+> append use explicit names.
 >
-> **The original `/Users/dboll/dev/p/ora_to_atlas_test/src/main.jr` probe now reaches only its
-> intentionally missing `State.TAG` exhaustiveness error.** Its byte scan, `#char`, `then`,
-> `if #complete`, allocator use and `File` calls all resolve.
+> **`references/The_Way_to_Jai` is now a pinned local research input.** It is a git submodule at
+> `19cb4b7acb0de2798c769f9ad73313a4d15f4056`, excluded from builds, module discovery, the corpus and
+> installed artefacts. [`docs/research/way-to-jai-compatibility.md`](docs/research/way-to-jai-compatibility.md)
+> is the chapter-by-chapter inventory and P0–P7 compatibility roadmap; the guide remains secondary
+> evidence, not a canonical Jai specification.
 
-**1280 workspace tests (1291 under gate 7), 290 corpus files, 216 ADRs, 25 modules, all six required
-gates and gate 7 green.** ADR-0216 adds one executable corpus file plus direct VM, native, build-script
-and ownership coverage. **E0297** is the first free global diagnostic code; **E0135** is the first
-free parser code.
+**1280 workspace tests (1291 under gate 7), 291 corpus files, 217 ADRs, 25 modules, all six required
+gates and gate 7 green.** ADR-0217 adds one executable corpus file; the existing snapshot and
+differential harnesses provide its Rust-side coverage. **E0297** is the first free global diagnostic
+code; **E0135** is the first free parser code.
 
-### Next wave: decide `String_Builder`
+### Next wave: executable compatibility probes (roadmap P0)
 
-Public Jai copies are useful secondary evidence but disagree on exact declarations, so do not add
-`The_Way_to_Jai` as a build submodule. Record pinned source references in the ADR instead. Put these
-forks to the decider before implementation:
+The local guide inventory is broad enough to order work but not to support a compatibility
+percentage. Put these forks to the decider before implementing the probe harness:
 
-1. **Contiguous growable buffer — recommended.** Small state, one eventual copy-free owned result,
-   and conventional amortised growth; reallocation may move the data and the API needs explicit
-   names because Jairs has no procedure overloading.
-2. **Bucket chain.** Appended bytes keep stable addresses and growth does not copy earlier bytes;
-   the builder carries more state, freeing is more complex, and producing one `string` requires a
-   final copy.
-3. **Defer until overloading.** The eventual surface can look closer to one family of Jai copies,
-   but the standard library remains without a builder in the meantime.
+1. **A small representative manifest — recommended.** Pin a few examples per chapter, classify
+   each current failure by compiler/library/tooling phase, and pair source-compatible cases with
+   executable Jairs ports and expected output. This keeps the gate useful and reviewable.
+2. **Every guide example immediately.** Complete coverage sooner, but most entries initially repeat
+   the same missing prerequisite and create a large hand-maintained expectation file.
+3. **Documentation-only tracking.** Cheapest, but preserves the stale-claim failure this repository
+   has repeatedly paid for and cannot justify percentage claims.
 
-For option 1, decide whether the builder captures the allocator triple on first use, and whether
-`builder_to_string` transfers the backing buffer or copies it. The starting surface should cover
-init, append string/byte/bytes, clear, free, length and conversion to owned `string`. An unbounded
-formatted append cannot merely call `Basic.format`, whose current fixed buffer is 4096 bytes; it is
-a separate formatter decision.
+The harness must never execute from inside the submodule or make it a build input. It should consume
+an explicit manifest of pinned paths and Jairs-owned probes. After P0, the first high-leverage
+language fork is general procedure overloading versus inferred aggregate literals; the inventory's
+P1 ordering recommends overloading because it unlocks builder, string, math and container call shapes
+across many chapters.
 
 ### Optimisation queue after diagnostic freshness
 

@@ -16,9 +16,11 @@ linker, FFI, an in-language stdlib module, LSP, tree-sitter grammar, formatter)
 until `hello.jr` is a native binary with IDE support. Only then is the language
 thickened, one feature wave at a time (`PLAN.md` §2).
 
-> **Status: pre-alpha. Nothing works yet.** This specification describes the
-> Jairs-0 design; the implementation is in progress. Where a feature is
-> unimplemented, this spec says so.
+> **Historical boundary, not current status.** This chapter records the
+> original Jairs-0 tracer-bullet design. That slice and many later waves now
+> work; [`docs/capabilities.md`](../capabilities.md) and `PLAN.md` §1.5/§7 are
+> the maintained implementation inventory. Statements below about what is
+> “today” or “unimplemented” are retained as the slice's historical contract.
 
 ## Design values
 
