@@ -55,12 +55,11 @@
 //! **No streaming or incremental parse.** The whole text is in memory already, since a Jairs `string` is
 //! data and a count; a streaming parser answers a different question and would need its own state machine.
 //!
-//! # A caller installs an allocator first
+//! # Parsed strings follow the context allocator
 //!
-//! Parsed strings come from `context.allocator` and are released by `String.free_string`, so a caller
-//! installs one before calling `parse` — the convention ADR-0062 set for `String`'s allocating half, and
-//! forgetting is not silent: `context.allocator` is null until set, and a call through it traps with a
-//! source location.
+//! Parsed strings come from `context.allocator` and are released by `String.free_string`. ADR-0216 installs
+//! a default allocator in every fresh context, so ordinary parsing needs no setup; a caller that replaces
+//! the pair with an arena or another policy gets that policy here too.
 //!
 //! The **node store** is `malloc`ed instead, matching `List` and `Map`. That split is the library's, not
 //! this module's — `String` allocates through the context and the containers do not — and JSON is the first

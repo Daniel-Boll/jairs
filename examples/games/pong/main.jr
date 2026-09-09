@@ -56,24 +56,8 @@ Keys :: struct {
     quit: bool;
 }
 
-// The context allocator, as two wrappers.
-//
-// `String.to_c_string` allocates through `context.allocator`, and an uninstalled one is a null
-// procedure pointer — the program traps with *"call through a null procedure pointer"* at the first
-// call that needs memory. A `#foreign` procedure cannot fill a procedure-pointer field directly,
-// which is why these two wrappers exist rather than `context.allocator = malloc`.
-libc_alloc :: (n: s64) -> *u8 {
-    return malloc(n);
-}
-
-libc_free :: (p: *u8) {
-    free(p);
-}
-
 main :: () {
-    context.allocator = libc_alloc;
-    context.allocator_free = libc_free;
-
+    // String and window setup allocate through the context's default pair.
     frame_budget := budget_from_environment();
 
     if !Window.start() {

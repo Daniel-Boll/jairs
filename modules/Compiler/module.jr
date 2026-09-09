@@ -289,13 +289,13 @@ working_directory :: () -> string {
 
 /// Reads a whole file, through the driver (ADR-0197 §6).
 ///
-/// # Why this exists beside `modules/File_Utilities`
+/// # Why this exists beside `modules/File`
 ///
-/// A `#run` cannot use `File_Utilities`: `modules/File`'s flags are `#run` constants of its own, and a
+/// A `#run` cannot use `File`: its flags are `#run` constants of its own, and a
 /// module's own compile-time evaluation is the one thing compile-time evaluation cannot reach
 /// (ADR-0196 §3). This route has no such problem, because the driver does the reading.
 ///
-/// A `main`-shaped script should prefer `File_Utilities`, which is the real library with the whole surface.
+/// A `main`-shaped script should prefer `File`, which is the real library with the whole surface.
 /// This is for the `#run` case.
 ///
 /// Returns the empty string for a file that cannot be read. Use [`file_exists`] to tell that from an empty
@@ -306,7 +306,7 @@ read_file :: (path: string) -> string {
 
 /// Writes a whole file, creating parent directories, through the driver.
 ///
-/// Returns whether it succeeded. See [`read_file`] for why this exists beside `File_Utilities`.
+/// Returns whether it succeeded. See [`read_file`] for why this exists beside `File`.
 write_file :: (path: string, contents: string) -> bool #must {
     return write_file_raw(path, contents);
 }
@@ -371,8 +371,8 @@ argument :: (index: s64) -> string {
 
 /// Every argument that followed `--`, in order.
 ///
-/// Allocates through `context.allocator`, so a script that calls this must install one — the same
-/// obligation `File_Utilities.read_entire_file` has, and for the same reason.
+/// Allocates through `context.allocator`. A fresh script context has the default pair from ADR-0216;
+/// replacing it still redirects this allocation.
 arguments :: () -> []string {
     n := argument_count_raw();
     if n <= 0 {

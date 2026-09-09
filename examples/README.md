@@ -17,7 +17,7 @@ cargo run -q -p jr-cli -- run examples/<name>.jr -I modules
 | [`04-comptime-run.jr`](04-comptime-run.jr) | `#run` folds a procedure call to a constant at compile time. |
 | [`05-target-os.jr`](05-target-os.jr) | `os()`, the compile-time target-operating-system value. |
 | [`06-array.jr`](06-array.jr) | A fixed-size `[N]T` array: indexing, `.count`, bounds checks. |
-| [`07-file-read.jr`](07-file-read.jr) | Installs an allocator, then writes and reads a whole file. |
+| [`07-file-read.jr`](07-file-read.jr) | Writes and reads a whole file through `File` and the default allocator. |
 | [`08-print-formatted.jr`](08-print-formatted.jr) | `%` placeholders over any type, and what a wrong argument count does. |
 | [`09-language-utilities.jr`](09-language-utilities.jr) | Array literals, typed constants, `type_of`, and an enum printed by name. |
 | [`10-build-script.jr`](10-build-script.jr) | A **build script**: `jr build examples/10-build-script.jr -I modules` runs it, and it compiles another program. Shells out for a git hash, reads `-- release`, chooses per OS. |

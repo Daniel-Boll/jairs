@@ -19,20 +19,9 @@ build work (ADR-0195–0198).
 Compiler :: #import "Compiler";
 String :: #import "String";
 
-libc_alloc :: (n: s64) -> *u8 {
-    return malloc(n);
-}
-
-libc_free :: (p: *u8) {
-    free(p);
-}
-
 main :: () {
-    // `Compiler.arguments()` allocates, so a script that reads its command line installs an
-    // allocator first — the same obligation `File_Utilities.read_entire_file` has.
-    context.allocator = libc_alloc;
-    context.allocator_free = libc_free;
-
+    // `Compiler.arguments()` allocates through the default context allocator. A script can still
+    // replace the pair when it wants an arena or another policy.
     args := Compiler.arguments();
     is_release := args.count > 0 && String.equal(args[0], "release");
 
@@ -165,10 +154,7 @@ build :: () {
         print("target is macOS\n");
     }
 
-    // Allocation at compile time: a string built in the comptime VM's own region.
-    context.allocator = comptime_alloc;
-    context.allocator_free = comptime_free;
-
+    // Allocation at compile time uses the comptime VM's default allocator and its own region.
     paths := string.["modules"];
 
     t := Compiler.create_target("hello");
@@ -181,14 +167,6 @@ build :: () {
     // Declares rather than compiles — see the header.
     Compiler.request_build(t);
     print("target declared\n");
-}
-
-comptime_alloc :: (n: s64) -> *u8 {
-    return malloc(n);
-}
-
-comptime_free :: (p: *u8) {
-    free(p);
 }
 
 #run build();

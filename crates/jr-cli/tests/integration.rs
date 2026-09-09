@@ -3961,9 +3961,9 @@ fn a_build_script_compiles_a_program_and_names_its_artefact() {
 /// A script reads its command line, and branches on it.
 ///
 /// The half of a build script that has nothing to do with the compiler, and the reason this design
-/// runs the script as a program rather than as a `#run`: `Compiler.arguments()` allocates through
-/// `context.allocator`, which needs `malloc`, which is `#foreign` — and compile-time code may call
-/// none (ADR-0006).
+/// runs the script as a program rather than as a `#run`: it wants to act on command-line arguments
+/// and the result of an immediate build. ADR-0216 gives both runtime and compile-time contexts a
+/// working default allocator, so argument collection needs no script-local setup.
 ///
 /// **Both directions are checked**, because a script that ignored its arguments entirely would pass a
 /// test that looked at only one: the artefact would simply always have the same name.
@@ -3983,11 +3983,7 @@ fn a_build_script_reads_its_arguments() {
             "#import \"Basic\";\n\
              Compiler :: #import \"Compiler\";\n\
              String :: #import \"String\";\n\
-             libc_alloc :: (n: s64) -> *u8 {{ return malloc(n); }}\n\
-             libc_free :: (p: *u8) {{ free(p); }}\n\
              main :: () {{\n\
-             \x20   context.allocator = libc_alloc;\n\
-             \x20   context.allocator_free = libc_free;\n\
              \x20   args := Compiler.arguments();\n\
              \x20   is_release := args.count > 0 && String.equal(args[0], \"release\");\n\
              \x20   t := Compiler.create_target(\"app\");\n\
@@ -4200,19 +4196,15 @@ fn a_build_script_shells_out_and_reads_the_output() {
         format!(
             "#import \"Basic\";\n\
              Compiler :: #import \"Compiler\";\n\
-             FU :: #import \"File_Utilities\";\n\
-             libc_alloc :: (n: s64) -> *u8 {{ return malloc(n); }}\n\
-             libc_free :: (p: *u8) {{ free(p); }}\n\
+             File :: #import \"File\";\n\
              main :: () {{\n\
-             \x20   context.allocator = libc_alloc;\n\
-             \x20   context.allocator_free = libc_free;\n\
              \x20   c := Compiler.command(\"echo\");\n\
              \x20   Compiler.argument_of(c, \"from-a-subprocess\");\n\
              \x20   status := Compiler.run(c);\n\
              \x20   said := Compiler.output(c);\n\
              \x20   no_args: []string;\n\
              \x20   failed := Compiler.shell(\"false\", no_args);\n\
-             \x20   _ = FU.write_entire_file(\"{}\", said);\n\
+             \x20   _ = File.write_entire_file(\"{}\", said);\n\
              \x20   if status != 0 {{ exit(2); }}\n\
              \x20   if failed == 0 {{ exit(3); }}\n\
              \x20   t := Compiler.create_target(\"app\");\n\

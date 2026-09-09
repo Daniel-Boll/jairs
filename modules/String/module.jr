@@ -49,10 +49,10 @@
 //! carry exactly this (ADR-0001) and a caller who wants arena behaviour installs an arena and gets it for every
 //! routine at once.
 //!
-//! **A caller must install an allocator first.** `context.allocator` is null until then (ADR-0057 §5), and
-//! calling a null one traps (ADR-0110) — so a program that concatenates without installing an allocator gets a
-//! trap naming the null pointer, not a silent wrong answer. A failed allocation returns `""`, because ADR-0058
-//! §4's line is that a trap is for a *program* error and running out of memory is not one.
+//! **A fresh context has a default allocator** (ADR-0216), so ordinary callers need no setup. A caller who
+//! wants arena behaviour still replaces `context.allocator` and `context.allocator_free` once and gets that
+//! policy for every routine. A failed allocation returns `""`, because ADR-0058 §4's line is that a trap is
+//! for a *program* error and running out of memory is not one.
 //!
 //! **And it needs no `#import "Basic"`.** The allocator comes from `context`, which is a *language* facility
 //! (ADR-0057) rather than a library name — so this module reaches its allocation through a hidden parameter every
@@ -935,13 +935,13 @@ to_bool :: (s: string) -> (bool, bool) {
 /// digits, an optional `.` and digits, an optional `e`/`E` with an optional sign and digits — and `strtod`
 /// only ever sees bytes that already matched it.
 ///
-/// # It needs an installed allocator
+/// # Its scratch follows the context allocator
 ///
 /// `strtod` reads to a **NUL**, and a Jairs `string` has none (ADR-0004) — the trap that made
 /// `glShaderSource` compile whatever followed a shader in memory. So the matched bytes are copied into a
 /// NUL-terminated scratch buffer from `context.allocator`, and freed before returning. That is the same
-/// obligation the rest of this module's allocating half already has, and forgetting is not silent:
-/// `context.allocator` is null until set and a call through it traps.
+/// ownership convention the rest of this module's allocating half already has. ADR-0216 gives a fresh
+/// context a working default; replacing the allocator also redirects this scratch allocation.
 ///
 /// `talloc` would be the tidier scratch and is deliberately not used: it lives in `modules/Basic`, and this
 /// module imports nothing (see the module docs). One parse is not worth that dependency.

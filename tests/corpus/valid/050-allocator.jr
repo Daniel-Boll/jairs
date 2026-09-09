@@ -12,6 +12,9 @@
 //   * an allocator **installed in the context is reachable from a callee** — `alloc_through_context`
 //     never sees the installation, it just reads `context.allocator` and calls it. That is the whole
 //     argument for a context (ADR-0001): an allocator travels with the call;
+//   * a **fresh context already has a working allocator** (ADR-0216), so ordinary library use needs
+//     no setup; installing one below proves custom allocators remain a replacement rather than a
+//     second API;
 //   * the **state word travels too**, and a callee reads what its caller wrote (ADR-0057 §2), which
 //     is what makes a stateful allocator possible at all;
 //   * a **second allocator replaces the first**, and calls after the swap go to the new one — so the
@@ -63,9 +66,19 @@ free_through_context :: (p: *u8) {
 main :: () {
     n := 0;
 
-    // Nothing is installed yet: the context is zeroed (ADR-0057 §5), so the allocator is null.
-    // Calling through it would trap, which is the honest failure for a configuration error — so this
-    // file installs one first and never calls a null allocator.
+    // ADR-0216 installs a default allocator in every fresh context. It allocates real writable bytes
+    // and its matching free half is ready without any program setup.
+    default := alloc_through_context(8);
+    if default == null {
+        exit(1);
+    }
+    default.* = 42;
+    if default.* != 42 {
+        exit(1);
+    }
+    free_through_context(default);
+
+    // The allocator's state word remains program-owned and starts at zero.
     if context.allocator_data == 0 {
         n = n + 1;
     }

@@ -56,11 +56,10 @@ line, and a callee allocates through it without knowing which allocator it got:
 p := context.allocator(64);      // allocate 64 bytes through whatever is installed
 ```
 
-The context starts **zeroed**, so an uninstalled allocator is a **null procedure pointer, and
-calling through it traps** — a clear failure for a configuration mistake, rather than a null
-return that every allocation site would have to check. A program installs libc's `malloc` (via
-a one-line wrapper, since a `#foreign` procedure cannot be installed directly) or an arena, and
-every routine below picks it up.
+A fresh context starts with a libc-like default allocator pair (ADR-0216); the state word and
+temporary-storage fields start zero. A program may replace the pair with wrappers around libc or
+with an arena, and every routine below picks up the active policy. A `#foreign` procedure still
+cannot be installed directly because its calling convention lacks the hidden context parameter.
 
 ## Raw memory: malloc, free, null
 

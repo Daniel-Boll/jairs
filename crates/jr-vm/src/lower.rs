@@ -222,6 +222,7 @@ impl Compiler<'_> {
                 Ok(SlotPlan {
                     size: layout.size,
                     align: layout.align,
+                    is_context: matches!(self.pool.item(slot.ty), Item::ContextType),
                 })
             })
             .collect()

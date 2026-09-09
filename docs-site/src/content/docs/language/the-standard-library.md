@@ -70,9 +70,8 @@ Two related routines mutate bytes you already have rather than allocating —
 `to_upper_in_place(s: string)` and `to_lower_in_place(s: string)` — and are the ones to reach for
 when the string is already yours to change.
 
-Because the allocating half uses `context.allocator`, install one first (an uninstalled allocator
-traps) — and a caller who wants arena behaviour installs an arena and gets it for every routine at
-once.
+A fresh context supplies a default allocator. A caller who wants arena behaviour replaces the pair
+and gets it for every routine at once.
 
 ## Sort
 
@@ -217,10 +216,14 @@ read_all(f, buffer) -> (s64, bool)          write_all(f, bytes) -> bool
 seek(f, offset, whence) -> (s64, bool)      size(f) -> (s64, bool)
 close(f) -> s64          // not #must — a descriptor that does not buffer has nothing to lose
 exists(path) -> bool        remove(path) -> bool
+read_entire_file(path) -> (string, bool)      write_entire_file(path, contents) -> bool
+append_entire_file(path, contents) -> bool
 ```
 
-`File_Utilities` builds on it with paths — which are just `string`s — and whole-file reads and
-writes:
+Whole-file reads allocate through the context's default allocator and return an owned string that
+`String.free_string` releases, including a successful empty read.
+
+`File_Utilities` contains path operations — paths are just `string`s:
 
 ```jr
 path_join(left, right) -> string        // exactly one separator between them; an absolute right wins
@@ -228,7 +231,6 @@ base_name(path) -> string   directory_name(path) -> string
 extension(path) -> string   stem(path) -> string
 is_absolute(path) -> bool
 normalise(path) -> string               // textual only — . and .. collapsed; symlinks not resolved
-read_entire_file(path) -> (string, bool)      write_entire_file(path, contents) -> bool
 ```
 
 There is no directory listing and no file metadata (size, modification time, permissions) — both

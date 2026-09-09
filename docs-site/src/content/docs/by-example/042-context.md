@@ -91,12 +91,11 @@ The flip side is that a callee's write is visible back in the caller: after `bum
 handed. Isolating a callee's writes needs a separate construct, `push_context`, covered on the next
 page.
 
-## `main` starts zeroed
+## `main` starts initialized
 
-`main` has no Jairs caller, so the entry stub creates its context and zeroes it. Reading
-`context.allocator_data` before anything writes yields `0` — a defined value, not garbage. This is
-what lets a program rely on an uninstalled allocator field reading null rather than pointing
-somewhere arbitrary.
+`main` has no Jairs caller, so the entry stub creates its context, zeroes it, then installs the
+default allocator pair (ADR-0216). Reading `context.allocator_data` before anything writes still
+yields `0` — a defined value, not garbage — while ordinary allocation works without setup.
 
 ## The hidden parameter is leading
 

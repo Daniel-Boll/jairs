@@ -54,7 +54,7 @@ traps rather than returning garbage or invoking undefined behaviour:
 - an **out-of-range array index** (unless bounds checks are off);
 - a **shift count** out of range or negative;
 - reading the **wrong case of a `variant`**;
-- **calling through a null procedure pointer** (for example an uninstalled allocator);
+- **calling through a null procedure pointer** (for example one explicitly cleared in a struct or context field);
 - reading the **wrong type out of an `Any`** (`any_as` with a mismatched type).
 
 A trap **names its source location** and prints a **backtrace** — the chain of procedure

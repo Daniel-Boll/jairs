@@ -1,4 +1,4 @@
-// ADR-0157: `File` and `File_Utilities` — descriptors, paths, and whole-file reads.
+// ADR-0157 plus ADR-0216: `File` owns descriptors and whole-file I/O; `File_Utilities` owns path text.
 //
 // PLAN §8.3 item 5, the modules the error model was holding up: every routine here can fail for a reason the
 // caller has to handle, so before `#must` (ADR-0151) there was no way to say that ignoring the failure is an
@@ -44,17 +44,6 @@
 #import "File_Utilities";
 #import "String";
 
-/// The allocate half of an allocator (`valid/090`'s shape): a `#foreign` procedure cannot fill a
-/// procedure-pointer field directly (E0256, ADR-0059 §3).
-libc_alloc :: (n: s64) -> *u8 {
-    return malloc(n);
-}
-
-/// The release half.
-libc_free :: (p: *u8) {
-    free(p);
-}
-
 /// `bit` when `got` equals `want`, and nothing otherwise. `got` is **borrowed** — a slice of its argument —
 /// so it is not freed.
 same :: (got: string, want: string, bit: s64) -> s64 {
@@ -75,8 +64,6 @@ owned :: (got: string, want: string, bit: s64) -> s64 {
 }
 
 main :: () {
-    context.allocator = libc_alloc;
-    context.allocator_free = libc_free;
     total := 0;
 
     // --- File ------------------------------------------------------------------------------------------
@@ -214,7 +201,16 @@ main :: () {
                     grown, grown_ok := read_entire_file("/tmp/jr-corpus-whole.txt");
                     if grown_ok {
                         if equal(grown, "abcde") {
-                            total = total + 8388608;
+                            if write_entire_file("/tmp/jr-corpus-empty.txt", "") {
+                                empty, empty_ok := read_entire_file("/tmp/jr-corpus-empty.txt");
+                                if empty_ok {
+                                    if empty.count == 0 {
+                                        total = total + 8388608;
+                                    }
+                                }
+                                free_string(empty);
+                                _ = remove("/tmp/jr-corpus-empty.txt");
+                            }
                         }
                     }
                     free_string(grown);

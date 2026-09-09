@@ -290,6 +290,13 @@ Status of each slice component, so this is answerable without reading the tree.
 > CST, HIR and execution path. Duplicate integer cases and enum aliases are judged by runtime
 > value, uncovered aliases are reported once by their first declaration, and E0134 refuses any
 > source arm after `else` instead of letting lowering reorder it.
+>
+> **Current default allocator and whole-file surface (ADR-0216).** Every fresh Jairs context has
+> a working allocator/free pair: reserved VM handles dispatch to linear-memory allocation, while
+> Cranelift and LLVM install local Jairs-ABI wrappers around libc. Context-typed slots and
+> `new_context` share the rule, and custom assignment plus `push_context` remain unchanged.
+> `read_entire_file`, `write_entire_file` and `append_entire_file` now live exclusively in `File`;
+> `File_Utilities` is path text only, and a successful empty read still owns one NUL byte.
 
 | Component | Status | Notes |
 |---|---|---|
@@ -324,7 +331,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the real-editor verifier — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua` needs an editor CI does not have. The installed parser is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The verifier asserts tree-sitter node kinds and nesting that ADR-0010's error-count gate cannot see, plus live LSP requests against the real server. |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and another LSP client may launch it; the repository packages integrations for Neovim and Zed. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–**0215**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
+Accepted ADRs: 0001–**0216**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
 counts here are why the ADR index row and this line move in the same commit.
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
@@ -625,46 +632,45 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0215 closes the requested Jai control-flow spellings.** `then` is optional punctuation for
-> one braceless `if` statement and is preserved exactly when written. `if #complete value == {
-> case ... }` is parsed into the same switch shape as `switch value { ... }`, so there is one
-> exhaustiveness checker and one MIR branch construction.
+> **ADR-0216 closes the approved default-allocator and whole-file API wave.** Fresh contexts in
+> the VM, Cranelift and LLVM install a working allocator/free pair without changing custom
+> assignment or `push_context`. Native defaults are Jairs-ABI wrappers rather than raw libc
+> addresses because a Jairs procedure receives the hidden context argument.
 >
-> **The spelling audit repaired the semantics it would have inherited.** Equal integer literals
-> are duplicate cases regardless of radix; enum aliases with one runtime value form one coverage
-> class; and any arm after `else` is E0134 rather than being silently moved. Arbitrary computed
-> cases remain legal but are not used as compile-time proof of duplication or coverage.
+> **Whole-file operations now belong to `File` alone.** A successful read always owns its storage,
+> including the empty-file case, and the release path uses the active context allocator.
+> `File_Utilities` retains only path-text operations, avoiding duplicate names in the flat import
+> namespace.
 >
-> **No HIR, MIR, pool or backend representation changed.** The new executable corpus program lowers
-> entirely through the existing branch path; the aggregate MIR snapshot records that fact.
+> **The original `/Users/dboll/dev/p/ora_to_atlas_test/src/main.jr` probe now reaches only its
+> intentionally missing `State.TAG` exhaustiveness error.** Its byte scan, `#char`, `then`,
+> `if #complete`, allocator use and `File` calls all resolve.
 
-**1273 workspace tests (1282 under gate 7), 289 corpus files, 215 ADRs, 25 modules, all six required
-gates green.** ADR-0215 adds thirteen default-suite tests and four corpus files; the executable file
-also enters the existing differential and aggregate MIR harnesses. Gate 7 was not required because
-the wave touched no MIR, pool layout, code generator or back end. **E0297** is the first free global
-diagnostic code; **E0135** is the first free parser code.
+**1280 workspace tests (1291 under gate 7), 290 corpus files, 216 ADRs, 25 modules, all six required
+gates and gate 7 green.** ADR-0216 adds one executable corpus file plus direct VM, native, build-script
+and ownership coverage. **E0297** is the first free global diagnostic code; **E0135** is the first
+free parser code.
 
-### Next wave: a usable default allocator and the `File` whole-file API
+### Next wave: decide `String_Builder`
 
-The decider approved both parts:
+Public Jai copies are useful secondary evidence but disagree on exact declarations, so do not add
+`The_Way_to_Jai` as a build submodule. Record pinned source references in the ADR instead. Put these
+forks to the decider before implementation:
 
-1. An ordinary Jairs context starts with a working allocator/free pair, while `push_context` and
-   direct field assignment continue to support custom allocators. The implementation must cover
-   every context-construction path in the VM, Cranelift and LLVM, and existing null-allocator tests
-   must clear the fields explicitly when they intend to test that trap.
-2. `read_entire_file`, `write_entire_file` and `append_entire_file` move from
-   `File_Utilities` into `File`, which is where the source probe and Jai-shaped callers look for
-   them. A successful empty read still returns owned, safely freeable storage; allocation and
-   release use the active context allocator rather than mixing it with raw libc ownership.
+1. **Contiguous growable buffer — recommended.** Small state, one eventual copy-free owned result,
+   and conventional amortised growth; reallocation may move the data and the API needs explicit
+   names because Jairs has no procedure overloading.
+2. **Bucket chain.** Appended bytes keep stable addresses and growth does not copy earlier bytes;
+   the builder carries more state, freeing is more complex, and producing one `string` requires a
+   final copy.
+3. **Defer until overloading.** The eventual surface can look closer to one family of Jai copies,
+   but the standard library remains without a builder in the meantime.
 
-Record the decisions in ADR-0216 and implement on `feat/default-file-api`. This wave touches context
-construction in all engines, so gate 7 is mandatory. The concrete
-`/Users/dboll/dev/p/ora_to_atlas_test/src/main.jr` probe should then have only its intentionally
-missing `State.TAG` exhaustiveness error.
-
-`String_Builder` follows as a separate library decision. Public Jai copies are useful evidence but
-disagree on the exact API, so keep a pinned research citation rather than making the secondary
-reference repository a build submodule.
+For option 1, decide whether the builder captures the allocator triple on first use, and whether
+`builder_to_string` transfers the backing buffer or copies it. The starting surface should cover
+init, append string/byte/bytes, clear, free, length and conversion to owned `string`. An unbounded
+formatted append cannot merely call `Basic.format`, whose current fixed buffer is 4096 bytes; it is
+a separate formatter decision.
 
 ### Optimisation queue after diagnostic freshness
 
@@ -1055,7 +1061,7 @@ what rather than by the order §2.1 happens to list them.
 | ~~2~~ | ~~**Bucket array**~~ | — | **done — ADR-0155 §2.** `modules/Bucket_Array`: fixed buckets appended to a movable spine, so an element's address never moves — the promise `List` cannot make since it copies on growth. `push` returns the stable pointer. No removal (compacting breaks the promise; a tombstone stops `get` being pointer arithmetic). Two language limits recorded: a `[..]T` cannot be indexed, so the spine is read through `view`; and a bucket is a named one-field struct because `size_of(*s64)` is E0261 (ADR-0071 §5). |
 | ~~3~~ | ~~**A merge sort**~~ | — | **done — ADR-0155 §3.** `stable_sort` takes its scratch from the **arena** (ADR-0065's first real customer), falls back to insertion sort when it has no room — both paths stable, so the answer never depends on memory pressure — and merges bottom-up in one procedure. Rejected: `malloc` per call, a caller-supplied buffer (written, then removed), an in-place merge. **It did not compile**, and four instantiation defects came out of finding out why (ADR-0155 §4); `Sort` also gained its first `#import`. |
 | ~~4~~ | ~~**`JSON`**~~ | — | **done — ADR-0156.** And this row's own guesses were wrong twice, which is worth keeping: a `variant` is *not* the right JSON value (a flat `[..]Json_Node` with index handles is — one free, copyable handles, no partial tree to unwind on failure), and `Map` cannot be an object (it is `Map(s64, s64)`, and a chain preserves source order anyway). What did hold is that the module proves the language: `#must`, multiple returns, `[..]T`, `view`, `enum`, both allocators, and a float across `#foreign` for `strtod`. Serialisation is **deferred with a reason** — it needs a correct `dtoa`. |
-| ~~5~~ | ~~**`File`**~~ | — | **done — ADR-0157**, with `File_Utilities` on top as this row expected. Descriptors, not buffered streams; paths as text, not a `Path` type. Everything `#must` except `close`. Two **silent** defects found, neither in the modules: a fixed-arity `#foreign` declaration of a *variadic* C function passes the extra argument in the wrong place (`open`'s mode — creation now goes through `creat`), and freeing a string **literal** aborts natively while running clean in the VM. `size` seeks rather than `stat`s, and `readdir`/metadata are deferred, all three because an aggregate cannot cross the FFI boundary (§8.1.2). |
+| ~~5~~ | ~~**`File`**~~ | — | **done — ADR-0157.** Descriptors, not buffered streams; paths as text, not a `Path` type. Everything `#must` except `close`. Two **silent** defects found, neither in the modules: a fixed-arity `#foreign` declaration of a *variadic* C function passes the extra argument in the wrong place (`open`'s mode — creation now goes through `creat`), and freeing a string **literal** aborts natively while running clean in the VM. `size` seeks rather than `stat`s, and `readdir`/metadata are deferred, all three because an aggregate cannot cross the FFI boundary (§8.1.2). **ADR-0216 later moved the whole-file read/write/append trio into `File`; `File_Utilities` now contains path-text operations only.** |
 | ~~6~~ | ~~**`Process`**~~ | — | **done — ADR-0158.** This row was right that the FFI is scalars and the error model is the difficulty, and wrong about one thing: `execvp`'s **argv** is an array of pointers, which the VM's one-level pointer translation cannot carry — so `spawn` works natively and fails under `jr run`, and its test is a `jr-cli` integration test rather than a corpus program. The status is a struct because `waitpid`'s bits are macro-decoded and `exit(1)` produces 256. |
 | ~~7~~ | ~~**`Socket`**~~ | — | **done — ADR-0158**, and it did inherit `File`'s shape as this row expected. A separate type from `File`, so a caller cannot seek a socket. Works in **all three engines**, unlike `Process`: a `sockaddr_in` passed by pointer holds only integers, so one level of translation is enough — the contrast is worth knowing, since "passes a struct by pointer" sounds like the harder case. `parse_ipv4` is hand-written so the refusals are ours. No `getaddrinfo` (pointers inside pointers), no IPv6, no `select` (that is W11). |
 | ~~8~~ | ~~**`Compiler`**~~ | ~~W6's message loop~~ | **DELIVERED by ADR-0195, and W7 is nine of nine at last.** Not the message loop this row imagined: `modules/Compiler` is a build script's vocabulary, and its procedures are `#foreign compiler "…"` calls the VM forwards to the driver. ADR-0158's Consequences claimed this shipped inside W6 and it had not — see the correction there. |

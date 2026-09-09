@@ -149,11 +149,10 @@ says at the call site that the routine allocates, which `to_upper_in_place` besi
 The memory comes from `context.allocator`, and the convention is caller-frees. That was a deliberate
 choice: not temporary storage (a result that silently expires on an unrelated
 `reset_temporary_storage()` is a trap), and not an explicit allocator parameter on every routine (the
-context exists to carry exactly this — install an arena once and every routine uses it). **A caller must
-install an allocator first**: `context.allocator` is null until then, and calling a null one *traps*, so
-concatenating without installing an allocator gives a trap naming the null pointer rather than a silent
-wrong answer. A failed allocation returns `""`, because a trap is for a *program* error and running out
-of memory is not one.
+context exists to carry exactly this — install an arena once and every routine uses it). ADR-0216 gives
+fresh contexts a default allocator, so ordinary callers need no setup; replacing the pair still applies
+a custom policy everywhere. A failed allocation returns `""`, because a trap is for a *program* error
+and running out of memory is not one.
 
 ```jr
 #import "Basic";

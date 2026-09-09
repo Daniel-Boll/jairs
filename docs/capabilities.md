@@ -9,11 +9,10 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1273** workspace tests (1282 under gate 7), all six required gates green; gate 7 was unchanged
-  by ADR-0215.
-- **289** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
-  (**300** counting those).
-- **215** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **1280** workspace tests (**1291** under gate 7), all six required gates and gate 7 green.
+- **290** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
+  (**301** counting those).
+- **216** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **25** standard library modules under `modules/`.
 - Diagnostic codes run **E0001–E0296**; **E0297** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership
@@ -42,6 +41,7 @@ behind them — that narrative is not duplicated here):
 | Own a game-loop foundation | `Game.open`, `begin_frame`, `end_frame`, `close` | One explicit `Game.App` owns SDL/window/Simp startup, one event drain, close latching, monotonic delta time, presentation and idempotent teardown (ADR-0210). Only one App may be open because Simp has one process-global renderer, and its lifecycle stays on one thread. Held input, primitive helpers, textures, PNG, text and audio are later slices |
 | Print anything | `print("x = %, ok = %\n", 42, true)` from `modules/Basic` | Written in Jairs (ADR-0189, ADR-0193). Every integer width signed and unsigned including `S64_MIN`, floats, `bool`, `string`, pointers as hex, a struct one level deep, an array's and a view's elements, and an enum by **member name**. A nested aggregate or enum *field* still prints `..`: a field's type is an *id* and an id cannot be resolved to a `*Type_Info` |
 | Call libc from Jairs | `#foreign` / `#system_library` | Through libffi at run time (refused at comptime, ADR-0006). `modules/Basic` binds `write`, `exit`, `malloc`, `free`; the VM satisfies `malloc`/`free` from its own region (ADR-0061) so a pointer round-trips there too. A library is named by `#system_library "SDL2"` or, on macOS, `#framework "OpenGL"` — **two different linker arguments**, and neither is a fallback for the other, because a compiler cannot know which a name means and guessing would link a program for a reason its source never stated (ADR-0183) |
+| Read or replace a whole file | `File.read_entire_file`, `File.write_entire_file`, `File.append_entire_file` | A successful read is owned and NUL-terminated even when the file is empty; release it with `String.free_string`. `File_Utilities` now contains path-text operations only (ADR-0216) |
 | Fold a compile-time call | `COMPUTED :: #run add(2, 3)`, or `n := #run add(2, 3)` in a body | Nested calls, arithmetic around a call, a loop in the callee and an **imported** callee all work (ADR-0069). Still refused: a `#foreign` call (ADR-0006), an operator overload, a default or named argument, and reading another file's constant — all because const-eval precedes the check phase |
 | Import a module | `#import "Basic";` or `Simp :: #import "Simp";` | One module = one file, cycles legal. Manifest projects implicitly catalog direct `src/Foo.jr` and `src/Foo/module.jr`; `[dependencies]` maps a flat name to one exact file or directory `module.jr`, without exposing siblings. The CLI, driver, database and LSP consume that same immutable catalog; `-I` and `[build].module_paths` are compatibility adapters (ADR-0213). A **bare** import merges the module's names into the file flat; an **aliased** one merges nothing and is reached as `Simp.name` — in value *and* type position, so `e: Input.Event` is a spelling (ADR-0179). Procedures, types, enum members and **constants' values** all cross the boundary; an imported struct's *fields* do not, so `using` on one is refused. `#scope_module` hides a declaration from importers |
 | Ask which operating system you are compiling for | `os() == Operating_System.MACOS` | A compile-time value, folded before any code generator sees it, so it works in a body, in a `#run`, and in a plain file-scope constant (ADR-0180). An enum rather than a number, so a `switch` over it is checked for completeness — "this program does not handle Windows" is a compile error rather than a wrong branch. There is deliberately **no** conditional compilation. A per-OS **declaration** works too: a `#run` returns the declaration's text and a file-scope `#insert` splices it, which is how `modules/GL` picks its library *and* its link form (ADR-0184) |
@@ -230,9 +230,10 @@ missing feature.
   `push_context { … }` gives the block its own copy, so a change inside it is invisible after it
   (ADR-0063). This entry used to say the form "does not exist here yet", which stopped being true
   the wave that built it.
-- **`context.allocator` is an allocator now, and it starts null.** `main`'s context is zeroed,
-  so an uninstalled allocator is a **null procedure pointer and calling through it traps**. A
-  program installs one in a line: `context.allocator = my_alloc;`.
+- **`context.allocator` starts as a working allocator/free pair.** Fresh runtime and compile-time
+  contexts receive engine-local defaults; a program may still replace either field directly, and
+  `push_context` copies the active pair. Explicitly clearing a procedure pointer to null still traps
+  when called.
 - **A `#foreign` procedure cannot be installed directly** — `context.allocator = malloc` is
   E0256, because a `#foreign` type is `ContextKind::CCall` and a proc-pointer type is always
   `Jairs`. A one-line wrapper is the required shape.

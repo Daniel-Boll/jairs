@@ -2220,10 +2220,9 @@ fn a_procedure_pointer_calls_the_right_target_in_both_engines() {
 
 /// Calling a **null procedure pointer** must trap, identically in both engines (ADR-0110 §1).
 ///
-/// **This used to be a leaked internal compiler error**, and the ordinary way to reach it is a
-/// configuration mistake rather than anything exotic: `context.allocator` is null until something installs
-/// one (ADR-0057 §5), so `context.allocator(8)` before an installation is the mistake a reader will
-/// actually make.
+/// **This used to be a leaked internal compiler error.** ADR-0216 installs a default allocator in every
+/// fresh context, so this test clears the slot explicitly through a zero-initialised aggregate. The null-call
+/// rule remains part of the language even though ordinary allocation no longer reaches it accidentally.
 ///
 /// The two engines were wrong in *different* ways, which is why this is a differential test and not a
 /// corpus file. A proc pointer in the VM is a packed handle, so a null one decoded to file 0 procedure 0 —
@@ -2240,8 +2239,10 @@ fn calling_a_null_procedure_pointer_traps_in_both_engines() {
     let dir = TempDir::new().expect("a temporary directory");
     let source = concat!(
         "#import \"Basic\";\n\n",
+        "Holder :: struct { allocator: (s64) -> *u8; }\n\n",
         "main :: () {\n",
-        // Nothing has been installed, so `context.allocator` is null (ADR-0057 §5).
+        "    empty: Holder;\n",
+        "    context.allocator = empty.allocator;\n",
         "    p := context.allocator(8);\n",
         "    exit(0);\n",
         "}\n",

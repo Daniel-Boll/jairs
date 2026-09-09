@@ -19,9 +19,14 @@
 
 use jr_base::{FileId, Interner};
 use jr_diag::Diagnostics;
-use jr_mir::{ConstValues, ImportedProcs, Poisoned, ProcRef};
-use jr_pool::{Pool, TargetLayout};
-use jr_vm::{Mode, Program, Trap, Value, Vm, VmError};
+use jr_mir::{
+    Callee, ConstValues, ImportedProcs, MirBody, MirSpan, Operand, Poisoned, ProcRef, Terminator,
+};
+use jr_pool::{Pool, PoolId, TargetLayout};
+use jr_vm::{
+    Code, Instr, Mode, PlacePlan, PlaceRoot, Program, Routine, Shape, SlotPlan, Trap, Value, Vm,
+    VmError,
+};
 
 const FILE: FileId = FileId::from_usize(0);
 
@@ -542,6 +547,130 @@ fn a_field_of_a_string_parameter_reads_the_callers_string() {
          go :: () -> s64 { return count_of(\"jairs\"); }",
     );
     assert_eq!(fixture.int("go", vec![]), 5);
+}
+
+#[test]
+fn a_fresh_context_has_a_working_default_allocator() {
+    let fixture = Fixture::build(
+        "go :: () -> s64 {\n\
+             p := context.allocator(32);\n\
+             if p == null { return 0; }\n\
+             context.allocator_free(p);\n\
+             return 1;\n\
+         }",
+    );
+    assert_eq!(fixture.int("go", vec![]), 1);
+}
+
+#[test]
+fn an_explicitly_zero_procedure_pointer_still_traps() {
+    let fixture = Fixture::build(
+        "go :: () {\n\
+             alloc: (s64) -> *u8;\n\
+             alloc(8);\n\
+         }",
+    );
+    assert_eq!(
+        fixture.call("go", vec![], Mode::Comptime),
+        Err(VmError::Trap(Trap::NullCall))
+    );
+}
+
+#[test]
+fn lowering_marks_context_slots_for_thunk_initialization() {
+    let mut pool = Pool::new();
+    let context = pool.context_type();
+    let proc = ProcRef::new(FILE, jr_hir::ProcId::from_usize(0));
+    let mut body = MirBody::new(proc, PoolId::VOID);
+    body.push_slot(context, None, MirSpan::Synthetic);
+    body.set_terminator(body.entry(), Terminator::Return(None));
+
+    let code =
+        jr_vm::compile(&body, &pool, TargetLayout::host()).expect("the thunk-shaped body compiles");
+    assert!(code.slots[0].is_context);
+}
+
+#[test]
+fn a_marked_context_slot_receives_default_allocator_handles() {
+    let mut pool = Pool::new();
+    let context = pool.context_type();
+    let context_pointer = pool.context_pointer();
+    let alloc_type = Pool::context_field_type(0).expect("the allocator field exists");
+    let free_type = Pool::context_field_type(1).expect("the free field exists");
+    let allocation_size = pool.int_value(PoolId::S64, 24);
+    let context_layout =
+        jr_pool::layout_of(&pool, TargetLayout::host(), context).expect("context has a layout");
+    let (alloc_offset, alloc_layout) =
+        jr_pool::field_offset(&pool, TargetLayout::host(), context, 0)
+            .expect("allocator field has a layout");
+    let (free_offset, free_layout) = jr_pool::field_offset(&pool, TargetLayout::host(), context, 1)
+        .expect("free field has a layout");
+
+    let proc = ProcRef::new(FILE, jr_hir::ProcId::from_usize(0));
+    let code = Code {
+        proc,
+        instrs: vec![
+            Instr::Address {
+                dest: jr_mir::ValueId::from_usize(0),
+                place: PlacePlan {
+                    base: PlaceRoot::Slot(0),
+                    steps: vec![],
+                    size: context_layout.size,
+                    shape: Shape::Aggregate,
+                },
+            },
+            Instr::Load {
+                dest: jr_mir::ValueId::from_usize(1),
+                place: PlacePlan {
+                    base: PlaceRoot::Slot(0),
+                    steps: vec![jr_vm::PlaceStep::Offset(alloc_offset)],
+                    size: alloc_layout.size,
+                    shape: Shape::Scalar,
+                },
+            },
+            Instr::Call {
+                dest: Some(jr_mir::ValueId::from_usize(2)),
+                callee: Callee::Indirect(Operand::Value(jr_mir::ValueId::from_usize(1))),
+                args: vec![
+                    Operand::Value(jr_mir::ValueId::from_usize(0)),
+                    Operand::Constant(allocation_size),
+                ],
+            },
+            Instr::Load {
+                dest: jr_mir::ValueId::from_usize(3),
+                place: PlacePlan {
+                    base: PlaceRoot::Slot(0),
+                    steps: vec![jr_vm::PlaceStep::Offset(free_offset)],
+                    size: free_layout.size,
+                    shape: Shape::Scalar,
+                },
+            },
+            Instr::Call {
+                dest: None,
+                callee: Callee::Indirect(Operand::Value(jr_mir::ValueId::from_usize(3))),
+                args: vec![
+                    Operand::Value(jr_mir::ValueId::from_usize(0)),
+                    Operand::Value(jr_mir::ValueId::from_usize(2)),
+                ],
+            },
+            Instr::Return(Some(Operand::Value(jr_mir::ValueId::from_usize(2)))),
+        ],
+        registers: 4,
+        types: vec![context_pointer, alloc_type, PoolId::PTR_U8, free_type],
+        slots: vec![SlotPlan {
+            size: context_layout.size,
+            align: context_layout.align,
+            is_context: true,
+        }],
+        params: vec![],
+        entry: 0,
+        spans: vec![MirSpan::Synthetic; 6],
+    };
+    let mut program = Program::new(TargetLayout::host());
+    program.insert(Routine::Bytecode(code));
+    let mut vm = Vm::new(&program, &pool, Mode::Comptime).expect("room for the test program");
+    let allocated = vm.call(proc, vec![]).expect("the default allocation works");
+    assert_ne!(allocated, Value::Scalar(0));
 }
 
 // ---------------------------------------------------------------------------

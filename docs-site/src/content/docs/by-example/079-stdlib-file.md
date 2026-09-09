@@ -1,15 +1,15 @@
 ---
 title: File and paths
-description: Opening, reading, writing and closing a descriptor with every failure receivable, plus path joining, splitting and whole-file reads from File_Utilities.
+description: Opening, reading, writing and closing a descriptor with every failure receivable, whole-file operations from File, and path text from File_Utilities.
 sidebar:
   order: 79
 ---
 
 `File` is a plain `s64` descriptor in a one-field struct — not a buffered stream — and every routine that
-can fail returns a success flag marked `#must` (ADR-0151, ADR-0157). `File_Utilities` sits on top of it
-and knows about **paths**, which are ordinary strings rather than a `Path` type: a `Path` that could still
-hold `"\0/../"` would prove nothing about validity, so it would be a type that suggests a check it does
-not perform.
+can fail returns a success flag marked `#must` (ADR-0151, ADR-0157). It also owns the three whole-file
+operations. `File_Utilities` knows about **paths**, which are ordinary strings rather than a `Path` type:
+a `Path` that could still hold `"\0/../"` would prove nothing about validity, so it would be a type that
+suggests a check it does not perform.
 
 ## Opening, reading, writing
 
@@ -139,6 +139,27 @@ shapes to take (a plain `open_raw`, a `creat_raw` when creation and truncation a
 `open_raw` that falls back to `creat_raw` when the file is missing) and never passes a mode to the
 variadic call.
 
+## Whole files
+
+```jr
+/// Reads the whole file at `path`.
+///
+/// The returned string is owned, including a successful empty read. Release it with
+/// `String.free_string`.
+read_entire_file :: (path: string) -> (string, bool) #must { ... }
+
+/// Writes `contents` to `path`, replacing whatever was there.
+write_entire_file :: (path: string, contents: string) -> bool #must { ... }
+
+/// Appends `contents` to `path`, creating it if it does not exist.
+append_entire_file :: (path: string, contents: string) -> bool #must { ... }
+```
+
+These are in `File`, matching Jai's import surface. A fresh context supplies their allocator
+(ADR-0216), while replacing `context.allocator` and `context.allocator_free` still redirects reads to
+a custom policy. Even an empty successful read owns one NUL byte, so success never changes the
+freeing rule.
+
 ## Paths, as text
 
 ```jr
@@ -166,14 +187,6 @@ stem :: (path: string) -> string { ... }
 /// Resolves `.` and `..` **textually**, and collapses repeated separators.
 normalise :: (path: string) -> string { ... }
 
-/// Reads the whole file at `path`.
-read_entire_file :: (path: string) -> (string, bool) #must { ... }
-
-/// Writes `contents` to `path`, replacing whatever was there.
-write_entire_file :: (path: string, contents: string) -> bool #must { ... }
-
-/// Appends `contents` to `path`, creating it if it does not exist.
-append_entire_file :: (path: string, contents: string) -> bool #must { ... }
 ```
 
 `path_join`, not `join`: `String` gained its own `join` that concatenates a `[]string` with a separator —
@@ -184,7 +197,7 @@ levels from disk imports both `File_Utilities` and `String` in the same file, so
 will hit on day one if it reaches for the wrong name.
 
 `base_name`, `directory_name`, `extension` and `stem` all **borrow** — they slice their argument rather
-than allocate — so nothing here needs freeing except `path_join`'s result and the whole-file reads.
+than allocate — so only `path_join`'s result needs freeing among these path operations.
 
 ## What is absent, and why
 
