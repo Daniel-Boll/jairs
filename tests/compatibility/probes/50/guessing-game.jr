@@ -1,0 +1,22 @@
+#import "Basic";
+
+main :: () {
+    answer := 42;
+    guesses := s64.[40, 60, 42];
+    i := 0;
+
+    while i < guesses.count {
+        guess := guesses[i];
+        if guess < answer {
+            print("%: low\n", guess);
+        }
+        if guess > answer {
+            print("%: high\n", guess);
+        }
+        if guess == answer {
+            print("%: correct in % guesses\n", guess, i + 1);
+            return;
+        }
+        i = i + 1;
+    }
+}

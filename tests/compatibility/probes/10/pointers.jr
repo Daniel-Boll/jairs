@@ -1,0 +1,19 @@
+#import "Basic";
+
+Pair :: struct {
+    left: s64;
+    right: s64;
+}
+
+main :: () {
+    number := 40;
+    number_pointer := *number;
+    number_pointer.* = number_pointer.* + 2;
+
+    pair: Pair;
+    pair_pointer := *pair;
+    pair_pointer.left = 3;
+    pair_pointer.right = 4;
+
+    print("pointer % %\n", number, pair_pointer.left + pair_pointer.right);
+}

@@ -1,0 +1,93 @@
+#import "Basic";
+
+distance :: (a: float64, b: float64) -> float64 {
+    d := a - b;
+    if d < 0.0 {
+        return -d;
+    }
+    return d;
+}
+
+main :: () {
+    ball_x := 50.0;
+    ball_y := 37.5;
+    velocity_x := 47.0;
+    velocity_y := 31.0;
+    left_y := 37.5;
+    right_y := 37.5;
+    left_score := 0;
+    right_score := 0;
+    wall_hits := 0;
+    paddle_hits := 0;
+    steps := 0;
+    dt := 1.0 / 60.0;
+
+    while steps < 20000 && left_score + right_score < 9 {
+        if steps % 11 != 0 {
+            if left_y < ball_y {
+                left_y = left_y + 0.45;
+            }
+            if left_y > ball_y {
+                left_y = left_y - 0.45;
+            }
+        }
+        if steps % 7 != 0 {
+            if right_y < ball_y {
+                right_y = right_y + 0.42;
+            }
+            if right_y > ball_y {
+                right_y = right_y - 0.42;
+            }
+        }
+
+        ball_x = ball_x + velocity_x * dt;
+        ball_y = ball_y + velocity_y * dt;
+
+        if ball_y <= 1.0 {
+            ball_y = 1.0;
+            velocity_y = -velocity_y;
+            wall_hits = wall_hits + 1;
+        }
+        if ball_y >= 74.0 {
+            ball_y = 74.0;
+            velocity_y = -velocity_y;
+            wall_hits = wall_hits + 1;
+        }
+
+        if ball_x <= 2.0 && velocity_x < 0.0 {
+            if distance(ball_y, left_y) <= 8.0 {
+                ball_x = 2.0;
+                velocity_x = -velocity_x;
+                paddle_hits = paddle_hits + 1;
+            } else {
+                right_score = right_score + 1;
+                ball_x = 50.0;
+                ball_y = 37.5;
+                velocity_x = 47.0;
+            }
+        }
+        if ball_x >= 98.0 && velocity_x > 0.0 {
+            if distance(ball_y, right_y) <= 8.0 {
+                ball_x = 98.0;
+                velocity_x = -velocity_x;
+                paddle_hits = paddle_hits + 1;
+            } else {
+                left_score = left_score + 1;
+                ball_x = 50.0;
+                ball_y = 37.5;
+                velocity_x = -47.0;
+            }
+        }
+
+        steps = steps + 1;
+    }
+
+    print(
+        "steps=% walls=% paddles=% score=%-%\n",
+        steps,
+        wall_hits,
+        paddle_hits,
+        left_score,
+        right_score,
+    );
+}

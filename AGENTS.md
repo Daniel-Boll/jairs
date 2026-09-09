@@ -119,7 +119,7 @@ silently skips. **Run gate 7 in any wave that touches MIR, `jr-pool`'s layout, `
 either back end** — those are exactly the places where a third engine has something to say.
 
 Track the workspace test count in the §7 handoff, so a silent loss of coverage is
-visible. **It is 1290 today (1301 under gate 7), with 291 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
+visible. **It is 1326 today (1337 under gate 7), with 291 corpus files** — ADR-0190 to ADR-0194 held the test count and moved
 only the corpus one, which is the pattern every wave whose deliverable a `.jr` program can observe
 follows, and the reason the two counts are tracked apart. It has gone 376 → 429 → 511 → 596 → 909 → 916 → 918 → 919 → 924 → 928 → 930 → 935 → 936
 → 969 (W5 sub-waves 1–4) → 974 (W5 sub-wave 5, polymorphic structs) → 976 (W5 sub-wave 6a, `$N` surface)
@@ -1907,6 +1907,32 @@ when available, an empty match reads the shared project formatter configuration,
 CRLF. Gate 3's first sandboxed run failed six unrelated real-window tests at macOS LaunchServices;
 the one-test feedback loop passed immediately with host WindowServer access, and the full
 unsandboxed gate then passed without a code change.
+
+**ADR-0219 reaches 1326 tests (1337 under gate 7) and holds at 291 corpus files.** Thirty-five
+example-bearing top-level chapters in the pinned `The_Way_to_Jai` guide now have one named
+compatibility probe, plus one manifest-invariant test. They do **not** enter `tests/corpus`: a blocked
+secondary-source example is useful compatibility evidence and an invalid language-specification
+program, so combining the two would weaken one contract or lie about the other.
+
+**A reference can be local without becoming an input.** The manifest records the submodule revision
+and upstream paths as provenance, but the runner executes only Jairs-owned probes. It copies each
+chapter directory to a fresh temporary directory before invoking the real `jr` binary, which keeps
+file writes, build artefacts and current-directory changes out of both the worktree and neighbouring
+tests. An uninitialized submodule still has the complete ordinary gate.
+
+**Chapter-complete is not example-complete.** The guide has 315 `.jai` files; this wave chooses one
+representative for each of 35 example-bearing chapters. Six selected sources check unchanged at the
+pinned revision, and every other representative is a port, an exact diagnostic blocker, or an
+intentional divergence. That is enough to catch a chapter silently losing its only executable claim
+and not enough to publish a compatibility percentage.
+
+**The manifest owns the minimum, not merely its own consistency.** Its typed schema rejects unknown
+fields and duplicate ids/paths, while the runner hard-codes the approved chapter set. Without the
+second check, deleting a chapter's last row would produce a smaller manifest that still validated
+itself. Additional probes may deepen a chapter without changing that minimum. Blocked probes pin
+diagnostic codes rather than prose, and every probe uses the command-line boundary rather than
+reaching around it into compiler crates; the evidence therefore moves when a user-visible capability
+moves.
 
 ## House style
 

@@ -1,0 +1,9 @@
+#import "Basic";
+
+announce :: () #expand {
+    print_line("expanded in caller");
+}
+
+main :: () {
+    announce();
+}

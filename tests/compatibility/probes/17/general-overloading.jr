@@ -1,0 +1,10 @@
+choose :: (value: u8) -> u8 {
+    return value;
+}
+
+choose :: (value: u16) -> u16 {
+    return value;
+}
+
+main :: () {
+}
