@@ -341,6 +341,17 @@ impl Compiler<'_> {
                 });
                 Ok(())
             }
+            Statement::Assert {
+                condition,
+                message,
+                span: _,
+            } => {
+                self.emit(Instr::Assert {
+                    condition: *condition,
+                    message: message.clone(),
+                });
+                Ok(())
+            }
             // The place is planned down to the variant itself; the tag sits at its offset 0 (ADR-0068
             // §3), so no extra step is added here.
             Statement::TagCheck { place, case, .. } => {
@@ -932,6 +943,7 @@ fn statement_span(stmt: &Statement) -> MirSpan {
         | Statement::Discard { span, .. }
         | Statement::Zero { span, .. }
         | Statement::BoundsCheck { span, .. }
+        | Statement::Assert { span, .. }
         | Statement::TagCheck { span, .. } => *span,
         Statement::Nop => MirSpan::Synthetic,
     }

@@ -485,6 +485,7 @@ fn substitute_value(body: &mut MirBody, value: ValueId, with: Operand) {
                     subst(index);
                     subst(len);
                 }
+                Statement::Assert { condition, .. } => subst(condition),
                 // The place may hold operands (a deref base, an index), so they are substituted like
                 // any other place's — the *case* is a constant index and not an operand.
                 Statement::TagCheck { place, .. } => substitute_place(place, &subst),

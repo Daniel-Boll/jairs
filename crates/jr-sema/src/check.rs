@@ -41,7 +41,7 @@ use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
     E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272, E0277,
-    E0278, E0279, E0284, E0285, E0286, E0287, E0288, E0289, E0291, E0293, E0295,
+    E0278, E0279, E0284, E0285, E0286, E0287, E0288, E0289, E0291, E0293, E0295, E0297,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -109,6 +109,8 @@ enum Intrinsic {
     /// deliberately not returned, because a caller who wants it can `atomic_load` and a two-result
     /// intrinsic would make the common case pay for the rare one.
     AtomicCompareExchange,
+    /// `assert(condition[, "message"])` — a source-located run-time check (ADR-0224).
+    Assert,
 }
 
 /// How a `Type_Info` field's type is checked.
@@ -274,6 +276,11 @@ pub struct CheckOutput {
     /// A `u8` rather than `jr_mir::AtomicOp`, because `jr-mir` depends on this crate and not the reverse.
     /// The two are matched by `AtomicOp::from_code`, whose round-trip is asserted in `jr-mir`.
     pub atomics: FxHashMap<(ExprScope, ExprId), u8>,
+    /// Each unresolved-name `assert` call and its optional decoded literal message (ADR-0224 §2).
+    ///
+    /// Recorded rather than rediscovered because the callee deliberately resolves to nothing. The
+    /// message is decoded here, once, so every execution engine receives identical text.
+    pub assertions: FxHashMap<(ExprScope, ExprId), Option<String>>,
     /// Calls that folded to a value **in this crate** — `has_note` and `note_value` (ADR-0099 §2).
     ///
     /// Separate from [`CheckOutput::type_info_calls`], whose meaning is "build a `Type_Info` for this type"
@@ -541,6 +548,7 @@ pub fn check_file(
         folded_calls: ctx.folded_calls,
         pointer_views: ctx.pointer_views,
         atomics: ctx.atomics,
+        assertions: ctx.assertions,
         folded_call_spans: ctx.folded_call_spans,
         type_info_calls: ctx.type_info_calls,
         any_calls: ctx.any_calls,
@@ -3507,6 +3515,9 @@ impl Ctx<'_> {
                     Intrinsic::AtomicCompareExchange,
                 );
             }
+            Some(Intrinsic::Assert) => {
+                return self.check_assert(scope, id, callee, args, arg_names, span);
+            }
             Some(Intrinsic::AnyOf) => return self.check_any_of(scope, id, callee, args, span),
             Some(Intrinsic::AnyAs) => return self.check_any_as(scope, id, callee, args, span),
             // **A note reader folds here** (ADR-0099 §2), and it is intercepted for a *third* reason: its
@@ -3975,6 +3986,7 @@ impl Ctx<'_> {
             "atomic_store" => Intrinsic::AtomicStore,
             "atomic_add" => Intrinsic::AtomicAdd,
             "atomic_compare_exchange" => Intrinsic::AtomicCompareExchange,
+            "assert" => Intrinsic::Assert,
             _ => return None,
         };
         match self.resolve.get(scope, callee).unwrap_or(res) {
@@ -3985,6 +3997,85 @@ impl Ctx<'_> {
             | Res::Param(_)
             | Res::Promoted { .. } => None,
         }
+    }
+
+    /// Types and records `assert(condition[, "message"])` (ADR-0224).
+    ///
+    /// The message is read directly from HIR rather than constant-evaluated: this wave accepts a
+    /// literal only, and the HIR already carries its decoded text. The call itself yields `void`.
+    fn check_assert(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        args: &[ExprId],
+        arg_names: &[Option<Symbol>],
+        span: Span,
+    ) -> PoolId {
+        self.types.set_expr(scope, callee, PoolId::VOID);
+
+        if arg_names.iter().any(Option::is_some) {
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            self.diags.push(
+                Diagnostic::error(span, "the `assert` intrinsic has no named parameters")
+                    .with_code(E0252)
+                    .with_note(
+                        "its accepted forms are `assert(condition)` and \
+                         `assert(condition, \"message\")`",
+                    ),
+            );
+            return PoolId::ERROR;
+        }
+
+        if !(1..=2).contains(&args.len()) {
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!(
+                        "`assert` takes 1 or 2 arguments, but {} {} supplied",
+                        args.len(),
+                        if args.len() == 1 { "was" } else { "were" }
+                    ),
+                )
+                .with_code(E0216),
+            );
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+
+        self.check_expr(scope, args[0], Some(PoolId::BOOL));
+
+        let message = if args.len() == 2 {
+            let message_expr = args[1];
+            let text = self.string_literal_of(scope, message_expr);
+            // A literal string's type is known without recursively checking it, and a non-literal is
+            // rejected for its form rather than producing a second, misleading type diagnostic.
+            self.types.set_expr(scope, message_expr, PoolId::STRING);
+            let Some(text) = text else {
+                self.diags.push(
+                    Diagnostic::error(
+                        self.expr_of(scope, message_expr).span(),
+                        "`assert`'s message must be a string literal",
+                    )
+                    .with_code(E0297)
+                    .with_note(
+                        "formatted and computed assertion messages are not part of this assertion form",
+                    )
+                    .with_help("write the message directly, e.g. `assert(ok, \"expected ok\")`"),
+                );
+                return PoolId::ERROR;
+            };
+            Some(text)
+        } else {
+            None
+        };
+
+        self.assertions.insert((scope, id), message);
+        PoolId::VOID
     }
 
     /// Types and **folds** `has_note(decl, "name")` or `note_value(decl, "name")` (ADR-0099 §1).

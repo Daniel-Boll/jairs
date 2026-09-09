@@ -271,6 +271,7 @@ fn direct_calls(body: &MirBody) -> Vec<ProcRef> {
                 Statement::Store { .. }
                 | Statement::Zero { .. }
                 | Statement::BoundsCheck { .. }
+                | Statement::Assert { .. }
                 | Statement::TagCheck { .. }
                 | Statement::Nop => continue,
             };
@@ -382,6 +383,7 @@ fn next_site(body: &MirBody, block: BlockId, callees: &Callees<'_>) -> Option<Si
             Statement::Store { .. }
             | Statement::Zero { .. }
             | Statement::BoundsCheck { .. }
+            | Statement::Assert { .. }
             | Statement::TagCheck { .. }
             | Statement::Nop => continue,
         };
@@ -664,6 +666,15 @@ impl Splice {
             } => Statement::BoundsCheck {
                 index: self.operand(index),
                 len: self.operand(len),
+                span: self.span(),
+            },
+            Statement::Assert {
+                condition,
+                message,
+                span: _,
+            } => Statement::Assert {
+                condition: self.operand(condition),
+                message: message.clone(),
                 span: self.span(),
             },
             // The case index is a constant that travels unchanged; only the place is remapped into the

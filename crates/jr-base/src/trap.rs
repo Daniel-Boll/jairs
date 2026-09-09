@@ -78,6 +78,18 @@ pub fn trap_message(reason: &str, location: Option<&str>, frames: &[&str]) -> St
     text
 }
 
+/// The shared reason reported by a failed source assertion (ADR-0224).
+///
+/// The VM and both native back ends render assertions at different times. Constructing the
+/// call-site wording here keeps the bytes they hand to [`trap_message`] identical.
+#[must_use]
+pub fn assertion_reason(message: Option<&str>) -> String {
+    match message {
+        Some(message) => format!("assertion failed: {message}"),
+        None => "assertion failed".to_owned(),
+    }
+}
+
 /// Renders a span as `path:line:col`, the form [`trap_message`] expects.
 ///
 /// The path is as the source map holds it, so a program compiled from a relative path
@@ -97,7 +109,17 @@ pub fn render_location(map: &SourceMap, span: Span) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::trap_message;
+    use super::{assertion_reason, trap_message};
+
+    #[test]
+    fn assertion_reasons_have_one_shared_shape() {
+        assert_eq!(assertion_reason(None), "assertion failed");
+        assert_eq!(
+            assertion_reason(Some("the invariant")),
+            "assertion failed: the invariant"
+        );
+        assert_eq!(assertion_reason(Some("")), "assertion failed: ");
+    }
 
     #[test]
     fn a_located_message_has_two_lines_and_a_trailing_newline() {

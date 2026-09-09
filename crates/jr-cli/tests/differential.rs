@@ -1299,6 +1299,42 @@ fn todo_is_a_located_trap_and_does_not_run_defers() {
 }
 
 #[test]
+fn assert_is_a_located_trap_with_a_static_message_and_does_not_run_defers() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("assert.jr");
+    let source = "#import \"Basic\";\n\
+                  \n\
+                  main :: () {\n\
+                  \x20   defer print(\"defer ran\\n\");\n\
+                  \x20   assert(false, \"the invariant\");\n\
+                  }\n";
+    std::fs::write(&path, source).expect("a writable temporary directory");
+
+    let vm = run_in_vm(&path);
+    let native = run_natively(&path, dir.path());
+
+    let expected = format!(
+        "error: assertion failed: the invariant\n  --> {}:5:5\n  in main\n",
+        path.display()
+    );
+    assert_eq!(
+        vm.stdout, "",
+        "a failed assertion must not run the pending defer"
+    );
+    assert_eq!(
+        native.stdout, "",
+        "a native failed assertion must not run the pending defer"
+    );
+    assert_eq!(vm.stderr, expected, "the VM lost the assertion call span");
+    assert_eq!(
+        native.stderr, expected,
+        "native code disagrees about the assertion call span or message"
+    );
+    assert_eq!(vm.status, 4);
+    assert_eq!(native.status, 4);
+}
+
+#[test]
 fn a_division_by_zero_names_its_own_line() {
     // A second operation and a second line, so that the location is demonstrably
     // computed rather than a constant that happens to match one case.
@@ -2708,6 +2744,57 @@ fn todo_reads_identically_in_all_three_engines() {
     assert!(
         vm.stderr.contains(":2:5") && vm.stderr.contains("reached todo"),
         "the trap must retain the statement line and dedicated reason: {}",
+        vm.stderr
+    );
+}
+
+/// LLVM must preserve an assertion's call-site message and source span too (ADR-0224 §4).
+#[cfg(feature = "llvm")]
+#[test]
+fn assert_reads_identically_in_all_three_engines() {
+    let dir = TempDir::new().expect("a temporary directory");
+    let path = dir.path().join("assert-llvm.jr");
+    std::fs::write(
+        &path,
+        "main :: () {\n    assert(false, \"three engines\");\n}\n",
+    )
+    .expect("the source must be writable");
+
+    let vm = run_in_vm(&path);
+    let cranelift = run_natively(&path, dir.path());
+    let llvm = {
+        let binary = dir.path().join("assert-llvm");
+        let built = Command::new(jr())
+            .arg("build")
+            .arg(&path)
+            .arg("-o")
+            .arg(&binary)
+            .arg("--backend")
+            .arg("llvm")
+            .arg("-I")
+            .arg(workspace_root().join("modules"))
+            .output()
+            .expect("jr build should be executable");
+        assert!(
+            built.status.success(),
+            "`jr build --backend llvm` failed:\n{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let output = Command::new(&binary)
+            .output()
+            .unwrap_or_else(|e| panic!("cannot run {}: {e}", binary.display()));
+        Behaviour {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            status: output.status.code().unwrap_or(-1),
+        }
+    };
+
+    assert_eq!(vm, cranelift, "VM and Cranelift disagree about `assert`");
+    assert_eq!(vm, llvm, "VM and LLVM disagree about `assert`");
+    assert!(
+        vm.stderr.contains(":2:5") && vm.stderr.contains("assertion failed: three engines"),
+        "the shared failure lost its source or message: {}",
         vm.stderr
     );
 }

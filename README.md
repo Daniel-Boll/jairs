@@ -57,7 +57,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0223.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0224.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -87,6 +87,11 @@ explicit empty arms in declaration order; it never hides future additions behind
 traps as `reached todo` only if executed, names its own source line in the VM, Cranelift and LLVM,
 and does not turn failure into structured cleanup by running pending defers. The same construct is
 legal in compile-time code: an untaken path is inert and a reached one reports E0230.
+
+`assert(condition)` and `assert(condition, "static message")` now provide the corresponding
+source-located check. A failed assertion reports one byte-identical reason, call-site line and live
+backtrace in the VM, Cranelift and LLVM, while a true assertion is inert. The intrinsic may be
+shadowed by an ordinary declaration; a reached compile-time failure reports E0230.
 
 Every fresh Jairs context now has a working allocator/free pair in the VM, Cranelift and LLVM;
 assigning a custom pair and copying one through `push_context` remain unchanged. Whole-file
@@ -171,8 +176,8 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1345** workspace tests (**1357** under gate 7), with all six ordinary gates and gate 7 green for ADR-0223.
-- **292** `.jr` corpus files, **223** accepted ADRs, **25** standard library
+- **1358** workspace tests (**1371** under gate 7), with all six ordinary gates and gate 7 green for ADR-0224.
+- **293** `.jr` corpus files, **224** accepted ADRs, **25** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative

@@ -2768,6 +2768,18 @@ mod tests {
     }
 
     #[test]
+    fn assertion_calls_preserve_both_forms() {
+        let src = "f :: (ok: bool) {\nassert( ok );\nassert(ok,\"the invariant\");\n}\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("assert(ok);\n  assert(ok, \"the invariant\");"),
+            "got:\n{out}"
+        );
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    #[test]
     fn complete_if_is_preserved_and_canonicalised() {
         let src = "f :: (n:s64) {\nif   #complete n=={\ncase 0;return;\nelse;return;\n}\n}\n";
         let out = fmt(src);

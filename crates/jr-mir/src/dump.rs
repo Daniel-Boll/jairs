@@ -363,6 +363,22 @@ impl Dumper<'_> {
                     self.span(*span)
                 )
             }
+            Statement::Assert {
+                condition,
+                message,
+                span,
+            } => {
+                let message = message
+                    .as_ref()
+                    .map(|text| format!(" {:?}", text))
+                    .unwrap_or_default();
+                format!(
+                    "assert {}{}{}",
+                    self.operand(*condition),
+                    message,
+                    self.span(*span)
+                )
+            }
             Statement::TagCheck { place, case, span } => {
                 format!(
                     "tag_check {}.tag == {case}{}",

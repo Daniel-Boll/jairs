@@ -284,6 +284,15 @@ Status of each slice component, so this is answerable without reading the tree.
 > backtrace identically, while a reached compile-time path becomes E0230. Parser, formatter,
 > Tree-sitter, both editor query sets and LSP keyword tooling all retain the construct.
 >
+> **Current assertion surface (ADR-0224).** `assert(condition)` and
+> `assert(condition, "static message")` are shadowable unresolved-name intrinsics. Sema requires a
+> boolean and records the decoded optional literal once; MIR carries one explicit, effectful
+> assertion statement that every optimiser handles exhaustively. The VM, Cranelift and LLVM share
+> `assertion failed[: message]`, the call-site span and the ordinary live backtrace, and failure
+> skips pending defers. Compile-time execution uses the same VM instruction: a reached failure is
+> E0230 and an untaken path is inert. Formatter preservation and LSP function completion cover the
+> ordinary call syntax; no parser or Tree-sitter grammar change was required.
+>
 > **Current default allocator and whole-file surface (ADR-0216).** Every fresh Jairs context has
 > a working allocator/free pair: reserved VM handles dispatch to linear-memory allocation, while
 > Cranelift and LLVM install local Jairs-ABI wrappers around libc. Context-typed slots and
@@ -351,7 +360,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the real-editor verifier — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua` needs an editor CI does not have. The installed parser is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The verifier asserts tree-sitter node kinds and nesting that ADR-0010's error-count gate cannot see, plus live LSP requests against the real server. |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and another LSP client may launch it; the repository packages integrations for Neovim and Zed. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–**0223**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
+Accepted ADRs: 0001–**0224**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
 counts here are why the ADR index row and this line move in the same commit.
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
@@ -667,29 +676,38 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 > its stale skeleton guards to the same drift/query gate contributors run locally, and active owned
 > code now teaches `print`. `print_line` and `print_int` remain source-compatibility wrappers.
 
-**1345 workspace tests (1357 under gate 7), 292 corpus files, 223 ADRs and 25 modules.** ADR-0223
-adds twelve default tests, thirteen under gate 7, and one corpus program. All six ordinary gates and
-gate 7 are green. Gate 7 also exposed ADR-0222's stale LLVM DWARF expectation: that wave moved the
-hello program's return from line 21 to 20 and updated only the Cranelift twin. **E0297** is the first free global diagnostic code;
-**E0135** is the first free parser code.
+**1358 workspace tests (1371 under gate 7), 293 corpus files, 224 ADRs and 25 modules.** ADR-0224
+adds thirteen default tests, fourteen under gate 7, and one corpus program. All six ordinary gates
+and gate 7 are green. `assert(condition[, "static message"])` is source-located and byte-identical
+across the VM, Cranelift and LLVM, remains shadowable, skips pending defers on failure, and uses
+E0230 when reached during compile-time evaluation. **E0298** is the first free global diagnostic
+code; **E0135** is the first free parser code.
 
-### Next wave: Jai-style runtime `assert`
+### Next wave: publicly evidenced `String` parity, non-overload layer
 
-The decider has already chosen the shape, so do not reopen it without new evidence:
+The decider approved The Way to Jai as public usage evidence, with three boundaries:
 
-1. `assert(condition)` is compiler-recognised and source-located rather than a library procedure
-   whose call frame and message can drift between engines.
-2. `assert(condition, "static message")` is the only message form in this wave. The message must be
-   a compile-time string; variadic formatting and `#assert` remain separate decisions.
-3. A true assertion has no runtime effect. A false one traps identically in the VM, Cranelift and
-   LLVM, does not run defers, and reports the assertion's own source line and ordinary backtrace.
-4. A reached compile-time assertion is E0230; an assertion in an untaken compile-time path is inert.
-5. Record the decision in ADR-0224 before implementation, cover formatter and editor tooling, and
-   run all six gates plus gate 7.
-
-The recommended lowering seam is a dedicated MIR assertion/check statement rather than translating
-to `todo` or a branch in HIR: it must preserve the optional static message and keep optimisers from
-discarding the failure effect.
+1. Claim parity only for spellings and semantics the pinned guide demonstrates; do not infer a
+   closed Jai module surface from the book.
+2. Add `slice(s, start, count)` as a **borrowed, strict bounds-checked view**. It must preserve
+   pointer identity into the source and trap on negative, overflowing or out-of-range bounds;
+   `substring` remains the allocating, clamping operation.
+3. Add `copy_string(s)` as an owned allocator-backed copy, and add the evidenced compatibility
+   spellings that need no general overload set: `begins_with`, `compare_strings`,
+   `find_index_from_left`, `find_index_from_right`, `replace_chars`, `is_any`, and the supported
+   conversion aliases. Each wrapper must delegate to one existing implementation rather than
+   duplicate scanning logic.
+4. Keep overload-dependent spellings queued for the general-overloading wave: byte/string
+   `contains`, `find`, `split` and `split_from_left`; `to_string(*u8)` beside
+   `to_string(*u8, count)`; variadic/defaulted `join`; and the `String.to_upper` family that
+   currently collides with `Basic.to_upper(u8)`.
+5. Reconcile `modules/String`'s stale header and ownership notes. Borrowed views must be named as
+   borrowed, owned results must name `free_string`, and `to_c_string` must name a valid way to
+   release its pointer rather than telling callers to pass a `*u8` to a `string` API.
+6. Pin source pointer identity, strict failure paths, copy independence, conversion results and C
+   round-tripping. A failure contract belongs in runtime differential tests; ordinary successful
+   calls belong in the corpus. A module-only implementation does not require gate 7 unless it
+   exposes a compiler or backend defect.
 
 ### Queued audit wave: close the compatibility audit's executable blind spots
 

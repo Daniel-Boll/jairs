@@ -419,6 +419,9 @@ impl SsaBuilder {
                         replace_operand(index, old, replacement);
                         replace_operand(len, old, replacement);
                     }
+                    Statement::Assert { condition, .. } => {
+                        replace_operand(condition, old, replacement);
+                    }
                     Statement::TagCheck { place, .. } => {
                         replace_in_place(place, old, replacement);
                     }

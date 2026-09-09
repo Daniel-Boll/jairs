@@ -724,6 +724,13 @@ impl<'a> Vm<'a> {
                         return Err(VmError::Trap(Trap::IndexOutOfBounds));
                     }
                 }
+                Instr::Assert { condition, message } => {
+                    if !self.operand(frame, *condition)?.boolean()? {
+                        return Err(VmError::Trap(Trap::Assertion {
+                            message: message.clone(),
+                        }));
+                    }
+                }
                 // The tag is one byte at the variant's own offset (ADR-0068 §3), so this reads a byte
                 // and compares it with the case the source named. A mismatch is the trap that makes a
                 // variant safer than a union — the whole point of the form.

@@ -478,6 +478,9 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> MirRes
                 for (scope, _) in unexpanded.atomics.keys() {
                     note(*scope);
                 }
+                for (scope, _) in unexpanded.assertions.keys() {
+                    note(*scope);
+                }
                 for (scope, _) in unexpanded.variadic_calls.keys() {
                     note(*scope);
                 }
@@ -625,6 +628,12 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> MirRes
                 // records nothing, because `T` is bound only here.
                 for ((scope, expr), code) in inst.check.atomics.iter() {
                     values.set_atomic(*scope, *expr, *code);
+                }
+                // An assertion inside an instantiated body is keyed to the clone's scope. Re-record the
+                // final check's entries after the template-scope copy so an assertion whose condition only
+                // becomes valid once `$T`/`$N` is bound is available to lowering.
+                for ((scope, expr), message) in inst.check.assertions.iter() {
+                    values.set_assertion(*scope, *expr, message.clone());
                 }
                 if !inst.check.type_info_calls.is_empty() {
                     let base_sigs_for_ti = crate::sema::file_signatures(db, file, catalog);
@@ -987,6 +996,7 @@ fn same_file_callees(body: &jr_mir::MirBody, file: FileId) -> Vec<jr_hir::ProcId
                 jr_mir::Statement::Store { .. }
                 | jr_mir::Statement::Zero { .. }
                 | jr_mir::Statement::BoundsCheck { .. }
+                | jr_mir::Statement::Assert { .. }
                 | jr_mir::Statement::TagCheck { .. }
                 | jr_mir::Statement::Nop => {}
             }

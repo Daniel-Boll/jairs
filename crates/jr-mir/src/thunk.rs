@@ -435,6 +435,25 @@ impl Thunk<'_> {
                 if let Some(value) = self.consts.run(self.scope, id) {
                     return Ok(Operand::Constant(value));
                 }
+                if let Some(message) = self
+                    .consts
+                    .assertion(self.scope, id)
+                    .map(|message| message.map(str::to_owned))
+                {
+                    let condition = args
+                        .first()
+                        .copied()
+                        .ok_or(Poisoned::Here("an assertion is missing its condition"))?;
+                    let condition = self.expr(condition)?;
+                    self.mir
+                        .stmts_mut(self.mir.entry())
+                        .push(Statement::Assert {
+                            condition,
+                            message,
+                            span: MirSpan::Expr(self.scope, id),
+                        });
+                    return Ok(Operand::Constant(PoolId::VOID_VALUE));
+                }
                 let target = self.callee(callee)?;
                 let mut operands = Vec::with_capacity(args.len() + 1);
                 // **A comptime call passes a context too** (ADR-0057 §2), because the callee's

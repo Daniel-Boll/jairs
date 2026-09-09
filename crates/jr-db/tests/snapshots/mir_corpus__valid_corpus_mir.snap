@@ -19265,3 +19265,17 @@ proc main -> s64 {
   bb6():
     return 0_s64
 }
+
+========================================
+156-assert.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    assert true
+    v1: s64 = 1_s64 + 1_s64
+    v2: bool = v1 == 2_s64
+    assert v2 "arithmetic stays arithmetic"
+    discard call extern proc1(0_s64)
+    return
+}

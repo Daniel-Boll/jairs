@@ -542,3 +542,13 @@ pub(crate) const E0293: &str = "E0293";
 ///
 /// Owned by `jr-sema`, continuing this crate's block. E0297 is the first free code.
 pub(crate) const E0295: &str = "E0295";
+
+/// An `assert` message that is not a string literal (ADR-0224 §2).
+///
+/// The message belongs to the call site and must be available before MIR is built so all three engines
+/// receive the same decoded text. Accepting an arbitrary `string` expression here would imply either a
+/// second constant-evaluation target or a dynamic trap ABI; this wave chooses neither.
+///
+/// Distinct from E0214 because the objection is not the expression's type. A computed expression may
+/// itself have type `string` and is still outside the literal-only assertion form.
+pub(crate) const E0297: &str = "E0297";

@@ -612,6 +612,41 @@ fn compile_time_todo_fails_only_when_reached() {
     );
 }
 
+/// A reached false assertion uses the same VM instruction under `#run`; an untaken assertion is
+/// inert (ADR-0224 §4).
+#[test]
+fn compile_time_assert_fails_only_when_reached() {
+    let dir = TempDir::new().unwrap();
+
+    let reached = dir.path().join("reached-assert.jr");
+    fs::write(
+        &reached,
+        "checked :: () -> s64 { assert(false, \"compile-time invariant\"); return 0; }\n\
+         VALUE :: #run checked();\n\
+         main :: () { }\n",
+    )
+    .unwrap();
+    assert_eq!(
+        check_with_modules(vec![reached], None),
+        1,
+        "a reached compile-time assertion must report E0230"
+    );
+
+    let untaken = dir.path().join("untaken-assert.jr");
+    fs::write(
+        &untaken,
+        "checked :: () -> s64 { if false { assert(false); } return 42; }\n\
+         VALUE :: #run checked();\n\
+         main :: () { }\n",
+    )
+    .unwrap();
+    assert_eq!(
+        check_with_modules(vec![untaken], None),
+        0,
+        "an untaken compile-time assertion must not poison evaluation"
+    );
+}
+
 /// A **view** in a compile-time aggregate must be refused, for the same reason a pointer is.
 ///
 /// A view is `{data, count}`, and its `data` word is a pointer into the evaluator's memory. Before the

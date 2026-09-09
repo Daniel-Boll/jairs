@@ -577,6 +577,9 @@ fn scan(
                 // An `atomic_*` call names no procedure either (ADR-0176 §3), so refusing the body for its
                 // unresolved callee would refuse every program that uses one.
                 || consts.atomic(scope, *call).is_some()
+                // A compiler-recognised `assert` names no procedure either (ADR-0224). Its whole
+                // effect is the MIR check recorded for the call.
+                || consts.assertion(scope, *call).is_some()
                 // **A call that denotes a *type* is never emitted either** (ADR-0192 §3) — `type_of(x)`,
                 // whose whole result is consumed by the enclosing intrinsic at compile time.
                 //
@@ -1669,8 +1672,9 @@ impl Lower<'_> {
         // indirect call whose callee is not of procedure type". A discarded atomic therefore shows in a dump
         // as an unused definition rather than a `Discard`, which is cosmetic; being lowered as a call to a
         // pointer that is not one is not.
-        let is_atomic = self.consts.atomic(self.scope(), expr).is_some();
-        if !is_atomic
+        let is_intrinsic_check = self.consts.atomic(self.scope(), expr).is_some()
+            || self.consts.assertion(self.scope(), expr).is_some();
+        if !is_intrinsic_check
             && expr.index() < self.body.exprs.len()
             && let Expr::Call {
                 callee,
@@ -2645,6 +2649,17 @@ impl Lower<'_> {
         {
             return self.lower_atomic(op, &args, id, span);
         }
+        // **A runtime assertion** (ADR-0224), intercepted before the ordinary call path because its
+        // unresolved callee names no procedure. Clone the static message before recursively lowering
+        // the condition so the immutable `ConstValues` borrow does not overlap the mutable builder.
+        if let Some(message) = self
+            .consts
+            .assertion(self.scope(), id)
+            .map(|message| message.map(str::to_owned))
+            && let Expr::Call { args, .. } = self.body.expr(id).clone()
+        {
+            return self.lower_assertion(&args, message, span);
+        }
         self.expr_inner(id)
     }
 
@@ -3577,6 +3592,26 @@ impl Lower<'_> {
             },
             span,
         )
+    }
+
+    /// Lowers a compiler-recognised `assert(condition[, "message"])` (ADR-0224).
+    fn lower_assertion(
+        &mut self,
+        args: &[ExprId],
+        message: Option<String>,
+        span: MirSpan,
+    ) -> Operand {
+        let Some(condition) = args.first().copied() else {
+            self.give_up("an assertion is missing its condition");
+            return Operand::Constant(PoolId::VOID_VALUE);
+        };
+        let condition = self.expr(condition);
+        self.emit(Statement::Assert {
+            condition,
+            message,
+            span,
+        });
+        Operand::Constant(PoolId::VOID_VALUE)
     }
 
     fn lower_pointer_view(&mut self, args: &[ExprId], target: PoolId, span: MirSpan) -> Operand {

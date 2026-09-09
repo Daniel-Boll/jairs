@@ -920,6 +920,19 @@ pub enum Statement {
         /// Where it came from — the span of the *index*, so the trap names it.
         span: MirSpan,
     },
+    /// Traps unless `condition` is true (ADR-0224).
+    ///
+    /// Like [`Statement::BoundsCheck`], this is an explicit, effectful check rather than a
+    /// value-producing expression. DCE must preserve it even when the condition's definition has
+    /// no other users, because failure is the whole effect.
+    Assert {
+        /// The boolean condition that must hold.
+        condition: Operand,
+        /// The decoded call-site message, if one was supplied.
+        message: Option<String>,
+        /// The assertion call's source span.
+        span: MirSpan,
+    },
     /// Traps unless a `variant`'s tag names the case being read (ADR-0068 §4).
     ///
     /// An explicit statement rather than a side effect of [`Projection::Field`], for the reason
@@ -1578,6 +1591,9 @@ impl MirBody {
                     Statement::BoundsCheck { index, len, .. } => {
                         remap_operand_slots(index, &remap);
                         remap_operand_slots(len, &remap);
+                    }
+                    Statement::Assert { condition, .. } => {
+                        remap_operand_slots(condition, &remap);
                     }
                     Statement::TagCheck { place, .. } => remap_place_slots(place, &remap),
                     Statement::Nop => {}
