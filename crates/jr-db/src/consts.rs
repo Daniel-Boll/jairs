@@ -378,24 +378,31 @@ fn wanted(
             }
         }
     }
-    // And every **comptime-value argument** the checker recorded (ADR-0088 §2). Each call contributes one
-    // target per `$N` parameter, in parameter order, so `comptime_call_values` can zip results back into
-    // that order per call. The item id is looked up per call — the checker's key is `(scope, call)`, but
-    // an item id is needed only to place a diagnostic, so a call in a body uses its enclosing proc's item,
-    // and a call at top level uses its enclosing `#run`/const item.
+    // And every **supplied comptime-value argument** the checker recorded (ADR-0241 §3). The procedure
+    // signature's comptime mask selects the declaration positions, and only a `Given` slot becomes an
+    // evaluation target. A `Default` already is an interned value and is consumed directly while the
+    // specialization key is assembled. The item id is looked up per call — the checker's key is
+    // `(scope, call)`, but an item id is needed only to place a diagnostic, so a call in a body uses its
+    // enclosing proc's item, and a call at top level uses its enclosing `#run`/const item.
     //
     // Deterministic iteration order: `FxHashMap` is not stable, so the list is sorted by scope then id.
     // That agreement matters because a snapshot of `ConstValues` depends on the order the round-robin
     // saw its targets in.
-    type SortedCall = ((ExprScope, ExprId), (jr_hir::ProcId, Vec<ExprId>));
+    type SortedCall = ((ExprScope, ExprId), (jr_hir::ProcId, Vec<jr_sema::ArgSlot>));
     let mut sorted: Vec<SortedCall> = comptime_calls
         .iter()
         .map(|(k, v)| (*k, v.clone()))
         .collect();
     sorted.sort_by_key(|((scope, call), _)| (scope_ord(*scope), call.index()));
     let placeholder_item = ItemId::from_usize(0);
-    for ((scope, call), (_proc, args)) in &sorted {
-        for (i, arg) in args.iter().enumerate() {
+    for ((scope, call), (proc, slots)) in &sorted {
+        let Some(signature) = signatures.proc_sig(*proc) else {
+            continue;
+        };
+        for (i, (&is_comptime, slot)) in signature.comptime_params.iter().zip(slots).enumerate() {
+            let (true, jr_sema::ArgSlot::Given(arg)) = (is_comptime, slot) else {
+                continue;
+            };
             out.push(Wanted::ComptimeArg(
                 item_for_scope(hir, *scope).unwrap_or(placeholder_item),
                 *scope,

@@ -58,7 +58,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0240.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0241.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -136,6 +136,12 @@ and the constructor may itself be imported. A pure `$T` procedure declared in an
 now specialised in that declaration file through one root-program fixed point, including nested
 owner-to-owner demands; run, build, optimisation and diagnostics consume the same clone plan.
 Imported `$N`/mixed templates remain E0268, and imported polymorphic `#expand` remains E0272.
+
+Local compile-time value templates now use the same declaration-ordered argument binder as ordinary
+calls. A literal may default `$N` itself—`width :: ($N: s64 = 4)`—and named arguments may reorder
+pure `$N` or mixed `$T`+`$N` calls. Supplied comptime expressions are evaluated; omitted defaults are
+already values, and equivalent explicit/omitted spellings share one specialization. Defaults still
+cannot infer `$T`, and imported `$N`/mixed templates remain deferred.
 
 Native dynamic arrays now have one generic operation set in `List`. A caller can keep
 `stack: [..]*Node`, append pointers, inspect or pop the top, index and mutate elements, hand out the
@@ -268,9 +274,9 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1432** workspace tests (**1445** under gate 7), with all six ordinary gates green for
-  ADR-0240. Gate 7 was not rerun because no MIR, layout, codegen, or back-end code changed.
-- **323** `.jr` corpus files outside the fixture-module directory, **240** accepted ADRs, **26** standard library
+- **1433** workspace tests (**1446** under gate 7), with all six ordinary gates green for
+  ADR-0241. Gate 7 was not rerun because no MIR, layout, codegen, or back-end implementation changed.
+- **324** `.jr` corpus files outside the fixture-module directory, **241** accepted ADRs, **26** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative
@@ -386,7 +392,7 @@ before: two gates run at once and race a shared binary.
 - **[`docs/jai-game-development-audit.md`](docs/jai-game-development-audit.md)** —
   the primary-source games audit, language/library gaps, and the staged `Game`
   facade plan whose foundation is now implemented.
-- **[`docs/adr/README.md`](docs/adr/README.md)** — all 230 accepted decision
+- **[`docs/adr/README.md`](docs/adr/README.md)** — all 241 accepted decision
   records.
 - **[`docs/spec/`](docs/spec/)** — the language specification chapters.
 - **[`examples/`](examples/)** — runnable programs, each verified.

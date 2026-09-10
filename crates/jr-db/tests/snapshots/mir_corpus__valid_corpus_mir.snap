@@ -22340,3 +22340,49 @@ proc main -> void {
     discard call extern proc1(0_s64)
     return
 }
+
+========================================
+171-comptime-template-filled-slots.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call proc4(v0)
+    v2: s64 = 0_s64 + v1
+    v3: s64 = call proc4(v0)
+    v4: s64 = v2 + v3
+    v5: s64 = call proc4(v0)
+    v6: s64 = v4 + v5
+    v7: s64 = call proc5(v0, 2_s64)
+    v8: s64 = v6 + v7
+    v9: s64 = call proc6(v0, 5_s64)
+    v10: s64 = v8 + v9
+    v11: s64 = call proc7(v0, 7_s64, 2_s64)
+    v12: s64 = v10 + v11
+    discard call extern proc1(v12)
+    return
+}
+proc $inst0 -> s64 {
+  params: v0: *Context
+  bb0(v0: *Context):
+    return 4_s64
+}
+proc $inst1 -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: s64 = 3_s64 * v1
+    return v2
+}
+proc $inst2 -> s64 {
+  params: v0: *Context, v1: s64
+  bb0(v0: *Context, v1: s64):
+    v2: s64 = 2_s64 * v1
+    return v2
+}
+proc $inst3 -> s64 {
+  params: v0: *Context, v1: s64, v2: s64
+  bb0(v0: *Context, v1: s64, v2: s64):
+    v3: s64 = 3_s64 * v2
+    v4: s64 = v3 + 8_s64
+    return v4
+}

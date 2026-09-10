@@ -1,0 +1,39 @@
+// Declaration-ordered argument slots for local `$N` and mixed `$T`+`$N`
+// templates (ADR-0241).
+//
+// This exercises:
+//   * a literal default on the `$N` parameter itself;
+//   * a fixed ordinary default on a `$N` template;
+//   * named arguments reordered against declaration order;
+//   * a mixed template with named reordering and omitted defaults;
+//   * omitted, named-explicit, and positional-explicit `N = 4`, which all
+//     demand the same specialization key.
+#import "Basic";
+
+width :: ($N: s64 = 4) -> s64 {
+  return N;
+}
+
+scaled :: ($N: s64, factor: s64 = 2) -> s64 {
+  return N * factor;
+}
+
+mixed :: (value: $T, $N: s64 = 3, scale: s64 = 2) -> s64 {
+  return N * scale + size_of(T);
+}
+
+main :: () {
+  total := 0;
+
+  total += width();
+  total += width(N = 4);
+  total += width(4);
+
+  total += scaled(3);
+  total += scaled(factor = 5, N = 2);
+
+  // Source order is N, value; declaration order is value, N, scale.
+  total += mixed(N = 3, value = 7);
+
+  exit(total);
+}

@@ -250,16 +250,15 @@ pub(crate) struct Ctx<'a> {
     /// procedure. Empty for a file with no polymorphic calls, which is every ordinary program.
     pub(crate) instantiations:
         FxHashMap<(ExprScope, jr_hir::ExprId), (crate::TemplateRef, Vec<PoolId>)>,
-    /// Each **comptime-value** call and the argument expressions its `$N` parameters need
-    /// (ADR-0088 §1): `(proc, [arg ExprId per comptime parameter])`.
+    /// Each **comptime-value** call and its declaration-ordered argument slots
+    /// (ADR-0241 §1): `(proc, [slot per declared parameter])`.
     ///
-    /// Recorded by `check_comptime_call` for a `$N`-templated callee, and read by `jr-db`'s
-    /// `comptime_call_values` pre-pass — which evaluates each argument to a constant, because a value is
-    /// not known at check time (const-eval is downstream, ADR-0018 §3). The *expressions* are recorded
-    /// here, not values; keyed by the call's `(scope, id)` like `instantiations`. Empty for a program
-    /// with no comptime-value calls.
+    /// Recorded by the template call checkers and read by `jr-db`'s const-eval pre-pass. The
+    /// signature's comptime mask selects relevant positions; supplied expressions are evaluated,
+    /// while omitted literal defaults already carry their interned values. Keyed by the call's
+    /// `(scope, id)` like `instantiations`. Empty for a program with no comptime-value calls.
     pub(crate) comptime_calls:
-        FxHashMap<(ExprScope, jr_hir::ExprId), (jr_hir::ProcId, Vec<jr_hir::ExprId>)>,
+        FxHashMap<(ExprScope, jr_hir::ExprId), (jr_hir::ProcId, Vec<crate::check::ArgSlot>)>,
     /// Each variadic call, keyed on the call expression. Recorded by `check_call` when the
     /// callee's last parameter is `..T` and the arity is satisfied; consumed by `jr-mir` to
     /// pack the trailing arguments into a stack view (ADR-0138 §2). Empty for a file with no
