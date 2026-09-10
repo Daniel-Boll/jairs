@@ -86,6 +86,14 @@ impl PlanningFile {
             .as_ref()
             .map_or(&self.prepared.check, |expanded| &expanded.check)
     }
+
+    fn signatures(&self) -> &FileSignatures {
+        self.expansion
+            .as_ref()
+            .map_or(self.prepared.signatures.as_ref(), |expanded| {
+                expanded.signatures.as_ref()
+            })
+    }
 }
 
 /// Plans every owner clone and caller redirect reachable from `root`.
@@ -136,7 +144,7 @@ pub(crate) fn program_specializations(
                 file.comptime_values
                     .as_deref()
                     .map(|values| {
-                        comptime_call_sites(file.check(), values, file.file_id)
+                        comptime_call_sites(file.check(), file.signatures(), values, file.file_id)
                             .into_iter()
                             .map(move |(call, key)| (caller, call, key))
                             .collect::<Vec<_>>()
@@ -265,10 +273,8 @@ pub(crate) fn program_specializations(
 
     let mut planned = Vec::with_capacity(files.len());
     for (index, mut file) in files.into_iter().enumerate() {
-        let check = file
-            .expansion
-            .as_ref()
-            .map_or(&file.prepared.check, |expanded| &expanded.check);
+        let check = file.check();
+        let signatures = file.signatures();
         let mut redirects = Vec::new();
         for (call, key) in type_call_sites(check) {
             if let Some((_, target)) = type_targets.iter().find(|(candidate, _)| candidate == &key)
@@ -281,7 +287,7 @@ pub(crate) fn program_specializations(
         if let (Some(expansion), Some(values)) =
             (file.expansion.as_ref(), file.comptime_values.as_deref())
         {
-            for (call, key) in comptime_call_sites(check, values, file.file_id) {
+            for (call, key) in comptime_call_sites(check, signatures, values, file.file_id) {
                 let Some(key_index) = file
                     .comptime_keys
                     .iter()

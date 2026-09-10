@@ -863,7 +863,6 @@ impl Ctx<'_> {
         let source_poly_vars = self.collect_poly_vars(&declaration.params);
         let source_poly_names: Vec<jr_base::Symbol> =
             source_poly_vars.iter().map(|var| var.name).collect();
-        let source_has_comptime = declaration.params.iter().any(|param| param.comptime);
         let mut resolved_poly_vars = Vec::with_capacity(source_poly_vars.len());
         if !is_instantiation {
             for var in &source_poly_vars {
@@ -980,36 +979,20 @@ impl Ctx<'_> {
             let param_has_poly_type = param.ty.is_some_and(|ty| {
                 self.type_mentions_poly_variable(ExprScope::TopLevel, ty, &source_poly_names)
             });
-            if param.default.is_some() && !is_instantiation && !foreign {
-                if source_has_comptime {
-                    self.diags.push(
-                        Diagnostic::error(
-                            param.name_span,
-                            "a compile-time-parameterised procedure cannot yet declare defaults",
-                        )
-                        .with_code(E0252)
-                        .with_note(
-                            "the comptime call path records source expressions, while an omitted default is already an interned value",
-                        )
-                        .with_help(
-                            "pass every argument explicitly; defaulted `$N`/`$$T` calls need a separate value-plumbing wave",
-                        ),
-                    );
-                } else if param_has_poly_type {
-                    self.diags.push(
-                        Diagnostic::error(
-                            param.name_span,
-                            "a parameter whose type contains `$T` cannot have a default",
-                        )
-                        .with_code(E0252)
-                        .with_note(
-                            "type variables are inferred from caller-supplied arguments, not from omitted defaults",
-                        )
-                        .with_help(
-                            "move the default to a fixed-type parameter, or require this argument at every call",
-                        ),
-                    );
-                }
+            if param.default.is_some() && !is_instantiation && !foreign && param_has_poly_type {
+                self.diags.push(
+                    Diagnostic::error(
+                        param.name_span,
+                        "a parameter whose type contains `$T` cannot have a default",
+                    )
+                    .with_code(E0252)
+                    .with_note(
+                        "type variables are inferred from caller-supplied arguments, not from omitted defaults",
+                    )
+                    .with_help(
+                        "move the default to a fixed-type parameter, or require this argument at every call",
+                    ),
+                );
             }
             let explicit_ty = match param.ty {
                 // Parameter types live in `FileHir::type_refs`, not in

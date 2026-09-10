@@ -380,13 +380,14 @@ pub struct CheckOutput {
     /// The expansion pass in `jr-db` reads this to append a substituted procedure per distinct key and
     /// rewrite the call to target it. Empty for a file with no polymorphic calls.
     pub instantiations: FxHashMap<(ExprScope, ExprId), (TemplateRef, Vec<PoolId>)>,
-    /// Each comptime-value call and the argument expressions its `$N` parameters need (ADR-0088 §1):
-    /// `(proc, [arg ExprId per comptime parameter])`.
+    /// Each comptime-value call and its declaration-ordered argument slots (ADR-0241 §1):
+    /// `(proc, [slot per declared parameter])`.
     ///
-    /// `jr-db`'s `comptime_call_values` pre-pass reads this, evaluates each argument to a constant, and
-    /// the instantiation pass appends a clone with those values baked in. Empty for a program with no
-    /// comptime-value calls.
-    pub comptime_calls: FxHashMap<(ExprScope, ExprId), (jr_hir::ProcId, Vec<jr_hir::ExprId>)>,
+    /// The procedure signature supplies the parallel comptime mask. `jr-db` evaluates only
+    /// [`ArgSlot::Given`] entries at comptime positions and consumes [`ArgSlot::Default`] values
+    /// directly when assembling the specialization key. Empty for a program with no comptime-value
+    /// calls.
+    pub comptime_calls: FxHashMap<(ExprScope, ExprId), (jr_hir::ProcId, Vec<ArgSlot>)>,
     /// Each variadic call, keyed on the call expression (ADR-0138 §2). `fixed_arg_count`
     /// tells MIR how many trailing arguments to pack into a stack view; `element_ty` is the
     /// view's element type — what each trailing argument was checked against. Empty for a
@@ -6275,10 +6276,10 @@ impl<'a> Ctx<'a> {
     /// Types a call to a comptime-value-parameterised procedure and records it for instantiation
     /// (ADR-0088 §1).
     ///
-    /// Checks arity, types every argument (each against its parameter's known type — a `$N`'s type is
-    /// ordinary, so a comptime argument is checked exactly as a runtime one; only *when* its value is
-    /// known differs), and records the comptime **argument expressions** in parameter order for the
-    /// `jr-db` pre-pass to evaluate. The return type is the template's, concrete already.
+    /// Checks arity, types every supplied argument (each against its parameter's known type — a `$N`'s
+    /// type is ordinary, so a comptime argument is checked exactly as a runtime one; only *when* its
+    /// value is known differs), and records one argument slot per declared parameter. The return type
+    /// is the template's, concrete already.
     fn check_comptime_call(
         &mut self,
         scope: ExprScope,
@@ -6294,62 +6295,58 @@ impl<'a> Ctx<'a> {
         // the call is redirected to the instantiation, so MIR never sees the template callee.
         self.types.set_expr(scope, callee, PoolId::VOID);
 
-        if arg_names.iter().any(Option::is_some) {
-            for arg in args {
-                self.check_expr(scope, *arg, None);
+        let has_names = arg_names.iter().any(Option::is_some);
+        let has_defaults = sig.defaults.iter().any(Option::is_some);
+        let used_filled_binder = has_names || has_defaults;
+        let slots = if used_filled_binder {
+            let Some(filled) = self.fill_arguments(scope, callee, args, arg_names, span) else {
+                // The binder reported the source-order mistake. Still type every written argument
+                // so an independent error inside one is not hidden.
+                for arg in args {
+                    self.check_expr(scope, *arg, None);
+                }
+                return PoolId::ERROR;
+            };
+            filled
+        } else {
+            if args.len() != sig.params.len() {
+                for arg in args {
+                    self.check_expr(scope, *arg, None);
+                }
+                self.diags.push(
+                    Diagnostic::error(
+                        span,
+                        format!(
+                            "this procedure takes {} argument{}, but {} {} supplied",
+                            sig.params.len(),
+                            if sig.params.len() == 1 { "" } else { "s" },
+                            args.len(),
+                            if args.len() == 1 { "was" } else { "were" }
+                        ),
+                    )
+                    .with_code(E0216),
+                );
+                return PoolId::ERROR;
             }
-            self.diags.push(
-                Diagnostic::error(
-                    span,
-                    "named arguments are not yet supported on a compile-time-parameterised procedure",
-                )
-                .with_code(E0252)
-                .with_note(
-                    "the comptime call path still records arguments as source expressions rather than declaration-ordered slots",
-                )
-                .with_help("pass these arguments positionally"),
-            );
-            return PoolId::ERROR;
-        }
+            args.iter().copied().map(ArgSlot::Given).collect()
+        };
 
-        if args.len() != sig.params.len() {
-            for arg in args {
-                self.check_expr(scope, *arg, None);
-            }
-            self.diags.push(
-                Diagnostic::error(
-                    span,
-                    format!(
-                        "this procedure takes {} argument{}, but {} {} supplied",
-                        sig.params.len(),
-                        if sig.params.len() == 1 { "" } else { "s" },
-                        args.len(),
-                        if args.len() == 1 { "was" } else { "were" }
-                    ),
-                )
-                .with_code(E0216),
-            );
-            return PoolId::ERROR;
-        }
-
-        let mut comptime_args: Vec<ExprId> = Vec::new();
-        for (index, &comptime) in sig.comptime_params.iter().enumerate() {
-            let Some(&arg) = args.get(index) else {
+        for (index, slot) in slots.iter().enumerate() {
+            let ArgSlot::Given(arg) = slot else {
                 continue;
             };
             let want = sig
                 .params
                 .get(index)
                 .copied()
-                .filter(|&t| t != PoolId::ERROR);
-            self.check_expr(scope, arg, want);
-            if comptime {
-                comptime_args.push(arg);
-            }
+                .filter(|&ty| ty != PoolId::ERROR);
+            self.check_expr(scope, *arg, want);
         }
 
-        self.comptime_calls
-            .insert((scope, id), (proc, comptime_args));
+        if used_filled_binder {
+            self.filled_calls.insert((scope, id), slots.clone());
+        }
+        self.comptime_calls.insert((scope, id), (proc, slots));
         sig.ret
     }
 
@@ -6433,28 +6430,7 @@ impl<'a> Ctx<'a> {
         let has_names = arg_names.iter().any(Option::is_some);
         let has_defaults = sig.defaults.iter().any(Option::is_some);
 
-        // Mixed `$T`+`$N` templates still carry source expressions to the comptime evaluator.
-        // Interpreting names positionally here is a silent wrong answer, so refuse until that
-        // evidence becomes declaration-ordered slots too (ADR-0236 §3).
-        if has_comptime && has_names {
-            for arg in args {
-                self.check_expr(scope, *arg, None);
-            }
-            self.diags.push(
-                Diagnostic::error(
-                    span,
-                    "named arguments are not yet supported on a compile-time-parameterised procedure",
-                )
-                .with_code(E0252)
-                .with_note(
-                    "the comptime call path still records arguments as source expressions rather than declaration-ordered slots",
-                )
-                .with_help("pass these arguments positionally"),
-            );
-            return PoolId::ERROR;
-        }
-
-        let used_filled_binder = !has_comptime && (has_names || has_defaults);
+        let used_filled_binder = has_names || has_defaults;
         let slots = if used_filled_binder {
             let Some(filled) = self.fill_arguments(scope, callee, args, arg_names, span) else {
                 // The binder reported the source-order mistake. Still type every written argument
@@ -6681,28 +6657,12 @@ impl<'a> Ctx<'a> {
             self.filled_calls.insert((scope, id), slots.clone());
         }
 
-        // For a **mixed** `$$T` template (ADR-0137), also record the comptime arguments so the
-        // pre-pass evaluates them and the instantiation clone bakes their values. A pure `$T`
-        // template has no comptime params and this list is empty; a mixed one records the
-        // argument at each `$N`/`$$T` position.
-        if sig.comptime_params.iter().any(|&c| c) {
-            let comptime_args: Vec<ExprId> = sig
-                .comptime_params
-                .iter()
-                .enumerate()
-                .filter_map(|(index, &is_comptime)| {
-                    if is_comptime {
-                        slots.get(index).and_then(|slot| match slot {
-                            ArgSlot::Given(arg) => Some(*arg),
-                            ArgSlot::Default(_) => None,
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+        // For a **mixed** `$$T` template (ADR-0137), also record every declaration-ordered slot.
+        // `jr-db` applies the signature's comptime mask, evaluates only supplied comptime
+        // expressions, and consumes omitted literal defaults directly (ADR-0241).
+        if has_comptime {
             self.comptime_calls
-                .insert((scope, id), (template.proc, comptime_args));
+                .insert((scope, id), (template.proc, slots));
         }
         ret
     }

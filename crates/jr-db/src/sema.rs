@@ -90,14 +90,14 @@ pub type Instantiations = rustc_hash::FxHashMap<
     (jr_sema::TemplateRef, Vec<jr_pool::PoolId>),
 >;
 
-/// Each comptime-value call and the argument *expressions* its `$N` parameters need (ADR-0088 §1).
+/// Each comptime-value call and one declaration-ordered argument slot per parameter (ADR-0241 §1).
 ///
-/// Recorded by the checker, evaluated by `jr-db`'s `comptime_call_values` pre-pass. The value tuple is
-/// the same shape as [`Instantiations`]' with `ExprId` in place of `PoolId`, because a value is not
-/// known at check time.
+/// Recorded by the checker and paired downstream with the procedure signature's comptime mask.
+/// Supplied comptime expressions are evaluated by the const pre-pass; omitted literal defaults already
+/// carry their interned values.
 pub type ComptimeCalls = rustc_hash::FxHashMap<
     (jr_hir::ExprScope, jr_hir::ExprId),
-    (jr_hir::ProcId, Vec<jr_hir::ExprId>),
+    (jr_hir::ProcId, Vec<jr_sema::ArgSlot>),
 >;
 
 /// Each variadic call and the packing information MIR needs (ADR-0139 §2). Same shape as sema's
@@ -202,12 +202,12 @@ pub struct CheckResult {
     /// Read by `file_mir`'s expansion pass to append a substituted procedure per distinct key and rewrite
     /// the call to target it. Empty for a file with no polymorphic calls.
     pub instantiations: Arc<Instantiations>,
-    /// Each comptime-value call and the argument expressions its `$N` parameters need (ADR-0088 §1):
-    /// `(proc, [arg ExprId per comptime parameter])`.
+    /// Each comptime-value call and its declaration-ordered argument slots (ADR-0241 §1):
+    /// `(proc, [slot per declared parameter])`.
     ///
-    /// Read by `file_consts` (which evaluates each argument via a `Wanted::ComptimeArg`) and by
-    /// `instantiated()` (which keys an instantiation on the tuple of resulting values and appends a clone
-    /// with those values baked in). Empty for a program with no comptime-value calls.
+    /// Read by `file_consts`, which evaluates supplied comptime expressions, and by `instantiated()`,
+    /// which combines those results with already-interned default values before keying and appending
+    /// a clone. Empty for a program with no comptime-value calls.
     pub comptime_calls: Arc<ComptimeCalls>,
     /// Each variadic call's packing info (ADR-0139 §2), read by `jr-db`'s `mir` query and
     /// threaded into `ConstValues::set_variadic_call` so `call_rvalue` knows which trailing
@@ -749,16 +749,36 @@ pub(crate) fn type_call_sites(check: &CheckResult) -> Vec<(CallSite, TypeCallKey
 /// which `scan` then refuses.
 pub(crate) fn comptime_call_sites(
     check: &CheckResult,
+    signatures: &jr_sema::FileSignatures,
     values: &jr_mir::ConstValues,
     file: jr_base::FileId,
 ) -> Vec<(CallSite, ComptimeCallKey)> {
     let mut calls: Vec<(CallSite, ComptimeCallKey)> = Vec::new();
-    for (call, (template, args)) in check.comptime_calls.iter() {
-        let mut resolved = Vec::with_capacity(args.len());
+    for (call, (template, slots)) in check.comptime_calls.iter() {
+        let Some(signature) = signatures.proc_sig(*template) else {
+            continue;
+        };
+        let mut resolved = Vec::with_capacity(
+            signature
+                .comptime_params
+                .iter()
+                .filter(|&&is_comptime| is_comptime)
+                .count(),
+        );
         let mut all_present = true;
-        for arg in args {
-            match values.run(call.0, *arg) {
-                Some(value) => resolved.push(value),
+        for (index, &is_comptime) in signature.comptime_params.iter().enumerate() {
+            if !is_comptime {
+                continue;
+            }
+            match slots.get(index) {
+                Some(jr_sema::ArgSlot::Given(arg)) => match values.run(call.0, *arg) {
+                    Some(value) => resolved.push(value),
+                    None => {
+                        all_present = false;
+                        break;
+                    }
+                },
+                Some(jr_sema::ArgSlot::Default(value)) => resolved.push(*value),
                 None => {
                     all_present = false;
                     break;
@@ -927,6 +947,7 @@ pub(crate) fn instantiated_from(
 
     // Harvest from the caller's check first, then from each round's own.
     let mut harvest: CheckResult = start_check.clone();
+    let mut harvest_signatures = file_signatures(db, file, catalog).signatures;
     for _ in 0..MAX_INSTANTIATION_ROUNDS {
         let mut fresh = false;
         for (site, key) in type_call_sites(&harvest)
@@ -940,7 +961,9 @@ pub(crate) fn instantiated_from(
             }
         }
         if let Some(values) = comptime_values.as_deref() {
-            for (site, key) in comptime_call_sites(&harvest, values, file_id) {
+            for (site, key) in
+                comptime_call_sites(&harvest, harvest_signatures.as_ref(), values, file_id)
+            {
                 if !comptime_keys.contains(&key) {
                     comptime_keys.push(key);
                     comptime_key_sites.push(site);
@@ -1012,6 +1035,7 @@ pub(crate) fn instantiated_from(
             &comptime_sites,
         );
         harvest = built.check.clone();
+        harvest_signatures = built.signatures.clone();
         expansion = Some(built);
     }
 
@@ -1031,7 +1055,12 @@ pub(crate) fn instantiated_from(
     }
     let mut comptime_masks: Vec<(CallSite, Vec<bool>)> = Vec::new();
     if let Some(values) = comptime_values.as_deref() {
-        for (call, key) in comptime_call_sites(&expansion.check, values, file_id) {
+        for (call, key) in comptime_call_sites(
+            &expansion.check,
+            expansion.signatures.as_ref(),
+            values,
+            file_id,
+        ) {
             let Some(index) = comptime_keys.iter().position(|k| *k == key) else {
                 continue;
             };

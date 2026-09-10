@@ -451,6 +451,14 @@ Status of each slice component, so this is answerable without reading the tree.
 > | Tests | The handler regression drives the exact incomplete `stack.` request and asserts all three labels plus the concrete `.data` detail. No parser, sema, MIR, engine, corpus, or editor integration changed. |
 > | Follow-up boundary | A canonical sema/LSP field-inventory seam remains in the completion-correctness queue; this repair does not force unrelated decisions about vectors, unions, variants, `Context`, or `using` promotion. |
 
+> **ADR-0241 component delta.**
+>
+> | Component | Current delta |
+> |---|---|
+> | `jr-sema` | Local `$N` and mixed `$T`+`$N`/`$$T` calls now share the ordinary declaration-ordered binder. Literal defaults may fill fixed ordinary parameters or the `$N` parameter itself; a default whose type contains `$T` remains E0252 and cannot infer a type variable. |
+> | `jr-db` | Comptime call evidence carries one `ArgSlot` per declared parameter. Only supplied expressions at comptime positions become const-eval targets; omitted literal defaults contribute their already-interned values directly to the specialization key. |
+> | Tests / boundary | `valid/171` executes named reordering and omitted defaults on pure `$N` and mixed templates, while a database test proves omitted, named-explicit and positional-explicit `N = 4` share one clone. Imported `$N`/mixed calls remain E0268, non-literal defaults remain later, and pure-template calls inside `#run` still need an instantiated routine in the comptime VM. |
+
 | Component | Status | Notes |
 |---|---|---|
 | `modules/Game` | **Foundation done** | **ADR-0210 decides ADR-0208's six forks and lands the first slice.** A caller owns `App`; `open(width, height, title)` starts SDL, creates the window, selects top-left/y-down Simp coordinates and unwinds every completed step if GL setup fails. `begin_frame` drains once, latches close, and records an unclamped non-negative delta; `end_frame` presents; `close` is idempotent and destroys Simp before the window and SDL. A private guard refuses a second simultaneous App because Simp has one process-global renderer; the lifecycle stays on one thread. Two native integration tests cover a real synthetic-quit/reopen lifecycle and the dummy driver's no-GL unwind. **Not game-ready v1:** held input, primitive helpers, generation-tagged resources, PNG, text and audio are later slices. |
@@ -484,7 +492,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the real-editor verifier — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua` needs an editor CI does not have. The installed parser is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The verifier asserts tree-sitter node kinds and nesting that ADR-0010's error-count gate cannot see, plus live LSP requests against the real server. |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and another LSP client may launch it; the repository packages integrations for Neovim and Zed. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–**0240**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
+Accepted ADRs: 0001–**0241**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
 counts here are why the ADR index row and this line move in the same commit.
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
@@ -785,47 +793,50 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0240 restores member completion for native dynamic arrays.**
-> `stack: [..]*Node; stack.` now offers `data`, `count`, and `capacity`, with the concrete
-> `data: **Node` detail expected for a pointer-element stack.
+> **ADR-0241 gives local comptime templates the ordinary named/default binder.**
+> `width :: ($N: s64 = 4) -> s64` may now be called as `width()`, `width(4)`, or
+> `width(N = 4)`, and all three demand one specialization.
 
-**1432 workspace tests (1445 under gate 7), 323 corpus files outside fixture modules, 240 ADRs and
-26 modules.** The new LSP handler regression drives the incomplete `stack.` expression directly.
-All six ordinary gates are green; gate 7 was not rerun because no MIR, layout, codegen, or back-end
-code changed. Its enumerated test count is 1445.
+**1433 workspace tests (1446 under gate 7), 324 corpus files outside fixture modules, 241 ADRs and
+26 modules.** `valid/171` executes pure `$N` and mixed-template named/default calls; a database
+integration test proves equivalent spellings deduplicate to one clone. All six ordinary gates are
+green; gate 7 was not rerun because no MIR, layout, codegen, or back-end implementation changed. Its
+enumerated count moves by the same one new default-gate test to 1446.
 
-The defect was one missing `Item::DynamicArrayType` arm in `fields_at`: sema already accepted all
-three ADR-0136 pseudo-fields, while completion separately knew about `string`, fixed arrays, views,
-structs, and pointer auto-dereference. Completion now mirrors the public dynamic-array surface and
-renders `.data` from the already-known element type, so an incomplete editor query does not mutate
-the shared pool merely to describe a candidate.
+The call record is now the binder's full declaration-ordered `ArgSlot` vector rather than a compressed
+list of source expressions. The signature supplies the comptime mask. `jr-db` evaluates only
+`Given(expr)` slots at `$N` positions and consumes `Default(value)` directly, so an omitted literal
+does not need a fabricated expression or caller scope. Defaults still do not infer `$T`; imported
+`$N`/mixed specialization remains E0268.
 
-The narrow repair deliberately leaves the duplicated sema/LSP field inventory visible. A shared
-enumeration seam remains part of the canonical-completion queue, where vectors, unions, variants,
-`Context`, and `using`-promoted fields can be decided together. **E0301** remains the first free
-global diagnostic code; **E0137** remains the first free parser code.
+### Next wave: native dynamic-array access
 
-### Next wave: declaration-ordered evidence for comptime templates
+`[..]T` should become an ordinary bounded sequence at the language surface:
 
-The recommended next default-argument slice generalises the `$N`/mixed call record from a list of
-source `ExprId`s to one declaration-ordered slot per parameter: either a supplied expression or an
-already-interned literal value. That lets the ordinary binder own names, duplicate detection and
-omission while `jr-db` evaluates only supplied comptime expressions and consumes a default value
-directly. Imported `$N`/mixed specialization remains separate and should keep E0268 in this slice.
+- `xs[i]` reads, writes, and supports address-taking;
+- `for value, index: xs` iterates the used prefix;
+- bounds use `count`, never `capacity`, and compose with `#no_abc`;
+- `*[..]T` keeps bounded-container auto-dereference precedence over raw-pointer indexing.
 
-The design fork to decide before code is whether a literal default may fill the comptime parameter
-itself (`$N: s64 = 4`) as well as an ordinary fixed parameter on the same template. The recommendation
-is yes: both are declaration-fixed values, and the slot representation can distinguish them without
-manufacturing an expression. Defaults still must not infer `$T`.
+The existing MIR already has `DynamicArrayData` and `DynamicArrayCount` projections, so the wave
+should add no engine primitive. It does touch MIR lowering and therefore requires gate 7.
 
-Pure-template calls inside `#run` are the next specialization/lowering follow-up after that evidence
-channel. Non-literal defaults remain later: constants, calls, aggregates, `context` values and
+### Following parity wave: `Pool` and `Flat_Pool`
+
+The allocator decision is closed on captured ownership. Both pools capture one backing allocator
+triple before installation and replay it through `push_context`; consulting the ambient allocator
+after installation would recurse. `Pool` is a stable-address multi-block arena with 64 KiB default
+blocks, reset/reuse, large dedicated blocks and bulk release. `Flat_Pool` is one contiguous slab and
+may grow only while empty, because relocating live allocator results would be a false promise.
+Private unions bridge `*Pool`/`*Flat_Pool` through the current `allocator_data: s64` protocol, and
+allocation cursors use the protocol's established 16-byte alignment. The acceptance program should
+exercise `New(Node)`, `[..]*Node`, `Table(string, string)`, reset/reuse and a request above 64 KiB.
+
+Pure-template calls inside `#run` remain the next specialization/lowering follow-up after these three
+selected waves. Non-literal defaults remain later: constants, calls, aggregates, `context` values and
 caller-location defaults need decisions about declaration scope, evaluation timing and side effects.
 
-The parity-module queue remains `Pool`/`Flat_Pool` first if the new `New` + `[..]T` + `Table(K,V)`
-composition should be exercised immediately; `Text_File_Handler` is the low-compiler-risk fallback.
-A pool wave must decide allocator ownership first because `New` and `Hash_Table` use the context
-allocator while `List` growth still uses `malloc`/`free`.
+**E0301** remains the first free global diagnostic code; **E0137** remains the first free parser code.
 
 Commit each substrate wave before starting the next; merge remains a separate decider action.
 

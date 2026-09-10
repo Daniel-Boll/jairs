@@ -39,6 +39,9 @@ pub struct Analysis {
     pub type_name_imports: Vec<String>,
     /// Polymorphic demands, including the declaration file of each template.
     pub instantiations: FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), (TemplateRef, Vec<PoolId>)>,
+    /// Comptime-template calls, carrying one declaration-ordered slot per parameter.
+    pub comptime_calls:
+        FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), (jr_hir::ProcId, Vec<ArgSlot>)>,
     /// Calls whose named/default arguments were aligned to declaration order.
     pub filled_calls: FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), Vec<ArgSlot>>,
 }
@@ -207,6 +210,7 @@ impl Program {
             assertions: checked.assertions,
             type_name_imports: checked.type_name_imports,
             instantiations: checked.instantiations,
+            comptime_calls: checked.comptime_calls,
             filled_calls: checked.filled_calls,
         }
     }

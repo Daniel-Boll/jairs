@@ -660,6 +660,33 @@ fn cross_file_specialisation_reaches_each_owner_once_and_runs() {
 }
 
 #[test]
+fn omitted_and_explicit_comptime_defaults_share_one_specialization() {
+    let mut db = JairsDatabase::default();
+    let catalog = db.set_module_search_paths(Vec::new());
+    let root = add_file(
+        &mut db,
+        "main.jr",
+        "width :: ($N: s64 = 4) -> s64 { return N; }\n\
+         main :: () {\n\
+           assert(width() == 4);\n\
+           assert(width(N = 4) == 4);\n\
+           assert(width(4) == 4);\n\
+         }\n",
+    );
+    let config = db.set_build_config(true, OptLevel::Standard);
+
+    assert_eq!(
+        run_main(&db, root, catalog, config),
+        Ok(RunOutcome::Completed)
+    );
+    assert_eq!(
+        file_mir_for_root(&db, root, root, catalog).hir.procs.len(),
+        3,
+        "width, main, and exactly one shared width(N = 4) specialization"
+    );
+}
+
+#[test]
 fn root_diagnostics_include_errors_from_imported_template_clones() {
     let mut modules = InMemoryModules::new();
     modules.add(

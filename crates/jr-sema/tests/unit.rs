@@ -637,38 +637,61 @@ fn a_polymorphic_parameter_cannot_supply_its_own_default() {
 }
 
 #[test]
-fn defaults_remain_deferred_on_comptime_and_mixed_templates() {
+fn comptime_templates_accept_fixed_and_comptime_literal_defaults() {
     let mut program = Program::new();
     let analysis = program.analyse(
-        "typed :: ($N: s64, scale: s64 = 2) -> s64 {\n\
+        "width :: ($N: s64 = 4) -> s64 {\n\
+             return N;\n\
+         }\n\
+         typed :: ($N: s64, scale: s64 = 2) -> s64 {\n\
              return N * scale;\n\
          }\n\
          inferred :: ($N := 9) -> s64 {\n\
              return N;\n\
          }\n\
-         mixed :: (value: $T, $N: s64, label := \"item\") -> T {\n\
+         mixed :: (value: $T, $N: s64 = 3, label := \"item\") -> T {\n\
              return value;\n\
          }\n",
     );
-    assert_eq!(analysis.codes(), vec!["E0252", "E0252", "E0252"]);
+    analysis.assert_silent();
 }
 
 #[test]
-fn named_arguments_remain_deferred_on_comptime_and_mixed_templates() {
+fn comptime_calls_record_declaration_ordered_named_and_default_slots() {
     let mut program = Program::new();
     let analysis = program.analyse(
-        "valued :: ($N: s64) -> s64 {\n\
+        "valued :: ($N: s64 = 3, scale: s64 = 2) -> s64 {\n\
              return N;\n\
          }\n\
-         mixed :: (value: $T, $N: s64) -> T {\n\
+         mixed :: (value: $T, $N: s64 = 4, scale: s64 = 2) -> T {\n\
              return value;\n\
          }\n\
          main :: () {\n\
-             a := valued(N = 3);\n\
-             b := mixed(N = 4, value = 8);\n\
+             a := valued();\n\
+             b := valued(scale = 5, N = 7);\n\
+             c := mixed(N = 6, value = 8);\n\
          }\n",
     );
-    assert_eq!(analysis.codes(), vec!["E0252", "E0252"]);
+    analysis.assert_silent();
+
+    let mut shapes: Vec<Vec<char>> = analysis
+        .comptime_calls
+        .values()
+        .map(|(_, slots)| {
+            slots
+                .iter()
+                .map(|slot| match slot {
+                    ArgSlot::Given(_) => 'G',
+                    ArgSlot::Default(_) => 'D',
+                })
+                .collect()
+        })
+        .collect();
+    shapes.sort();
+    assert_eq!(
+        shapes,
+        vec![vec!['D', 'D'], vec!['G', 'G'], vec!['G', 'G', 'D'],]
+    );
 }
 
 #[test]
