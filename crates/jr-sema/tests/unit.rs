@@ -71,6 +71,28 @@ fn new_accepts_a_recursive_struct_behind_pointer_and_dynamic_array_indirection()
 }
 
 #[test]
+fn dynamic_arrays_are_bounded_indexable_sequences_through_ownership_pointers() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "touch :: (xs: *[..]s64, i: s64) -> s64 {\n\
+             before: s64 = xs[i];\n\
+             xs[i] = before + 1;\n\
+             address: *s64 = *xs[i];\n\
+             address.* = address.* + 1;\n\
+             total := 0;\n\
+             for value, index: xs {\n\
+                 total = total + value + index;\n\
+             }\n\
+             for < value, index: xs {\n\
+                 total = total + value + index;\n\
+             }\n\
+             return xs[i] + total;\n\
+         }\n",
+    );
+    analysis.assert_silent();
+}
+
+#[test]
 fn new_needs_a_type_argument() {
     let mut program = Program::new();
     let analysis = program.analyse("main :: () {\n    value := 1;\n    node := New(value);\n}\n");

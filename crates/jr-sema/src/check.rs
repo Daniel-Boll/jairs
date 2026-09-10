@@ -822,11 +822,11 @@ impl<'a> Ctx<'a> {
 
     /// Types a `for` loop and records its variables' types (ADR-0049 §1).
     ///
-    /// Four iterable shapes and no more: an array, a view, a string, or a range. Strings yield
-    /// `u8` bytes directly rather than converting to a view. The *element* type is what the value
-    /// variable gets; the index variable is always `s64`, because that is the type `.count` has
-    /// (ADR-0004) and an index that disagreed with the length would need a conversion to compare
-    /// with it.
+    /// Five iterable shapes and no more: an array, a view, a dynamic array, a string, or a range.
+    /// Strings yield `u8` bytes directly rather than converting to a view. The *element* type is
+    /// what the value variable gets; the index variable is always `s64`, because that is the type
+    /// `.count` has (ADR-0004) and an index that disagreed with the length would need a conversion
+    /// to compare with it.
     fn check_for(
         &mut self,
         body: BodyId,
@@ -847,7 +847,9 @@ impl<'a> Ctx<'a> {
                     seq = inner;
                 }
                 match self.pool.item(seq) {
-                    Item::ArrayType { elem, .. } | Item::ViewType { elem } => *elem,
+                    Item::ArrayType { elem, .. }
+                    | Item::ViewType { elem }
+                    | Item::DynamicArrayType { elem } => *elem,
                     Item::StringType => PoolId::U8,
                     _ => {
                         if seq != PoolId::ERROR {
@@ -859,7 +861,7 @@ impl<'a> Ctx<'a> {
                                 )
                                 .with_code(E0247)
                                 .with_note(
-                                    "a `for` iterates a fixed-size array `[N]T`, a view `[]T`, a `string`'s bytes, or a range `a..b`",
+                                    "a `for` iterates a fixed-size array `[N]T`, a view `[]T`, a dynamic array `[..]T`, a `string`'s bytes, or a range `a..b`",
                                 )
                                 .with_help(
                                     // **Not "wave W5's macros unlock it".** W5 is complete and
@@ -7302,10 +7304,7 @@ impl<'a> Ctx<'a> {
                     Diagnostic::error(span, format!("cannot index a value of type `{text}`"))
                         .with_code(E0234)
                         .with_note(
-                            "only a fixed-size array `[N]T`, vector, view `[]T`, or raw pointer `*T` can be indexed",
-                        )
-                        .with_help(
-                            "index a dynamic array `[..]T` through its `.data` pointer",
+                            "only a fixed-size array `[N]T`, vector, view `[]T`, dynamic array `[..]T`, or raw pointer `*T` can be indexed",
                         ),
                 );
             }
@@ -7361,9 +7360,10 @@ impl<'a> Ctx<'a> {
 
     /// The element type of something indexable, and its length when that is known.
     ///
-    /// `Some((elem, Some(n)))` for `[N]T` and `Some((elem, None))` for `[]T`. The `None` is
-    /// not a failure — it says the length is runtime data, which is the whole difference
-    /// between an array and a view (ADR-0044 §1) — so a caller must not treat it as one.
+    /// `Some((elem, Some(n)))` for `[N]T` and `Some((elem, None))` for `[]T` or `[..]T`.
+    /// The `None` is not a failure — it says the length is runtime data, which is the whole
+    /// difference between an array and a view or dynamic array (ADR-0044 §1, ADR-0136 §1) —
+    /// so a caller must not treat it as one.
     fn indexable_parts(&self, ty: PoolId) -> Option<(PoolId, Option<u64>)> {
         match self.pool.item(ty) {
             Item::ArrayType { elem, len } => Some((*elem, Some(*len))),
@@ -7373,7 +7373,7 @@ impl<'a> Ctx<'a> {
             // and `Statement::BoundsCheck` guards a dynamic one. That falls out of the layouts being
             // identical, and it is the reason reading a lane needed no MIR change at all.
             Item::VectorType { elem, lanes } => Some((*elem, Some(*lanes))),
-            Item::ViewType { elem } => Some((*elem, None)),
+            Item::ViewType { elem } | Item::DynamicArrayType { elem } => Some((*elem, None)),
             _ => None,
         }
     }
