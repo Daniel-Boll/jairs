@@ -57,7 +57,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0234.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0236.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -144,8 +144,14 @@ inside a body; sema decides the positional list once and both MIR paths consume 
 A literal-defaulted parameter may now omit its annotation: `amount := 9`. The declaration fixes its
 type once — integer and `#char` literals become `s64`, floats `float64`, booleans `bool`, and strings
 `string` — and ordinary local/imported calls plus `#run` use the same named/default binder. `null`
-still needs an explicit pointer type, non-literal defaults remain deferred, and inferred defaults on
-template/comptime procedures are refused until their separate call path consumes filled arguments.
+still needs an explicit pointer type and non-literal defaults remain deferred.
+
+Ordinary local/imported calls to a pure `$T` procedure now use that binder too. A fixed explicitly
+typed or inferred literal default may be omitted, names are reordered before inference, and only
+caller-supplied expressions bind each type variable. A default whose type is `$T` or a later bare
+`T` is E0252; defaults and local named calls on `$N` or mixed templates remain E0252, while imported
+comptime templates remain E0268. Calling a pure template inside `#run` is still a separate
+specialization gap.
 
 Every fresh Jairs context now has a working allocator/free pair in the VM, Cranelift and LLVM;
 assigning a custom pair and copying one through `push_context` remain unchanged. Whole-file
@@ -236,9 +242,9 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1412** workspace tests (**1425** under gate 7), with all six ordinary gates green for ADR-0235.
+- **1415** workspace tests (**1428** under gate 7), with all six ordinary gates green for ADR-0236.
   Gate 7 was not required because this wave changed no MIR, layout or back end.
-- **314** `.jr` corpus files outside the fixture-module directory, **235** accepted ADRs, **26** standard library
+- **316** `.jr` corpus files outside the fixture-module directory, **236** accepted ADRs, **26** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative

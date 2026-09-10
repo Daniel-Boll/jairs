@@ -96,11 +96,24 @@ strings infer `string`. Supplying an argument does not re-infer the parameter: i
 fixed type. `null` requires an explicit pointer type, for example `next: *Node = null`; writing
 `next := null` reports E0257.
 
-Explicit and inferred literal defaults work on ordinary local and imported procedures and in
-`#run` calls. Non-literal defaults remain refused. Inferred defaults on `$T`, `$N`, or `$$T`
-template/comptime procedures report E0252 because template calls currently bypass the ordinary
-filled-argument/default binder. Procedure-pointer types do not retain parameter-name or default
-metadata.
+Explicit and inferred literal defaults work on non-template local and imported procedures and in
+their `#run` calls. They also work on a fixed-type parameter of an ordinary pure `$T` call
+(ADR-0236):
+
+```jr
+pick :: (value: $T, scale: s64 = 2, label := "item") -> T {
+    return value;
+}
+
+a := pick(scale = 4, value = 8);  // names bind by declaration position
+b := pick(label = "x", value = 9);
+```
+
+The supplied `value` pins `T`; neither default participates in type inference. A default whose
+own type contains `$T` is E0252. Any default on a `$N` or mixed `$T`+`$N` procedure is also
+E0252, as is a named call to a local comptime/mixed template; imported `$N` remains E0268.
+Non-literal defaults remain refused. Procedure-pointer types do not retain parameter-name or
+default metadata. A pure-template call inside `#run` remains a lowering gap.
 
 ## Named arguments
 

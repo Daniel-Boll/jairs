@@ -61,8 +61,16 @@ main :: () {
   inferred_default := D.inferred();
   inferred_reordered := D.inferred(b = 8, a = 7);
 
-  // 7 + 14 + 24 + 35 + 103 + 46 + 78 = 307. Read into one local so nothing above is dead.
-  total := with_default + explicit + named + reordered + two_defaults + inferred_default + inferred_reordered;
-  checked := total == 307;
-  _ = checked;
+  // Pure `$T` calls use that same binder across the module boundary. Every call
+  // supplies `value`, so caller evidence — never a default — pins `T`.
+  template_default := D.template_typed(1);
+  template_supplied := D.template_typed(true, 7);
+  template_reordered := D.template_identity(scale = 4, value = 8);
+  template_inferred_default := D.template_inferred(false);
+  template_inferred_reordered := D.template_inferred(amount = 9, value = 0.5);
+
+  // 307 + 3 + 7 + 8 + 5 + 9 = 339. Read into one local so nothing above is dead.
+  total := with_default + explicit + named + reordered + two_defaults + inferred_default + inferred_reordered + template_default + template_supplied + template_reordered + template_inferred_default + template_inferred_reordered;
+  checked := total == 339;
+  assert(checked, "imported default arguments produced the wrong total");
 }

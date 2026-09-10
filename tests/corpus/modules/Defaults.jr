@@ -20,3 +20,19 @@ three :: (a: s64, b: s64, c: s64 = 100) -> s64 {
 inferred :: (a := 4, b := 6) -> s64 {
   return a * 10 + b;
 }
+
+/// Returns the type-polymorphic value. The fixed default exists to prove that
+/// reversed imported names bind by declaration position (ADR-0236).
+template_identity :: (value: $T, scale: s64 = 2) -> T {
+  return value;
+}
+
+/// A fixed explicitly typed default on a pure `$T` procedure.
+template_typed :: (value: $T, scale: s64 = 3) -> s64 {
+  return scale;
+}
+
+/// A fixed inferred default on a pure `$T` procedure.
+template_inferred :: (value: $T, amount := 5) -> s64 {
+  return amount;
+}

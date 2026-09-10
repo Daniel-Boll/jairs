@@ -400,10 +400,18 @@ Status of each slice component, so this is answerable without reading the tree.
 > | Component | Current delta |
 > |---|---|
 > | `jr-syntax` / `jr-hir` | A parameter may spell `name := expression`; the CST/HIR preserve that inference was written while retaining the default expression and no synthetic annotation. |
-> | `jr-sema` | Literal defaults fix the parameter to the ordinary natural type (`s64`, `float64`, `bool` or `string`); supplied arguments do not re-infer it. `null` remains E0257, non-literals/foreign defaults remain E0252, and inferred defaults on `$T`/`$N`/`$$T` procedures are honestly refused until template calls use the ordinary binder. |
+> | `jr-sema` | Literal defaults fix the parameter to the ordinary natural type (`s64`, `float64`, `bool` or `string`); supplied arguments do not re-infer it. `null` remains E0257 and non-literals/foreign defaults remain E0252. ADR-0236 now permits a fixed inferred default on a pure `$T` procedure; comptime templates remain refused. |
 > | `jr-fmt` / `tree-sitter-jairs` / editors | Formatting preserves `:=`; Tree-sitter exposes a default with no type field. A dynamic completed-parse preference restores `result_list` after the new alternative changed GLR scoring, while a following arrow still selects a returned procedure-pointer type. Neovim pins both shapes. |
 > | `jr-lsp` | Hover and signature help render the resolved inferred type rather than the absent source annotation. |
 > | Tests / documentation | Fourteen Rust tests plus one dynamic chapter-17 compatibility probe cover parsing, lowering, natural types, refusals, formatting and LSP rendering. `valid/166`, `type-errors/095` and the imported fixture execute the ordinary and `#run` paths. |
+
+> **ADR-0236 component delta.**
+>
+> | Component | Current delta |
+> |---|---|
+> | `jr-sema` | A local or imported pure `$T` call resolves named and omitted arguments through the ordinary declaration-ordered binder before inference. Only caller-supplied expressions bind `$T`; fixed explicitly typed or inferred literal defaults are legal. A default whose type is `$T` or a later bare `T`, and defaults/local named calls on `$N` or mixed templates, are E0252. |
+> | `jr-mir` / engines | No implementation change: template redirects already consume `FilledArgs`, so the aligned slots reach the VM and both native back ends through the existing channel. |
+> | Tests / documentation | `valid/167` executes omitted, supplied and reversed template arguments; `type-errors/096` pins four default/comptime boundaries; the imported Defaults fixture exercises the same calls across a module boundary. Documentation explicitly keeps pure-template calls inside `#run` as a separate E0230/E0268 specialization gap. |
 
 | Component | Status | Notes |
 |---|---|---|
@@ -739,46 +747,48 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0235 closes the pinned guide's inferred literal-default spelling.**
-> `amount := 9` is a defaulted parameter with one declaration-fixed type, not a caller-inferred
-> generic. The resolved `ProcSig` remains the authority consumed by ordinary local/imported calls
-> and `#run`; the source HIR records that inference was written without inventing a type annotation.
+> **ADR-0236 closes ordinary named/default binding for pure `$T` calls.**
+> A template call now resolves source names and omitted fixed defaults into declaration order before
+> type inference. Only supplied expressions bind `$T`; an omitted default cannot silently choose a
+> specialization.
 
-**1412 workspace tests (1425 under gate 7), 314 corpus files outside fixture modules, 235 ADRs and
-26 modules.** Fourteen added Rust tests plus the manifest-generated chapter-17 probe move the test
-count by fifteen; `valid/166` and `type-errors/095` move the corpus count by two. All six ordinary
-gates are green. Gate 7 was not required because this wave changes no MIR, layout, pool layout or
-back end.
+**1415 workspace tests (1428 under gate 7), 316 corpus files outside fixture modules, 236 ADRs and
+26 modules.** One former template-default refusal test became four focused tests, moving the
+workspace count by three; `valid/167` and `type-errors/096` move the corpus count by two. All six
+ordinary gates are green. Gate 7 was not required because this wave changes no MIR, layout, pool
+layout or back end.
 
-Integer and `#char` defaults infer `s64`, floats `float64`, booleans `bool`, and strings `string`.
-An explicit supplied argument is checked against that fixed type. `null` reuses E0257 because it has
-no honest default pointer type. Non-literal defaults and inferred defaults on template/comptime
-procedures remain E0252.
+Fixed explicitly typed and inferred literal defaults work on ordinary local/imported pure `$T`
+calls, including reversed names. A default whose own type is `$T` or a later bare `T` is E0252.
+Defaults and local named calls on `$N` or mixed `$T`+`$N` templates remain E0252, while imported
+comptime templates retain E0268.
 
-The editor check caught the wave's subtle failure: Tree-sitter parsed every corpus file with zero
-errors but classified `-> (s64, bool)` as an optional-arrow procedure-pointer type. A dynamic
-completed-parse preference restores the result-list shape while a following `->` still forces the
-procedure-pointer reading. This is the exact wrong-tree/clean-parse gap `verify.lua` exists to catch.
-**E0300** is the first free global diagnostic code; **E0136** is the first free parser code.
+One direct probe prevented an overclaim: a pure `$T` call inside `#run` has correctly filled slots
+but the compile-time program still has no instantiated routine, so local calls report E0230 and
+imported calls retain E0268. Ordinary non-template `#run` named/default calls remain delivered by
+ADR-0234. **E0300** is the first free global diagnostic code; **E0136** is the first free parser code.
 
-### Next wave: template calls consume the ordinary argument binder
+### Next wave: declaration-ordered evidence for comptime templates
 
-The inferred-default implementation exposed the nearer default-argument gap: `$T`, `$N` and `$$T`
-calls dispatch before `fill_arguments`, so they require exact source arity and cannot honestly
-advertise omission or named reordering. The recommended first slice routes **pure `$T` templates**
-through the same positional binding before type inference, while allowing defaults only on ordinary
-non-polymorphic parameters. That keeps type-variable inference sourced from real supplied arguments
-and avoids pretending a default can invent `T`.
+The recommended next default-argument slice generalises the `$N`/mixed call record from a list of
+source `ExprId`s to one declaration-ordered slot per parameter: either a supplied expression or an
+already-interned literal value. That lets the ordinary binder own names, duplicate detection and
+omission while `jr-db` evaluates only supplied comptime expressions and consumes a default value
+directly. Imported `$N`/mixed specialization remains separate and should keep E0268 in this slice.
 
-Defaulted `$N` positions are a separate follow-up because the template path currently carries the
-source `ExprId`, while an omitted default is already an interned value. Non-literal defaults remain
-after both binder slices: constants, calls, aggregates, `context` values and caller-location defaults
-still need decisions about declaration scope, evaluation timing and side effects.
+The design fork to decide before code is whether a literal default may fill the comptime parameter
+itself (`$N: s64 = 4`) as well as an ordinary fixed parameter on the same template. The recommendation
+is yes: both are declaration-fixed values, and the slot representation can distinguish them without
+manufacturing an expression. Defaults still must not infer `$T`.
 
-After that default-argument slice, the parity-module queue is `Pool`/`Flat_Pool` first if the new
-`New` + `[..]T` + `Table(K,V)` composition should be exercised immediately; `Text_File_Handler` is
-the low-compiler-risk fallback. A pool wave must decide allocator ownership first because `New` and
-`Hash_Table` use the context allocator while `List` growth still uses `malloc`/`free`.
+Pure-template calls inside `#run` are the next specialization/lowering follow-up after that evidence
+channel. Non-literal defaults remain later: constants, calls, aggregates, `context` values and
+caller-location defaults need decisions about declaration scope, evaluation timing and side effects.
+
+The parity-module queue remains `Pool`/`Flat_Pool` first if the new `New` + `[..]T` + `Table(K,V)`
+composition should be exercised immediately; `Text_File_Handler` is the low-compiler-risk fallback.
+A pool wave must decide allocator ownership first because `New` and `Hash_Table` use the context
+allocator while `List` growth still uses `malloc`/`free`.
 
 Commit each substrate wave before starting the next; merge remains a separate decider action.
 

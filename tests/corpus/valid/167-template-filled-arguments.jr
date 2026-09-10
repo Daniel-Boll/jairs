@@ -1,0 +1,58 @@
+// Pure `$T` procedures use the ordinary named/default argument binder (ADR-0236).
+//
+// Every call still supplies an argument that pins each type variable. Defaults
+// apply only to fixed-type parameters: they may be omitted, supplied, or named
+// in either order. Template calls inside `#run` remain a separate lowering gap.
+#import "Basic";
+
+identity :: (value: $T, scale: s64 = 2) -> T {
+  return value;
+}
+
+typed :: (value: $T, scale: s64 = 3) -> s64 {
+  return scale;
+}
+
+inferred :: (value: $T, amount := 5) -> s64 {
+  return amount;
+}
+
+main :: () {
+  mask := 0;
+
+  // This is the silent-wrong-result regression: source-order zipping returned
+  // 4 here. Binding by declaration position returns the named `value`, 8.
+  if identity(scale = 4, value = 8) == 8 {
+    mask = mask + 1;
+  }
+
+  if typed(10) == 3 {
+    mask = mask + 2;
+  }
+  if typed(10, 7) == 7 {
+    mask = mask + 4;
+  }
+  if typed(scale = 9, value = true) == 9 {
+    mask = mask + 8;
+  }
+
+  if inferred(false) == 5 {
+    mask = mask + 16;
+  }
+  if inferred(false, 11) == 11 {
+    mask = mask + 32;
+  }
+  if inferred(amount = 13, value = 0.5) == 13 {
+    mask = mask + 64;
+  }
+
+  // One combined check keeps all three forms live in a second call shape.
+  if typed(1) == 3 && identity(scale = 4, value = 8) == 8 && inferred(value = true) == 5 {
+    mask = mask + 128;
+  }
+
+  if mask == 255 {
+    exit(0);
+  }
+  exit(1);
+}
