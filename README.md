@@ -58,7 +58,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0242.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0243.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -164,6 +164,13 @@ hash/equality callbacks. `table_add` and pointer-returning `table_set` are safe 
 Jairs' `(value, found)` convention, explicit cursors reject structural mutation, and allocation is
 transactional through the allocator captured by the first backing allocation. Keys and values are
 shallow copies, iteration order is unspecified, and `deinit` is explicit and idempotent.
+
+`Pool` and `Flat_Pool` now provide context-installable arena allocation. Both capture the allocator
+triple they replace, align requests to 16 bytes, and release backing storage only in bulk. `Pool`
+grows through retained stable-address 64 KiB blocks plus dedicated oversized blocks; `Flat_Pool`
+owns one slab and refuses to relocate it while allocations are live. Both support reset/reuse and
+idempotent cleanup, and compose with `New`, `Hash_Table`, and caller-owned native dynamic-array
+backing. `List` remains explicitly `malloc/free`-owned rather than silently changing ownership.
 
 Structural data interfaces now constrain existing specialisation without adding a runtime interface
 object: `value: $T/interface Shape` requires `T` to expose every field directly declared by `Shape`.
@@ -280,8 +287,8 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1436** workspace tests (**1449** under gate 7), with all seven gates green for ADR-0242.
-- **325** `.jr` corpus files outside the fixture-module directory, **242** accepted ADRs, **26** standard library
+- **1436** workspace tests (**1449** under gate 7), with all six ordinary gates green for ADR-0243.
+- **327** `.jr` corpus files outside the fixture-module directory, **243** accepted ADRs, **28** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative
@@ -397,7 +404,7 @@ before: two gates run at once and race a shared binary.
 - **[`docs/jai-game-development-audit.md`](docs/jai-game-development-audit.md)** —
   the primary-source games audit, language/library gaps, and the staged `Game`
   facade plan whose foundation is now implemented.
-- **[`docs/adr/README.md`](docs/adr/README.md)** — all 242 accepted decision
+- **[`docs/adr/README.md`](docs/adr/README.md)** — all 243 accepted decision
   records.
 - **[`docs/spec/`](docs/spec/)** — the language specification chapters.
 - **[`examples/`](examples/)** — runnable programs, each verified.

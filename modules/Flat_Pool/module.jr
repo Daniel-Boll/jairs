@@ -1,0 +1,254 @@
+//! A single-slab bump allocator.
+//!
+//! A `Flat_Pool` owns one contiguous allocation and hands out 16-byte-aligned
+//! regions from its used prefix. Existing allocations never move: growing the
+//! slab is allowed only while it is empty. Call [`reset`] to reuse its storage
+//! and [`fini`] to release it.
+//!
+//! [`set_allocators`] installs the pool in the active context. The pool captures
+//! the previous allocator triple once and replays that triple for every backing
+//! allocation and release, so installing it cannot make its own storage
+//! allocation recurse through itself.
+
+/// One contiguous, reusable allocation arena.
+///
+/// Jairs does not yet have field privacy, so these fields are visible but
+/// implementation-owned. Mutate a pool only through this module.
+Flat_Pool :: struct {
+  /// The backing slab, or null before the first allocation and after `fini`.
+  data: *u8;
+  /// Total bytes in `data`.
+  capacity: s64;
+  /// Bytes committed to returned allocations.
+  used: s64;
+  /// The allocator captured before this pool is installed.
+  backing_allocator: (s64) -> *u8;
+  /// The matching release procedure.
+  backing_allocator_free: (*u8);
+  /// Mutable state for the captured allocator.
+  backing_allocator_data: s64;
+  /// Whether the backing allocator triple has been captured.
+  initialized: bool;
+}
+
+/// Allocates `size` bytes from `pool`.
+///
+/// The first successful allocation lazily reserves at least 64 KiB. Every
+/// allocation consumes a multiple of 16 bytes; a zero-byte request consumes 16
+/// so it still receives a stable, non-null identity. Returns null for a
+/// negative or overflowing size, allocation failure, or exhaustion. Exhaustion
+/// never relocates live allocations.
+get :: (pool: *Flat_Pool, size: s64) -> *u8 {
+  if pool == null {
+    return null;
+  }
+  aligned := flat_pool_allocation_size(size);
+  if aligned < 0 {
+    return null;
+  }
+
+  flat_pool_ensure_initialized(pool);
+  if pool.data == null {
+    wanted := FLAT_POOL_DEFAULT_CAPACITY;
+    if aligned > wanted {
+      wanted = aligned;
+    }
+    if !reserve(pool, wanted) {
+      return null;
+    }
+  }
+
+  if pool.used < 0 || pool.used > pool.capacity {
+    return null;
+  }
+  if aligned > pool.capacity - pool.used {
+    return null;
+  }
+
+  result := pool.data + pool.used;
+  pool.used = pool.used + aligned;
+  return result;
+}
+
+/// Ensures that an empty `pool` owns at least `capacity` bytes.
+///
+/// The capacity is rounded up to 16 bytes. An existing slab is retained when
+/// it is already large enough. A larger slab may replace it only while no live
+/// allocations remain; allocation failure leaves the old slab published.
+reserve :: (pool: *Flat_Pool, capacity: s64) -> bool {
+  if pool == null {
+    return false;
+  }
+  if capacity < 0 || capacity > MAX_S64 - (FLAT_POOL_ALIGNMENT - 1) {
+    return false;
+  }
+
+  wanted := capacity;
+  if wanted > 0 {
+    wanted = (wanted + FLAT_POOL_ALIGNMENT - 1) / FLAT_POOL_ALIGNMENT * FLAT_POOL_ALIGNMENT;
+  }
+
+  flat_pool_ensure_initialized(pool);
+  if wanted <= pool.capacity {
+    return true;
+  }
+  if pool.used != 0 {
+    return false;
+  }
+
+  fresh := flat_pool_allocate(pool, wanted);
+  if fresh == null {
+    return false;
+  }
+
+  old := pool.data;
+  if old != null {
+    flat_pool_release(pool, old);
+  }
+  pool.data = fresh;
+  pool.capacity = wanted;
+  pool.used = 0;
+  return true;
+}
+
+/// Installs `pool` as the allocator in the active context.
+///
+/// The ambient allocator triple is captured before replacement and only on the
+/// first call. Subsequent backing operations keep using that owner even when a
+/// different allocator is active around the pool.
+set_allocators :: (pool: *Flat_Pool) {
+  if pool == null {
+    return;
+  }
+  flat_pool_ensure_initialized(pool);
+  context.allocator = flat_pool_allocator_proc;
+  context.allocator_free = flat_pool_allocator_free_proc;
+  context.allocator_data = flat_pool_context_word(pool);
+}
+
+/// Allocator callback installed by [`set_allocators`].
+flat_pool_allocator_proc :: (size: s64) -> *u8 {
+  pool := flat_pool_from_context_word(context.allocator_data);
+  if pool == null {
+    return null;
+  }
+  return get(pool, size);
+}
+
+/// Per-allocation release callback installed by [`set_allocators`].
+///
+/// A flat pool releases storage only in bulk through [`fini`].
+flat_pool_allocator_free_proc :: (allocation: *u8) {
+}
+
+/// Rewinds `pool` so its slab can be reused.
+///
+/// When `overwrite_memory` is true, every formerly used byte is replaced with
+/// a private nonzero stamp before the cursor is reset.
+reset :: (pool: *Flat_Pool, overwrite_memory: bool = false) {
+  if pool == null {
+    return;
+  }
+  if overwrite_memory && pool.data != null && pool.used > 0 {
+    i := 0;
+    while i < pool.used {
+      (pool.data + i).* = FLAT_POOL_OVERWRITE_STAMP;
+      i = i + 1;
+    }
+  }
+  pool.used = 0;
+}
+
+/// Releases the slab through the captured backing allocator.
+///
+/// This is idempotent. The captured allocator triple remains associated with
+/// the pool, so the same value can allocate again without accidentally
+/// recapturing its own installed callback.
+fini :: (pool: *Flat_Pool) {
+  if pool == null {
+    return;
+  }
+  if pool.data != null {
+    flat_pool_release(pool, pool.data);
+  }
+  pool.data = null;
+  pool.capacity = 0;
+  pool.used = 0;
+}
+
+#scope_module
+
+FLAT_POOL_DEFAULT_CAPACITY :: 65536;
+FLAT_POOL_ALIGNMENT :: 16;
+FLAT_POOL_OVERWRITE_STAMP :: cast(u8, 0xdd);
+MAX_S64 :: 9223372036854775807;
+
+/// Reinterprets a pool pointer as the context allocator's state word.
+Flat_Pool_Context_Word :: union {
+  pool: *Flat_Pool;
+  word: s64;
+}
+
+flat_pool_context_word :: (pool: *Flat_Pool) -> s64 {
+  bridge: Flat_Pool_Context_Word;
+  bridge.pool = pool;
+  return bridge.word;
+}
+
+flat_pool_from_context_word :: (word: s64) -> *Flat_Pool {
+  bridge: Flat_Pool_Context_Word;
+  bridge.word = word;
+  return bridge.pool;
+}
+
+flat_pool_allocation_size :: (size: s64) -> s64 {
+  if size < 0 || size > MAX_S64 - (FLAT_POOL_ALIGNMENT - 1) {
+    return -1;
+  }
+  if size == 0 {
+    return FLAT_POOL_ALIGNMENT;
+  }
+  return (size + FLAT_POOL_ALIGNMENT - 1) / FLAT_POOL_ALIGNMENT * FLAT_POOL_ALIGNMENT;
+}
+
+flat_pool_ensure_initialized :: (pool: *Flat_Pool) {
+  if pool.initialized {
+    return;
+  }
+  pool.data = null;
+  pool.capacity = 0;
+  pool.used = 0;
+  pool.backing_allocator = context.allocator;
+  pool.backing_allocator_free = context.allocator_free;
+  pool.backing_allocator_data = context.allocator_data;
+  pool.initialized = true;
+}
+
+flat_pool_allocate :: (pool: *Flat_Pool, size: s64) -> *u8 {
+  result: *u8 = null;
+  updated_data := pool.backing_allocator_data;
+  push_context {
+    context.allocator = pool.backing_allocator;
+    context.allocator_free = pool.backing_allocator_free;
+    context.allocator_data = pool.backing_allocator_data;
+    result = context.allocator(size);
+    updated_data = context.allocator_data;
+  }
+  pool.backing_allocator_data = updated_data;
+  return result;
+}
+
+flat_pool_release :: (pool: *Flat_Pool, allocation: *u8) {
+  if allocation == null {
+    return;
+  }
+  updated_data := pool.backing_allocator_data;
+  push_context {
+    context.allocator = pool.backing_allocator;
+    context.allocator_free = pool.backing_allocator_free;
+    context.allocator_data = pool.backing_allocator_data;
+    context.allocator_free(allocation);
+    updated_data = context.allocator_data;
+  }
+  pool.backing_allocator_data = updated_data;
+}

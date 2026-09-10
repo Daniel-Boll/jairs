@@ -188,7 +188,8 @@ fn valid_corpus_files_produce_no_sema_diagnostics() {
                 // diagnostics tolerated above. The with-modules CLI corpus
                 // test proves the real layout and executes both allocations.
                 let imported_layout_gap =
-                    name == "163-generic-hash-table.jr" && d.code == Some("E0266");
+                    matches!(name.as_str(), "163-generic-hash-table.jr" | "173-pool.jr")
+                        && d.code == Some("E0266");
                 !imported_type_gap && !imported_layout_gap
             })
             .collect();

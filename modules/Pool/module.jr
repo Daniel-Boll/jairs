@@ -1,0 +1,358 @@
+//! A stable-address, resettable arena allocator.
+//!
+//! `Pool` owns a linked set of backing allocations. Ordinary requests bump
+//! through 64 KiB payload blocks by default; a request larger than the chosen
+//! block size receives its own dedicated block. No live allocation moves.
+//!
+//! A zero value is ready to use. The first allocation, or
+//! [`set_allocators`], captures the active context allocator triple. Every
+//! later backing allocation and release replays that captured triple, even
+//! when another allocator is active in the caller's context.
+//!
+//! Individual frees are deliberately ignored. Call [`reset`] to retain and
+//! reuse every block, or [`release`] to return every block to the captured
+//! backing allocator.
+
+/// A stable-address multi-block arena.
+///
+/// `memblock_size == 0` selects the 65,536-byte default. Positive custom
+/// sizes are rounded up to the allocator protocol's 16-byte alignment.
+///
+/// The remaining fields are visible because Jairs has no field privacy, but
+/// are implementation-owned. Mutate a pool through this module.
+Pool :: struct {
+  /// Payload bytes in each ordinary block. Zero selects the default.
+  memblock_size: s64;
+  /// Unused payload bytes in the active ordinary block.
+  bytes_left: s64;
+  /// Whether [`reset`] stamps every formerly used payload byte.
+  overwrite_memory: bool;
+  /// First private block header.
+  first_block: *u8;
+  /// Last private block header, for constant-time append.
+  last_block: *u8;
+  /// Ordinary block receiving the next fitting request.
+  current_block: *u8;
+  /// Backing allocator captured before this pool installs itself.
+  backing_allocator: (s64) -> *u8;
+  /// Matching backing release procedure.
+  backing_allocator_free: (*u8);
+  /// Mutable state word belonging to the backing allocator.
+  backing_allocator_data: s64;
+  /// Whether the backing allocator triple has been captured.
+  initialized: bool;
+}
+
+/// Allocates `size` bytes with stable address and 16-byte alignment.
+///
+/// A zero-byte request consumes 16 bytes and returns a distinct non-null
+/// address when allocation succeeds. Negative sizes, arithmetic overflow and
+/// backing allocation failure return null.
+get :: (pool: *Pool, size: s64) -> *u8 {
+  if pool == null || size < 0 {
+    return null;
+  }
+
+  wanted := pool_aligned_size(size);
+  if wanted < 0 {
+    return null;
+  }
+
+  pool_ensure_initialized(pool);
+  block_size := pool.memblock_size;
+  if block_size <= 0 {
+    return null;
+  }
+
+  if wanted > block_size {
+    return pool_get_dedicated(pool, wanted);
+  }
+  return pool_get_ordinary(pool, wanted, block_size);
+}
+
+/// Installs `pool` as the allocator in the active context.
+///
+/// The backing allocator is captured before the context is changed, so a pool
+/// never recursively asks itself for another block.
+set_allocators :: (pool: *Pool) {
+  if pool == null {
+    return;
+  }
+  pool_ensure_initialized(pool);
+  context.allocator = pool_allocator_proc;
+  context.allocator_free = pool_allocator_free_proc;
+  context.allocator_data = pool_pointer_word(pool);
+}
+
+/// Context allocator callback installed by [`set_allocators`].
+pool_allocator_proc :: (size: s64) -> *u8 {
+  pool := pool_from_word(context.allocator_data);
+  if pool == null {
+    return null;
+  }
+  return get(pool, size);
+}
+
+/// Per-allocation release callback installed by [`set_allocators`].
+///
+/// Pool storage is released in bulk by [`reset`] or [`release`].
+pool_allocator_free_proc :: (allocation: *u8) {
+}
+
+/// Rewinds every block while retaining all backing allocations.
+///
+/// Dedicated blocks are retained too and may satisfy a later oversized
+/// request whose aligned size fits their capacity. When `overwrite_memory` is
+/// true, every formerly used payload byte is replaced with a private nonzero
+/// stamp before the cursor is rewound.
+reset :: (pool: *Pool) {
+  if pool == null || !pool.initialized {
+    return;
+  }
+
+  pool.current_block = null;
+  pool.bytes_left = 0;
+
+  raw := pool.first_block;
+  while raw != null {
+    block := typed(Pool_Block, raw);
+    formerly_used := block.used;
+    if pool.overwrite_memory && formerly_used > 0 {
+      pool_stamp(raw + size_of(Pool_Block), formerly_used);
+    }
+    block.used = 0;
+
+    if pool.current_block == null && block.dedicated == 0 {
+      pool.current_block = raw;
+      pool.bytes_left = block.capacity;
+    }
+    raw = block.next;
+  }
+}
+
+/// Returns every backing block to the allocator captured by this pool.
+///
+/// Idempotent. The captured allocator triple remains installed in the pool,
+/// so a later allocation reuses the same ownership policy even if the caller
+/// has changed context.
+release :: (pool: *Pool) {
+  if pool == null || !pool.initialized {
+    return;
+  }
+
+  raw := pool.first_block;
+  while raw != null {
+    block := typed(Pool_Block, raw);
+    next := block.next;
+    pool_backing_release(pool, raw);
+    raw = next;
+  }
+
+  pool.first_block = null;
+  pool.last_block = null;
+  pool.current_block = null;
+  pool.bytes_left = 0;
+}
+
+#scope_module
+
+POOL_DEFAULT_BLOCK_SIZE :: 65536;
+POOL_ALIGNMENT :: 16;
+POOL_ALIGNMENT_MASK :: 15;
+POOL_MAX_S64 :: 9223372036854775807;
+POOL_STAMP :: cast(u8, 0xdd);
+
+/// A private block header. Payload begins immediately after this value.
+Pool_Block :: struct {
+  next: *u8;
+  capacity: s64;
+  used: s64;
+  dedicated: s64;
+}
+
+/// Reinterprets a pool pointer as the context protocol's state word.
+Pool_Pointer_Word :: union {
+  pointer: *Pool;
+  word: s64;
+}
+
+pool_pointer_word :: (pool: *Pool) -> s64 {
+  bridge: Pool_Pointer_Word;
+  bridge.pointer = pool;
+  return bridge.word;
+}
+
+pool_from_word :: (word: s64) -> *Pool {
+  bridge: Pool_Pointer_Word;
+  bridge.word = word;
+  return bridge.pointer;
+}
+
+/// Rounds a request to the allocator protocol's alignment.
+///
+/// `-1` is private failure signalling; public allocation returns null.
+pool_aligned_size :: (size: s64) -> s64 {
+  if size < 0 {
+    return -1;
+  }
+  if size <= POOL_ALIGNMENT {
+    return POOL_ALIGNMENT;
+  }
+  if size > POOL_MAX_S64 - POOL_ALIGNMENT_MASK {
+    return -1;
+  }
+  return (size + POOL_ALIGNMENT_MASK) / POOL_ALIGNMENT * POOL_ALIGNMENT;
+}
+
+/// Captures the active backing allocator exactly once.
+pool_ensure_initialized :: (pool: *Pool) {
+  if pool.initialized {
+    return;
+  }
+
+  if pool.memblock_size == 0 {
+    pool.memblock_size = POOL_DEFAULT_BLOCK_SIZE;
+  } else {
+    pool.memblock_size = pool_aligned_size(pool.memblock_size);
+  }
+
+  pool.first_block = null;
+  pool.last_block = null;
+  pool.current_block = null;
+  pool.bytes_left = 0;
+  pool.backing_allocator = context.allocator;
+  pool.backing_allocator_free = context.allocator_free;
+  pool.backing_allocator_data = context.allocator_data;
+  pool.initialized = true;
+}
+
+/// Allocates through the captured backing allocator and preserves its state.
+pool_backing_allocate :: (pool: *Pool, size: s64) -> *u8 {
+  result: *u8 = null;
+  updated_data := pool.backing_allocator_data;
+  push_context {
+    context.allocator = pool.backing_allocator;
+    context.allocator_free = pool.backing_allocator_free;
+    context.allocator_data = pool.backing_allocator_data;
+    result = context.allocator(size);
+    updated_data = context.allocator_data;
+  }
+  pool.backing_allocator_data = updated_data;
+  return result;
+}
+
+/// Releases through the captured backing allocator and preserves its state.
+pool_backing_release :: (pool: *Pool, allocation: *u8) {
+  if allocation == null {
+    return;
+  }
+
+  updated_data := pool.backing_allocator_data;
+  push_context {
+    context.allocator = pool.backing_allocator;
+    context.allocator_free = pool.backing_allocator_free;
+    context.allocator_data = pool.backing_allocator_data;
+    context.allocator_free(allocation);
+    updated_data = context.allocator_data;
+  }
+  pool.backing_allocator_data = updated_data;
+}
+
+/// Adds one block and returns its raw header pointer.
+pool_add_block :: (pool: *Pool, capacity: s64, dedicated: s64) -> *u8 {
+  header_size := size_of(Pool_Block);
+  if capacity <= 0 || capacity > POOL_MAX_S64 - header_size {
+    return null;
+  }
+
+  raw := pool_backing_allocate(pool, header_size + capacity);
+  if raw == null {
+    return null;
+  }
+
+  block := typed(Pool_Block, raw);
+  block.next = null;
+  block.capacity = capacity;
+  block.used = 0;
+  block.dedicated = dedicated;
+
+  if pool.last_block == null {
+    pool.first_block = raw;
+  } else {
+    last := typed(Pool_Block, pool.last_block);
+    last.next = raw;
+  }
+  pool.last_block = raw;
+  return raw;
+}
+
+/// Takes `wanted` bytes from `raw`, which must have enough remaining space.
+pool_take :: (raw: *u8, wanted: s64) -> *u8 {
+  block := typed(Pool_Block, raw);
+  result := raw + size_of(Pool_Block) + block.used;
+  block.used = block.used + wanted;
+  return result;
+}
+
+/// Allocates from the ordinary bump-block sequence.
+pool_get_ordinary :: (pool: *Pool, wanted: s64, block_size: s64) -> *u8 {
+  raw := pool.current_block;
+  if raw != null {
+    block := typed(Pool_Block, raw);
+    if block.dedicated == 0 && wanted <= block.capacity - block.used {
+      result := pool_take(raw, wanted);
+      pool.bytes_left = block.capacity - block.used;
+      return result;
+    }
+    raw = block.next;
+  } else {
+    raw = pool.first_block;
+  }
+
+  while raw != null {
+    block := typed(Pool_Block, raw);
+    if block.dedicated == 0 && wanted <= block.capacity - block.used {
+      pool.current_block = raw;
+      result := pool_take(raw, wanted);
+      pool.bytes_left = block.capacity - block.used;
+      return result;
+    }
+    raw = block.next;
+  }
+
+  raw = pool_add_block(pool, block_size, 0);
+  if raw == null {
+    return null;
+  }
+  pool.current_block = raw;
+  result := pool_take(raw, wanted);
+  block := typed(Pool_Block, raw);
+  pool.bytes_left = block.capacity - block.used;
+  return result;
+}
+
+/// Allocates one oversized request from a retained or fresh dedicated block.
+pool_get_dedicated :: (pool: *Pool, wanted: s64) -> *u8 {
+  raw := pool.first_block;
+  while raw != null {
+    block := typed(Pool_Block, raw);
+    if block.dedicated != 0 && block.used == 0 && wanted <= block.capacity {
+      return pool_take(raw, wanted);
+    }
+    raw = block.next;
+  }
+
+  raw = pool_add_block(pool, wanted, 1);
+  if raw == null {
+    return null;
+  }
+  return pool_take(raw, wanted);
+}
+
+pool_stamp :: (data: *u8, count: s64) {
+  i := 0;
+  while i < count {
+    (data + i).* = POOL_STAMP;
+    i = i + 1;
+  }
+}
