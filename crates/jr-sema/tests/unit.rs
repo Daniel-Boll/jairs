@@ -126,6 +126,29 @@ fn polymorphic_calls_infer_through_parameterised_nominal_types() {
 }
 
 #[test]
+fn polymorphic_procedures_may_return_several_values_including_the_bound_type() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "pick :: (items: *[..]$T) -> (T, bool) {\n\
+             if items.count == 0 {\n\
+                 empty: $T;\n\
+                 return empty, false;\n\
+             }\n\
+             return items.data.*, true;\n\
+         }\n\
+         main :: () -> s64 {\n\
+             items: [..]s64;\n\
+             value, found := pick(*items);\n\
+             if found {\n\
+                 return value;\n\
+             }\n\
+             return 0;\n\
+         }\n",
+    );
+    analysis.assert_silent();
+}
+
+#[test]
 fn parameterised_inference_requires_the_same_nominal_declaration() {
     let mut program = Program::new();
     let analysis = program.analyse(

@@ -1,4 +1,4 @@
-//! The List module: **growth operations over a native `[..]s64`**, backed by the heap.
+//! The List module: **generic growth operations over a native `[..]T`**, backed by the heap.
 //!
 //! The fifth module, and the one `Array` could not be. ADR-0105 shipped a fixed-capacity buffer and named three
 //! refusals as the reason; ADR-0106 lifted the first of them, so this exists.
@@ -7,9 +7,9 @@
 //!
 //! It shipped (ADR-0107) as a hand-rolled `List :: struct($T)` with fields `data`, `count`, `capacity` — the
 //! identical layout the compiler later took as native `[..]T` syntax (ADR-0136). ADR-0140 deleted the struct:
-//! a list is now a plain `[..]s64`, and this module is the **operations** over it — `push`, `pop`, `get`, `set`,
-//! `clear`, `free_data`, `is_empty`, `elements`. A caller declares `xs: [..]s64` and calls `push(*xs, v)`; the
-//! type comes from the language, the growth policy from here.
+//! a list is now a plain `[..]T`, and this module is the **operations** over it — `push`, `pop`, `last`, `get`,
+//! `set`, `clear`, `free_data`, `is_empty`, `elements`. A caller declares `xs: [..]*Node` and calls
+//! `push(*xs, node)`; the type comes from the language, the growth policy from here.
 //!
 //! Keeping both — the struct *and* the native type — was rejected: they had the identical layout, so it was one
 //! behavioural set maintained twice, and the native type exists precisely so the hand-rolled one need not. A
@@ -29,14 +29,12 @@
 //! cleanup. Replacing it would have traded a simpler thing for a more capable one, which is not an improvement
 //! when both are cheap to keep.
 //!
-//! # Why the routines are still concrete `s64`
+//! # Why the routines are generic
 //!
-//! The native `[..]T` **does** cross a module boundary — it is structural, not a `struct($T)`, so the E0269 that
-//! refused a parameterised struct here (ADR-0085 §5) does not apply. What still binds is the *procedures*: an
-//! imported polymorphic procedure is refused (E0268, ADR-0104 §5), so `push :: (a: *[..]$T, v: $T)` would be
-//! uncallable by every importer. Concrete `s64` is therefore what an importer can use, exactly as when the type
-//! was hand-rolled — the native type bought the syntax and one shared layout, not generic library routines. When
-//! imported templates arrive, these become `$T`.
+//! The native `[..]T` crosses a module boundary because it is structural, and ADR-0230 now specialises a pure
+//! `$T` procedure in its declaration file. The old concrete `s64` surface therefore needs no compatibility
+//! copy: a call with `[..]s64` produces that exact specialisation, while `[..]*Node`, `[..]string` and every
+//! other storable element type use the same source declarations and growth policy.
 //!
 //! # Why growth doubles
 //!
@@ -54,7 +52,7 @@
 //!
 //! # Composing with the rest of the library
 //!
-//! `elements(a)` hands out a `[]s64` **over the used prefix**, so a list's contents go straight to `Sort` or to
+//! `elements(a)` hands out a `[]T` **over the used prefix**, so a list's contents go straight to `Sort` or to
 //! anything else taking a view. That was this module's closing gap when it shipped: a slice takes an *array*, so
 //! nothing could turn a pointer and a count into a view, and a growable array and a sorting routine sat side by
 //! side unable to be combined. ADR-0109's `view` intrinsic closed it.
@@ -69,7 +67,7 @@
 
 #import "Basic";
 
-// The list *type* is the native `[..]s64` (ADR-0136): `{data: *s64, count: s64, capacity: s64}`, three
+// The list *type* is the native `[..]T` (ADR-0136): `{data: *T, count: s64, capacity: s64}`, three
 // words, with `.data` / `.count` / `.capacity` readable and writable places. This module no longer declares
 // a struct for it — the compiler owns the layout, and the caller writes `xs: [..]s64`. `.data` is null and
 // both counts zero for a zero-initialised value, so an unused list allocates nothing and `free_data` is safe
@@ -88,7 +86,7 @@ FIRST_CAPACITY :: 4;
 /// can do nothing different about that than about `Array(s64)`'s "full", which is why the signature is the same.
 ///
 /// Amortised `O(1)`: the capacity doubles, so `n` pushes copy `O(n)` elements in total.
-push :: (a: *[..]s64, v: s64) -> bool {
+push :: (a: *[..]$T, v: T) -> bool {
   if a.count >= a.capacity {
     if !grow(a) {
       return false;
@@ -101,17 +99,31 @@ push :: (a: *[..]s64, v: s64) -> bool {
 
 /// Removes and returns the last element, plus whether there was one.
 ///
-/// Two return values (ADR-0008) rather than a sentinel, for the reason `Int_Array.pop` gives: every `s64` is a
-/// legitimate element, so no value could mean "empty" without excluding it from the list.
+/// Two return values (ADR-0008) rather than a sentinel: every `T`, including null pointers and a zero-valued
+/// struct, is a legitimate element, so no value can mean "empty" without excluding it from the list.
 ///
 /// **The capacity is not reduced.** A caller who pops and pushes would otherwise thrash the allocator, and
 /// nothing has asked for the memory back — `free_data` is how a caller says they are finished.
-pop :: (a: *[..]s64) -> (s64, bool) {
+pop :: (a: *[..]$T) -> (T, bool) {
   if a.count == 0 {
-    return 0, false;
+    empty: $T;
+    return empty, false;
   }
   a.count = a.count - 1;
   return (a.data + a.count).*, true;
+}
+
+/// The last element without removing it, plus whether there was one.
+///
+/// This is the stack inspection operation: `last(*stack)` reads the top while preserving `count`. As with
+/// `pop`, the value accompanying `false` is only a zero-initialised placeholder and must not be treated as an
+/// element.
+last :: (a: *[..]$T) -> (T, bool) {
+  if a.count == 0 {
+    empty: $T;
+    return empty, false;
+  }
+  return (a.data + a.count - 1).*, true;
 }
 
 /// The element at `index`, plus whether the index was in the **used** range.
@@ -120,12 +132,14 @@ pop :: (a: *[..]s64) -> (s64, bool) {
 /// genuinely undefined rather than merely unused. That is a sharper reason than `Array(s64)`'s — there the extra
 /// slots were zeroed and therefore only *indistinguishable* from real elements — and it is why this bound is not
 /// a matter of taste.
-get :: (a: *[..]s64, index: s64) -> (s64, bool) {
+get :: (a: *[..]$T, index: s64) -> (T, bool) {
   if index < 0 {
-    return 0, false;
+    empty: $T;
+    return empty, false;
   }
   if index >= a.count {
-    return 0, false;
+    empty: $T;
+    return empty, false;
   }
   return (a.data + index).*, true;
 }
@@ -134,7 +148,7 @@ get :: (a: *[..]s64, index: s64) -> (s64, bool) {
 ///
 /// It will not extend the list — `set(a, a.count, v)` is `false`, not a push — because growth through
 /// assignment would make the length depend on which indices a caller happened to touch.
-set :: (a: *[..]s64, index: s64, v: s64) -> bool {
+set :: (a: *[..]$T, index: s64, v: T) -> bool {
   if index < 0 {
     return false;
   }
@@ -149,7 +163,7 @@ set :: (a: *[..]s64, index: s64, v: s64) -> bool {
 ///
 /// Deliberately **not** the same as `free_data`: reusing a buffer a caller has already paid for is a real thing
 /// to want, and naming both makes the choice visible. A reader who wants the memory back wants `free_data`.
-clear :: (a: *[..]s64) {
+clear :: (a: *[..]$T) {
   a.count = 0;
 }
 
@@ -158,7 +172,7 @@ clear :: (a: *[..]s64) {
 /// **This is the routine a caller must not forget.** There are no destructors, so nothing else will free the
 /// memory. Safe to call on a list that never grew (`data` is null and `free` of null is a no-op) and safe to
 /// call twice, because it resets `data` — a second call frees nothing rather than freeing again.
-free_data :: (a: *[..]s64) {
+free_data :: (a: *[..]$T) {
   if a.data != null {
     free(untyped(a.data));
   }
@@ -168,14 +182,14 @@ free_data :: (a: *[..]s64) {
 }
 
 /// Whether the list holds nothing.
-is_empty :: (a: *[..]s64) -> bool {
+is_empty :: (a: *[..]$T) -> bool {
   return a.count == 0;
 }
 
-/// A view over the list's **used prefix** — `[]s64` of exactly `count` elements.
+/// A view over the list's **used prefix** — `[]T` of exactly `count` elements.
 ///
 /// This is what makes a list compose: `sort_ints(elements(*l))` sorts it in place, because a view is a *window*
-/// onto the same storage rather than a copy (ADR-0044). Anything taking a `[]s64` takes a list's contents.
+/// onto the same storage rather than a copy (ADR-0044). Anything taking a `[]T` takes a list's contents.
 ///
 /// **`count`, not `capacity`.** The slots between them hold whatever the allocator returned, so a view over the
 /// capacity would hand out genuinely undefined elements — the same reason `get` bounds on `count`.
@@ -187,7 +201,7 @@ is_empty :: (a: *[..]s64) -> bool {
 ///
 /// A view over an **empty** list is `view(null, 0)`, which is well-formed: a zero-count view is never indexed,
 /// and every routine that takes one loops `while i < count`.
-elements :: (a: *[..]s64) -> []s64 {
+elements :: (a: *[..]$T) -> []T {
   return view(a.data, a.count);
 }
 
@@ -202,16 +216,16 @@ elements :: (a: *[..]s64) -> []s64 {
 /// would make growth depend on an allocator behaviour the comptime VM does not model — so the two engines could
 /// differ in *timing*. Not in results, but a divergence worth not introducing casually in a project whose whole
 /// test strategy is comparing them.
-grow :: (a: *[..]s64) -> bool {
+grow :: (a: *[..]$T) -> bool {
   wanted := FIRST_CAPACITY;
   if a.capacity > 0 {
     wanted = a.capacity * 2;
   }
-  raw := malloc(wanted * size_of(s64));
+  raw := malloc(wanted * size_of(T));
   if raw == null {
     return false;
   }
-  fresh := typed(s64, raw);
+  fresh := typed(T, raw);
   i := 0;
   while i < a.count {
     (fresh + i).* = (a.data + i).*;

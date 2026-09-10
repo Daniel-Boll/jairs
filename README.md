@@ -57,7 +57,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0230.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0231.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -114,6 +114,12 @@ and the constructor may itself be imported. A pure `$T` procedure declared in an
 now specialised in that declaration file through one root-program fixed point, including nested
 owner-to-owner demands; run, build, optimisation and diagnostics consume the same clone plan.
 Imported `$N`/mixed templates remain E0268, and imported polymorphic `#expand` remains E0272.
+
+Native dynamic arrays now have one generic operation set in `List`. A caller can keep
+`stack: [..]*Node`, append pointers, inspect or pop the top, index and mutate elements, hand out the
+used prefix as a view, clear while retaining capacity, and explicitly release storage. The same
+procedures specialise for existing `[..]s64` callers. Empty reads return `(zero, false)`, and a
+default-initialised pointer local is now correctly the typed null value rather than undefined.
 
 Every fresh Jairs context now has a working allocator/free pair in the VM, Cranelift and LLVM;
 assigning a custom pair and copying one through `push_context` remain unchanged. Whole-file
@@ -204,9 +210,9 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1382** workspace tests (**1395** under gate 7), with all six ordinary gates and gate 7 green
-  for ADR-0230.
-- **302** `.jr` corpus files, **230** accepted ADRs, **25** standard library
+- **1384** workspace tests (**1397** under gate 7), with all six ordinary gates and gate 7 green
+  for ADR-0231.
+- **303** `.jr` corpus files, **231** accepted ADRs, **25** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative

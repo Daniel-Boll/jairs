@@ -58,14 +58,36 @@ The main thing that does **not** cross yet is an imported struct's **fields** fo
 can hold a value of an imported struct type and pass it around, but `using` on an imported
 struct is refused. A *parameterised* struct now crosses cleanly too — `Array($T)` and
 `Map($K, $V)` are declared once in their modules and instantiated by an importer as
-`Array(s64)`, `Map(s64, s64)`, and so on. What stays concrete is the *procedures*: an
-imported polymorphic procedure cannot be instantiated by its importer at all (E0268), so
-`push :: (a: *Array($T), v: T)` would be uncallable from outside its own module regardless of
-whether the struct it takes is generic. `Array`'s and `Map`'s procedures therefore still take
-a concrete instance — `*Array(s64)`, `*Map(s64, s64)` — see [The standard
-library](/language/the-standard-library/). `[..]T`'s own operations (in `List`) hit the same
-wall from the other side: the *type* is structural and crosses for free, but its procedures
-are concrete `[..]s64` for the identical E0268 reason.
+`Array(s64)`, `Map(s64, s64)`, and so on.
+
+A pure `$T` procedure crosses too (ADR-0230). The root program requests a concrete
+specialisation, and the compiler appends that clone to the procedure's **declaration file**,
+where its private names, imports and source spans still mean what the module author wrote.
+`List` is the standard-library proof: its operations take `*[..]$T`, so one imported source
+declaration serves `[..]s64`, `[..]string`, and a pointer stack such as:
+
+```jr
+#import "Basic";
+#import "List";
+
+Node :: struct {
+    name: string;
+    children: [..]*Node;
+}
+
+node := New(Node);
+stack: [..]*Node;
+push(*stack, node);
+top, found := last(*stack);
+free_data(*stack);
+context.allocator_free(untyped(node));
+```
+
+`Array`'s and `Map`'s operations still take concrete `*Array(s64)` and
+`*Map(s64, s64)` because those modules have not themselves been generalised; that is a
+library-source fact, no longer a module-boundary restriction. Imported `$N` or mixed
+`$T`+`$N` specialisation remains E0268, and an imported polymorphic `#expand` remains E0272.
+See [The standard library](/language/the-standard-library/).
 
 Operator overloads **do** cross the boundary, which is what lets `Math`'s `Vector3 + Vector3`
 work in your file. And an imported module's **own errors are now reported**: if a module you

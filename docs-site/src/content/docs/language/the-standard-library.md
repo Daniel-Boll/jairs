@@ -11,12 +11,12 @@ library, and it means the library is something you can read to learn what the la
 Every module here is a `.jr` file under `modules/`, and there are 25 of them.
 
 `Array` and `Map` genuinely are parameterised structs — `Array :: struct($T)`,
-`Map :: struct($K, $V)` — a parameterised struct crosses a module boundary now. What stays
-concrete is the **procedures**: an imported polymorphic procedure is refused (E0268), so
-`push :: (a: *Array($T), v: T)` would be uncallable by every importer, and
-`push :: (a: *Array(s64), v: s64)` is what you actually get. Where you see `Array(s64)` or
-`Map(s64, s64)`, that is why. It is the honest state of the library today, and the walkthroughs
-in [Book III](/in-practice/) use exactly these concrete instances.
+`Map :: struct($K, $V)` — and parameterised structs cross a module boundary. Pure `$T`
+procedures now cross too: a root program specialises an imported template in its declaration
+file (ADR-0230). `List` uses that capability for generic native dynamic-array operations.
+`Array` and `Map` still expose concrete `s64` operations because their source declarations
+have not been generalised; the remaining concreteness is a library choice, not E0268.
+Imported `$N` and mixed `$T`+`$N` templates remain refused.
 
 ## Basic
 
@@ -112,9 +112,9 @@ too but needs no counter — it only reads.
 The caller passing `less` rather than the module requiring `<` is a language fact: selecting an
 operator implementation per instantiated type — operator-bounded polymorphism — is something the
 language cannot yet do, so the comparison is a parameter. `sort_ints`, `heap_sort_ints` and
-`stable_sort_ints` exist as concrete wrappers because a `$T` template can't be called across a
-module boundary — they are not conveniences, they are the only way an importing file can use this
-module at all.
+`stable_sort_ints` remain useful named policies and preserve existing code, but they are no
+longer the only cross-module entry points: the pure `$T` procedures specialise in this module
+for each importing root (ADR-0230).
 
 ## Array and List
 
@@ -128,22 +128,44 @@ pop(a) -> (s64, bool)     get(a, i) -> (s64, bool)     set(a, i, v) -> bool
 clear(a)   is_empty(a) -> bool   is_full(a) -> bool
 ```
 
-`[..]s64` — the native dynamic array (see [Arrays and views](/language/arrays-and-views/)) — is
-**growable**, heap-backed, and **owns** its memory. **`List` is not a type**; it is the eight
-procedures that operate on one:
+`[..]T` — the native dynamic array (see [Arrays and views](/language/arrays-and-views/)) — is
+**growable**, heap-backed, and **owns** its memory. **`List` is not a type**; it is the generic
+operation set over one:
 
 ```jr
-push(a: *[..]s64, v: s64) -> bool    // false only on out-of-memory; capacity doubles from 4
-pop(a: *[..]s64) -> (s64, bool)      get(a, i) -> (s64, bool)     set(a, i, v) -> bool
-clear(a)   is_empty(a) -> bool
-elements(a: *[..]s64) -> []s64       // a view over the live elements — feed it to sort_ints
-free_data(a: *[..]s64)               // YOU must call this; there are no destructors
+push(a: *[..]$T, v: T) -> bool       // false only on out-of-memory; capacity doubles from 4
+pop(a: *[..]$T) -> (T, bool)         last(a: *[..]$T) -> (T, bool)
+get(a: *[..]$T, i: s64) -> (T, bool) set(a: *[..]$T, i: s64, v: T) -> bool
+clear(a: *[..]$T)                     is_empty(a: *[..]$T) -> bool
+elements(a: *[..]$T) -> []T          // a view over the live elements
+free_data(a: *[..]$T)                // YOU must call this; there are no destructors
 ```
 
 `List` is a separate module from `Array`, not a rewrite, precisely because their contracts
-differ: an `Array` needs no cleanup, a `[..]s64` owns memory you must `free_data`. `elements`
-returns a view, so `sort_ints(elements(list))` sorts a list in place with no copy — the library
-composing with itself.
+differ: an `Array` needs no cleanup, a `[..]T` owns memory you must `free_data`. `pop`, `last`
+and `get` return a zero-initialised placeholder plus `false` when absent; the flag is the answer,
+because zero and null are valid elements. `elements` returns a view, so the intentionally
+`s64` example `sort_ints(elements(list))` still sorts a list in place with no copy.
+
+The requested recursive pointer stack is direct:
+
+```jr
+#import "Basic";
+#import "List";
+
+Node :: struct {
+    name: string;
+    children: [..]*Node;
+}
+
+node := New(Node);
+stack: [..]*Node;
+push(*stack, node);
+top, found := last(*stack);
+popped, popped_ok := pop(*stack);
+free_data(*stack);
+context.allocator_free(untyped(node));
+```
 
 ## Map
 
@@ -329,7 +351,7 @@ free_all(b: *Bucket_Array)
 It buys that stability by never compacting: there is **no removal**, because a hole's fate — move
 elements and break the address promise, or leave a tombstone every read must check — has no
 answer this module can give without knowing what the caller wants. It is the entity-storage
-answer `List` cannot give, since reallocating a `[..]s64` invalidates every pointer into it.
+answer `List` cannot give, since reallocating a `[..]T` invalidates every pointer into it.
 
 ## Generic_Types
 
@@ -341,10 +363,10 @@ Box :: struct($T) { value: T; }
 Pair :: struct($A, $B) { first: A; second: B; }
 ```
 
-Kept deliberately separate from `Array`, `List` and `Map`: converting those three concrete
-containers to real `$T` / `$K, $V` procedures is a library rewrite, and proving that a
-parameterised struct now crosses a module boundary at all is a language change — keeping them
-apart is what makes a regression in either attributable.
+Kept deliberately separate from the production containers: it remains the smallest proof of
+parameterised structs crossing a module boundary. `List` now separately proves imported pure
+`$T` procedure specialisation (ADR-0230/0231), while generalising `Array` and `Map` remains a
+library rewrite rather than a language blocker.
 
 ## Compiler
 

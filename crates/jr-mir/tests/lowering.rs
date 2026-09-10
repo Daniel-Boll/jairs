@@ -359,6 +359,19 @@ fn an_initialised_local_records_no_undefined_read() {
     assert!(body.facts().undefined_reads.is_empty());
 }
 
+#[test]
+fn a_default_initialised_pointer_is_a_defined_null_value() {
+    let mut program = Program::new();
+    let lowered =
+        program.lower_clean("main :: () -> bool { pointer: *s64; return pointer == null; }");
+    let body = lowered.body(&program.interner, "main");
+    assert!(
+        body.facts().undefined_reads.is_empty(),
+        "a declaration without `= ---` is zero-initialised: {}",
+        program.dump(&lowered)
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Refusals — ADR-0017 §4
 // ---------------------------------------------------------------------------
