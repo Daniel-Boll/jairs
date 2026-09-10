@@ -9,11 +9,11 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1436** workspace tests (**1449** under gate 7), with all seven gates green for ADR-0242.
-- **325** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
-  (**339** counting those).
-- **242** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
-- **26** standard library modules under `modules/`.
+- **1436** workspace tests (**1449** under gate 7), with all six ordinary gates green for ADR-0243.
+- **327** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
+  (**341** counting those).
+- **243** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **28** standard library modules under `modules/`.
 - Diagnostic codes run **E0001–E0300**; **E0301** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership
   table, and `crates/jr-cli/tests/codes.rs` is what makes the "first free"
@@ -128,6 +128,7 @@ The authoritative version of this list is
 | `context` — a hidden parameter passed by pointer; `#c_call` opts out and gets none | — |
 | `push_context { … }` — a block with its own copy of the context (ADR-0063) | — |
 | `context.allocator` / `.allocator_free` / `.allocator_data` — install an allocator, a callee allocates through it without knowing which | a `#foreign` procedure installed directly (wrap it) |
+| `Pool` and `Flat_Pool` context allocators — captured backing ownership, 16-byte allocation granularity, reset/reuse, no-op individual frees and idempotent bulk cleanup. `Pool` grows through stable retained 64 KiB blocks plus dedicated oversized blocks; `Flat_Pool` owns one slab, reserves only while empty and refuses live relocation (ADR-0243) | no RAII/destructors; no allocator argument on `New`; `List` remains `malloc/free`-owned rather than using the active context allocator |
 | `p + n`, `n + p`, `p - n` on a `*T` — element-scaled, unchecked (ADR-0064) | `p - q` (deferred); `p[n]` sugar; pointer ordering `< >` |
 
 ADR-0008 chose Jai's **error model** — several return values plus `#must` — and the

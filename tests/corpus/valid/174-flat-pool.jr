@@ -1,0 +1,137 @@
+// ADR-0243 — a one-slab Flat_Pool that never relocates live allocations.
+//
+// A stateful backing allocator proves capture/replay, including a failed
+// transactional growth. The program distinguishes exhaustion from growth,
+// checks overwrite/reuse, installs the flat pool for `New`, and verifies that
+// `fini` uses the captured release procedure exactly once per successful slab.
+
+#import "Basic";
+F :: #import "Flat_Pool";
+
+Probe :: struct {
+  value: s64;
+}
+
+FLAT_ALLOCATION_CALLS: s64;
+FLAT_SUCCESSFUL_ALLOCATIONS: s64;
+FLAT_RELEASES: s64;
+FLAT_EXPECTED_DATA: s64;
+FLAT_FAIL_AT: s64;
+FLAT_BAD: bool;
+
+flat_tracking_allocate :: (size: s64) -> *u8 {
+  if context.allocator_data != FLAT_EXPECTED_DATA {
+    FLAT_BAD = true;
+  }
+  FLAT_ALLOCATION_CALLS = FLAT_ALLOCATION_CALLS + 1;
+  context.allocator_data = context.allocator_data + size + 3;
+  FLAT_EXPECTED_DATA = context.allocator_data;
+  if FLAT_FAIL_AT != 0 && FLAT_ALLOCATION_CALLS == FLAT_FAIL_AT {
+    return null;
+  }
+  FLAT_SUCCESSFUL_ALLOCATIONS = FLAT_SUCCESSFUL_ALLOCATIONS + 1;
+  return malloc(size);
+}
+
+flat_tracking_release :: (allocation: *u8) {
+  if context.allocator_data != FLAT_EXPECTED_DATA {
+    FLAT_BAD = true;
+  }
+  FLAT_RELEASES = FLAT_RELEASES + 1;
+  context.allocator_data = context.allocator_data + 1;
+  FLAT_EXPECTED_DATA = context.allocator_data;
+  free(allocation);
+}
+
+flat_wrong_release :: (allocation: *u8) {
+  exit(38);
+}
+
+main :: () {
+  saved_allocator := context.allocator;
+  saved_release := context.allocator_free;
+  saved_data := context.allocator_data;
+
+  FLAT_EXPECTED_DATA = 2000;
+  context.allocator = flat_tracking_allocate;
+  context.allocator_free = flat_tracking_release;
+  context.allocator_data = FLAT_EXPECTED_DATA;
+
+  pool: F.Flat_Pool;
+
+  first := F.get(*pool, 16);
+  if first == null || pool.capacity != 65536 || pool.used != 16 || FLAT_SUCCESSFUL_ALLOCATIONS != 1 {
+    exit(1);
+  }
+  first[0] = 7;
+
+  // A live slab never moves. Neither explicit reserve nor implicit exhaustion
+  // calls the backing allocator.
+  if F.reserve(*pool, 70000) || F.get(*pool, 65536) != null || FLAT_ALLOCATION_CALLS != 1 || first[0] != 7 {
+    exit(2);
+  }
+
+  F.reset(*pool, true);
+  if pool.used != 0 || first[0] == 7 {
+    exit(3);
+  }
+  reused := F.get(*pool, 0);
+  if reused != first || pool.used != 16 {
+    exit(4);
+  }
+
+  F.reset(*pool);
+  context.allocator_free = flat_wrong_release;
+  if !F.reserve(*pool, 70000) || pool.capacity != 70000 || pool.used != 0 || FLAT_RELEASES != 1 {
+    exit(5);
+  }
+  grown := pool.data;
+  if grown == null || grown == first || FLAT_SUCCESSFUL_ALLOCATIONS != 2 {
+    exit(6);
+  }
+
+  // Failed growth is transactional: the old empty slab stays published and
+  // no release runs.
+  FLAT_FAIL_AT = 3;
+  if F.reserve(*pool, 90000) || pool.data != grown || pool.capacity != 70000 || FLAT_RELEASES != 1 {
+    exit(7);
+  }
+
+  probe: *Probe;
+  push_context {
+    F.set_allocators(*pool);
+    probe = New(Probe);
+  }
+  if probe == null || probe.value != 0 || pool.used != 16 {
+    exit(8);
+  }
+  probe.value = 42;
+  if F.reserve(*pool, 90000) || FLAT_ALLOCATION_CALLS != 3 {
+    exit(9);
+  }
+
+  F.reset(*pool);
+  large := F.get(*pool, 70000);
+  if large != grown || pool.used != 70000 || F.get(*pool, 1) != null {
+    exit(10);
+  }
+  large[0] = 44;
+  F.reset(*pool, true);
+  if large[0] == 44 || pool.used != 0 {
+    exit(11);
+  }
+
+  F.fini(*pool);
+  if pool.data != null || pool.capacity != 0 || pool.used != 0 || FLAT_RELEASES != 2 {
+    exit(12);
+  }
+  F.fini(*pool);
+  if FLAT_RELEASES != 2 || FLAT_SUCCESSFUL_ALLOCATIONS != 2 || FLAT_BAD {
+    exit(13);
+  }
+
+  context.allocator = saved_allocator;
+  context.allocator_free = saved_release;
+  context.allocator_data = saved_data;
+  exit(42);
+}

@@ -468,6 +468,15 @@ Status of each slice component, so this is answerable without reading the tree.
 > | Policy | The logical length is `count`, never `capacity`; the existing procedure/build bounds-check policy and `#no_abc` apply unchanged. Iteration captures the header once before entering the loop. |
 > | Tests / boundary | `valid/172` exercises direct reads, writes, address-taking, pointer auto-dereference, forward/reverse/index iteration, and `#no_abc`. A differential trap keeps `count < capacity` and indexes the first spare slot, proving all engines reject capacity as a length. Dynamic-array slicing remains separate. |
 
+> **ADR-0243 component delta.**
+>
+> | Component | Current delta |
+> |---|---|
+> | `modules/Pool` | A stable-address multi-block arena captures the allocator triple it replaces, uses retained 64 KiB ordinary blocks plus dedicated oversized blocks, aligns cursors to 16 bytes, rewinds with optional overwrite stamping, and releases every block in bulk through its captured owner. |
+> | `modules/Flat_Pool` | A single-slab arena lazily reserves 64 KiB, grows transactionally only while empty, refuses relocation while allocations are live, rewinds with optional overwrite stamping, and frees idempotently through the captured backing allocator. |
+> | Context composition | Private pointer/integer unions carry each pool through `context.allocator_data`; backing calls replay the captured context through `push_context` and copy a mutated data word back. Per-allocation free callbacks are deliberately no-ops. |
+> | Tests / boundary | `valid/173` composes `Pool` with `New(Node)`, `Table(string, string)`, direct `[..]*Node` backing, reset/reuse, an oversized request, and idempotent release. `valid/174` covers `Flat_Pool` reserve/exhaustion, no-live-relocation, transactional allocation failure, overwrite/reuse, `New`, and idempotent finalization. `List` remains explicitly `malloc/free`-owned. |
+
 | Component | Status | Notes |
 |---|---|---|
 | `modules/Game` | **Foundation done** | **ADR-0210 decides ADR-0208's six forks and lands the first slice.** A caller owns `App`; `open(width, height, title)` starts SDL, creates the window, selects top-left/y-down Simp coordinates and unwinds every completed step if GL setup fails. `begin_frame` drains once, latches close, and records an unclamped non-negative delta; `end_frame` presents; `close` is idempotent and destroys Simp before the window and SDL. A private guard refuses a second simultaneous App because Simp has one process-global renderer; the lifecycle stays on one thread. Two native integration tests cover a real synthetic-quit/reopen lifecycle and the dummy driver's no-GL unwind. **Not game-ready v1:** held input, primitive helpers, generation-tagged resources, PNG, text and audio are later slices. |
@@ -802,43 +811,35 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0242 makes `[..]T` an ordinary bounded sequence.**
-> `xs[i]` is a read/write/addressable place and `for value, index: xs` walks the
-> used prefix; both take their bound from `count`, never spare `capacity`.
+> **ADR-0243 adds context-installable `Pool` and `Flat_Pool` arenas.**
+> Both capture the allocator triple they replace, preserve pointer stability according to their
+> shape, and release backing storage only in bulk.
 
-**1436 workspace tests (1449 under gate 7), 325 corpus files outside fixture modules, 242 ADRs and
-26 modules.** `valid/172` executes direct reads, writes, address-taking, pointer-to-container
-auto-dereference, forward/reverse/index iteration, and an in-range `#no_abc` access. A differential
-test leaves `count == 1` and `capacity > 1`, then indexes exactly `count`; VM, Cranelift and LLVM all
-trap, proving no engine mistakes allocation capacity for logical length. All seven gates are green.
+**1436 workspace tests (1449 under gate 7), 327 corpus files outside fixture modules, 243 ADRs and
+28 modules.** `valid/173` installs a stable multi-block `Pool`, allocates `New(Node)`, a generic
+`Table(string, string)`, and backing storage for `[..]*Node`, then exercises reset/reuse, a request
+above 64 KiB, captured-owner release, and idempotent cleanup. `valid/174` exercises `Flat_Pool`'s
+lazy slab, reserve/exhaustion, refusal to relocate live results, transactional allocation failure,
+overwrite/reuse, `New`, and idempotent finalization. Both exit 42 in the VM and agree with Cranelift
+through the full differential gate.
 
-Sema adds the dynamic-array element type to its existing indexable and iterable shapes. MIR loads
-`DynamicArrayCount`, indexes through `DynamicArrayData`, and reuses the same `BoundsCheck` and
-`ForBounds` paths as views. No MIR node, bytecode instruction, or native-back-end primitive was
-added. Pointer chains ending in `[..]T` keep bounded auto-dereference precedence over ADR-0238's
-unchecked raw-pointer fallback.
+Both arenas align requests to 16 bytes and bridge their owning pointer through
+`context.allocator_data`. Backing allocation and free run under the captured context via
+`push_context`, including propagation of a mutated backing data word. `Pool` retains ordinary
+64 KiB blocks and adds dedicated oversized blocks without moving earlier results; `Flat_Pool`
+owns one contiguous slab and may grow only while empty. Their individual free callbacks are no-ops,
+because reset/release or reset/fini owns reclamation. `List` remains explicitly `malloc/free`-owned.
 
-### Next wave: `Pool` and `Flat_Pool`
+All six ordinary gates are green. Gate 7 was not rerun for ADR-0243 because this wave adds only
+library source, corpus programs, and snapshots; it changes no MIR, layout, code generator, or back
+end. The preceding ADR-0242 wave ran all seven gates, including the three-way LLVM differential.
 
-The allocator decision is closed on captured ownership. Both pools capture one backing allocator
-triple before installation and replay it through `push_context`; consulting the ambient allocator
-after installation would recurse. `Pool` is a stable-address multi-block arena with 64 KiB default
-blocks, reset/reuse, large dedicated blocks and bulk release. `Flat_Pool` is one contiguous slab and
-may grow only while empty, because relocating live allocator results would be a false promise.
-Private unions bridge `*Pool`/`*Flat_Pool` through the current `allocator_data: s64` protocol, and
-allocation cursors use the protocol's established 16-byte alignment.
+### Next wave: pure-template calls inside `#run`
 
-The guide-evidenced `Pool` surface is `get`, `set_allocators`, `reset`, `release`,
-`pool_allocator_proc`, `memblock_size`, `bytes_left`, and `overwrite_memory`.
-`Flat_Pool` adds the project-owned `reserve`, uses `reset`/`fini`, and returns null instead of
-relocating live allocations. Because `List` deliberately still calls `malloc/free`, the acceptance
-program must allocate a `[..]*Node` backing store through the pool directly rather than claiming
-ordinary `push` is pool-backed. It should also exercise `New(Node)`, `Table(string, string)`,
-reset/reuse, idempotent release/fini, and a request above 64 KiB.
-
-Pure-template calls inside `#run` remain the next specialization/lowering follow-up after these three
-selected waves. Non-literal defaults remain later: constants, calls, aggregates, `context` values and
-caller-location defaults need decisions about declaration scope, evaluation timing and side effects.
+The next specialization/lowering follow-up is making a pure `$T` template callable from `#run`,
+where the compile-time VM currently has no instantiated routine to invoke. Non-literal defaults
+remain later: constants, calls, aggregates, `context` values and caller-location defaults need
+decisions about declaration scope, evaluation timing and side effects.
 
 **E0301** remains the first free global diagnostic code; **E0137** remains the first free parser code.
 

@@ -1,0 +1,163 @@
+// ADR-0243 — a captured-backing, stable-address multi-block Pool.
+//
+// The program deliberately installs a stateful backing allocator before the
+// pool captures it. Every later backing allocation and release must replay the
+// updated state word even though `set_allocators` replaces the ambient context.
+//
+// It also composes the installed pool with the requested recursive shape:
+// `New(Node)`, a real `Table(string, string)`, and a `[..]*Node` whose backing
+// storage is obtained directly from the pool. `List.push` remains malloc-backed
+// and is not used here.
+
+#import "Basic";
+P :: #import "Pool";
+H :: #import "Hash_Table";
+S :: #import "String";
+
+Node :: struct {
+  name: string;
+  children: [..]*Node;
+  properties: H.Table(string, string);
+}
+
+BACKING_ALLOCATIONS: s64;
+BACKING_RELEASES: s64;
+BACKING_EXPECTED_DATA: s64;
+BACKING_BAD: bool;
+
+tracking_allocate :: (size: s64) -> *u8 {
+  if context.allocator_data != BACKING_EXPECTED_DATA {
+    BACKING_BAD = true;
+  }
+  BACKING_ALLOCATIONS = BACKING_ALLOCATIONS + 1;
+  context.allocator_data = context.allocator_data + size + 1;
+  BACKING_EXPECTED_DATA = context.allocator_data;
+  return malloc(size);
+}
+
+tracking_release :: (allocation: *u8) {
+  if context.allocator_data != BACKING_EXPECTED_DATA {
+    BACKING_BAD = true;
+  }
+  BACKING_RELEASES = BACKING_RELEASES + 1;
+  context.allocator_data = context.allocator_data + 1;
+  BACKING_EXPECTED_DATA = context.allocator_data;
+  free(allocation);
+}
+
+wrong_release :: (allocation: *u8) {
+  exit(39);
+}
+
+main :: () {
+  saved_allocator := context.allocator;
+  saved_release := context.allocator_free;
+  saved_data := context.allocator_data;
+
+  BACKING_EXPECTED_DATA = 1000;
+  context.allocator = tracking_allocate;
+  context.allocator_free = tracking_release;
+  context.allocator_data = BACKING_EXPECTED_DATA;
+
+  pool: P.Pool;
+
+  // The zero-value pool lazily chooses a 64-KiB ordinary block.
+  small := P.get(*pool, 16);
+  if small == null || pool.memblock_size != 65536 || pool.bytes_left <= 0 {
+    exit(1);
+  }
+  small[0] = 17;
+
+  // An oversized request receives a dedicated block and cannot relocate the
+  // earlier result.
+  large := P.get(*pool, 70000);
+  if large == null || large == small || small[0] != 17 {
+    exit(2);
+  }
+  large[0] = 23;
+  if BACKING_ALLOCATIONS != 2 || BACKING_RELEASES != 0 || BACKING_BAD {
+    exit(3);
+  }
+
+  // Invalid sizes neither allocate nor publish state.
+  if P.get(*pool, -1) != null || P.get(*pool, 9223372036854775807) != null || BACKING_ALLOCATIONS != 2 {
+    exit(4);
+  }
+
+  root: *Node;
+  child: *Node;
+  stack: [..]*Node;
+
+  push_context {
+    P.set_allocators(*pool);
+
+    root = New(Node);
+    child = New(Node);
+    if root == null || child == null {
+      exit(5);
+    }
+    if root.name.count != 0 || root.children.count != 0 || H.table_count(*root.properties) != 0 {
+      exit(6);
+    }
+
+    root.name = "root";
+    child.name = "child";
+    property := H.table_set(*root.properties, "kind", "tree");
+    if property == null {
+      exit(7);
+    }
+    found, present := H.table_find(*root.properties, "kind");
+    if !present || !S.equal(found, "tree") {
+      exit(8);
+    }
+
+    raw_stack := context.allocator(2 * size_of(*Node));
+    if raw_stack == null {
+      exit(9);
+    }
+    stack.data = typed(*Node, raw_stack);
+    stack.count = 2;
+    stack.capacity = 2;
+    stack[0] = root;
+    stack[1] = child;
+    if stack[0] != root || stack[1] != child {
+      exit(10);
+    }
+
+    // Hash_Table captured the pool callbacks. Its individual releases are
+    // deliberately no-ops; the pool still owns the backing bytes.
+    H.deinit(*root.properties);
+  }
+
+  if root.name.count != 4 || child.name.count != 5 || stack[0] != root || BACKING_ALLOCATIONS != 2 {
+    exit(11);
+  }
+
+  // A caller changing its current release procedure cannot steal ownership
+  // from the allocator triple the pool captured.
+  context.allocator_free = wrong_release;
+
+  pool.overwrite_memory = true;
+  P.reset(*pool);
+  if small[0] == 17 || large[0] == 23 {
+    exit(12);
+  }
+  reused := P.get(*pool, 16);
+  if reused != small || BACKING_ALLOCATIONS != 2 {
+    exit(13);
+  }
+
+  P.release(*pool);
+  if BACKING_RELEASES != 2 || BACKING_RELEASES != BACKING_ALLOCATIONS || BACKING_BAD {
+    exit(14);
+  }
+  P.release(*pool);
+  if BACKING_RELEASES != 2 || pool.first_block != null || pool.bytes_left != 0 {
+    exit(15);
+  }
+
+  context.allocator = saved_allocator;
+  context.allocator_free = saved_release;
+  context.allocator_data = saved_data;
+  exit(42);
+}
