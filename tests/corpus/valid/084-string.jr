@@ -20,10 +20,9 @@
 // file happened to use. A non-allocating module is a complete thing on its own, and shipping it first means
 // that decision gets made with a working baseline to compare against.
 //
-// **`byte_at` exists because `s.data[i]` does not compile**: `data` is a `*u8` and a pointer is not indexable
-// (E0234), so reading a byte takes `(s.data + i).*` and a cast to `s64`. `byte_at` is that expression with a
-// name, and it is honest about being a workaround — when pointer indexing arrives it becomes a one-line
-// wrapper rather than the only way.
+// **`byte_at` remains the checked policy around ADR-0238's raw-pointer indexing**: after rejecting a negative
+// or past-end index it reads `s.data[i]` and widens the byte to `s64`. Callers that already proved their own
+// bound may index `.data` directly.
 //
 // What is checked here:
 //

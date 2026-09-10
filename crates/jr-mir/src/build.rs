@@ -1700,21 +1700,12 @@ impl Lower<'_> {
             let span = self.span(lhs);
             let value = match bin_op_of_assign(op) {
                 None => self.expr(rhs),
-                Some(bin) => {
+                Some(_) => {
                     let Some(block) = self.current else { return };
                     let old = self
                         .ssa
                         .read_variable(&mut self.mir, block, local, ty, span);
-                    let new = self.expr(rhs);
-                    self.define(
-                        ty,
-                        Rvalue::Binary {
-                            op: bin,
-                            lhs: old,
-                            rhs: new,
-                        },
-                        span,
-                    )
+                    self.compound_assignment_value(ty, op, old, rhs, span)
                 }
             };
             if let Some(block) = self.current {
@@ -1742,18 +1733,9 @@ impl Lower<'_> {
         let span = self.span(lhs);
         let value = match bin_op_of_assign(op) {
             None => self.expr(rhs),
-            Some(bin) => {
+            Some(_) => {
                 let old = self.define(ty, Rvalue::Load(place.clone()), span);
-                let new = self.expr(rhs);
-                self.define(
-                    ty,
-                    Rvalue::Binary {
-                        op: bin,
-                        lhs: old,
-                        rhs: new,
-                    },
-                    span,
-                )
+                self.compound_assignment_value(ty, op, old, rhs, span)
             }
         };
         // **A write to a variant's case sets the tag** (ADR-0068 §4), before the value store so that a
@@ -1769,6 +1751,45 @@ impl Lower<'_> {
             });
         }
         self.emit(Statement::Store { place, value, span });
+    }
+
+    /// Computes the value written by a compound assignment.
+    ///
+    /// Pointer `+=`/`-=` is not an ordinary binary rvalue: its right operand is an integer and the
+    /// result is an element-scaled address. Route it through the same indexed-place helper as source
+    /// pointer arithmetic (ADR-0238 §3). Every numeric form remains the `Rvalue::Binary` it was.
+    fn compound_assignment_value(
+        &mut self,
+        ty: PoolId,
+        op: AssignOp,
+        old: Operand,
+        rhs: ExprId,
+        span: MirSpan,
+    ) -> Operand {
+        let new = self.expr(rhs);
+        if self.pointee(ty).is_some() {
+            let pointer_op = match op {
+                AssignOp::AddAssign => jr_hir::BinOp::Add,
+                AssignOp::SubAssign => jr_hir::BinOp::Sub,
+                // Sema refuses every other pointer compound operator. Keep recovery loud in MIR
+                // without manufacturing numeric pointer arithmetic if a poisoned body reaches here.
+                _ => return self.define(ty, Rvalue::Undef, span),
+            };
+            return self.pointer_offset_value(pointer_op, old, new, self.ty(rhs), ty, span);
+        }
+
+        let Some(bin) = bin_op_of_assign(op) else {
+            return new;
+        };
+        self.define(
+            ty,
+            Rvalue::Binary {
+                op: bin,
+                lhs: old,
+                rhs: new,
+            },
+            span,
+        )
     }
 
     /// The variant place and case index a store writes, if it writes a variant's case (ADR-0068 §4).
@@ -3162,14 +3183,29 @@ impl Lower<'_> {
         };
 
         let ptr_operand = self.expr(ptr_expr);
-        let mut offset = self.expr(off_expr);
+        let offset = self.expr(off_expr);
+        Some(self.pointer_offset_value(op, ptr_operand, offset, self.ty(off_expr), ty, span))
+    }
 
+    /// Produces an element-scaled pointer offset from already-evaluated operands.
+    ///
+    /// This is the shared operation behind binary pointer arithmetic and pointer compound
+    /// assignment. Keeping the operands separate from their source expressions lets an assignment
+    /// load a complex left-hand place exactly once before updating it (ADR-0238 §3).
+    fn pointer_offset_value(
+        &mut self,
+        op: jr_hir::BinOp,
+        pointer: Operand,
+        mut offset: Operand,
+        offset_ty: PoolId,
+        pointer_ty: PoolId,
+        span: MirSpan,
+    ) -> Operand {
         // `p - n` moves back, so the index is `-n`. An ordinary negation on the integer, emitted
-        // before the index, so there is one scaled-address path rather than a second for subtraction.
+        // before the index, keeps one scaled-address path rather than a second subtraction path.
         if op == jr_hir::BinOp::Sub {
-            let off_ty = self.ty(off_expr);
             offset = self.define(
-                off_ty,
+                offset_ty,
                 Rvalue::Unary {
                     op: UnOp::Neg,
                     operand: offset,
@@ -3178,20 +3214,29 @@ impl Lower<'_> {
             );
         }
 
-        // **Index a slot holding the pointer, exactly as a view indexes its `data` word.** Both back
-        // ends' `Projection::Index` scale by the element stride when the place's type at that step is
-        // a *pointer* — they load the pointer and add `n * stride(pointee)` (ADR-0044 §2's view path).
-        // A raw pointer value is not in memory, so it is spilled to a fresh slot of the pointer type
-        // first; then `Place::slot(slot).Index(n)` is that same load-then-scale, and `Rvalue::Address`
-        // of it is `p + n` — with no size computed here (ADR-0017 §5) and no `BoundsCheck` (§3).
-        let slot = self.mir.push_slot(ty, None, span);
+        let place = self.pointer_index_place(pointer, offset, pointer_ty, span);
+        self.define(pointer_ty, Rvalue::Address(place), span)
+    }
+
+    /// Builds the unchecked element place at `pointer[index]`.
+    ///
+    /// A pointer value is not itself a MIR place, so spill it to a pointer-typed slot and apply the
+    /// same pointer `Projection::Index` that views use for their `data` word. VM, Cranelift and LLVM
+    /// then load the pointer and scale `index` by the pointee stride; no layout enters MIR.
+    fn pointer_index_place(
+        &mut self,
+        pointer: Operand,
+        index: Operand,
+        pointer_ty: PoolId,
+        span: MirSpan,
+    ) -> Place {
+        let slot = self.mir.push_slot(pointer_ty, None, span);
         self.emit(Statement::Store {
             place: Place::slot(slot),
-            value: ptr_operand,
+            value: pointer,
             span,
         });
-        let place = Place::slot(slot).project(Projection::Index(offset));
-        Some(self.define(ty, Rvalue::Address(place), span))
+        Place::slot(slot).project(Projection::Index(index))
     }
 
     /// Lowers `&&` (`short_on = false`) or `||` (`short_on = true`).
@@ -3354,6 +3399,25 @@ impl Lower<'_> {
     /// whether the index was checked (ADR-0039 §1).
     fn index_place(&mut self, base: ExprId, index: ExprId) -> Option<(Place, PoolId)> {
         let base_ty = self.ty(base);
+
+        // Preserve the established pointer-to-container meaning first: `p: *[4]u8; p[i]` indexes
+        // the pointee array with its bound. If peeling the chain does not reach an array, vector or
+        // view, the *outer* pointer is the raw sequence and `p[i]` is its unchecked element place
+        // (ADR-0238 §1–2).
+        let mut peeled = base_ty;
+        while let Some(pointee) = self.pointee(peeled) {
+            peeled = pointee;
+        }
+        let bounded_container =
+            self.array_elem(peeled).is_some() || self.view_elem(peeled).is_some();
+        if !bounded_container && let Some(elem) = self.pointee(base_ty) {
+            let pointer = self.expr(base);
+            let index = self.expr(index);
+            let span = self.span(base);
+            let place = self.pointer_index_place(pointer, index, base_ty, span);
+            return Some((place, elem));
+        }
+
         // Auto-deref, matching `jr-sema`'s `check_index`: `p: *[4]u8` indexes through the
         // pointer, and the *place* is then a deref of that pointer.
         let (mut place, mut ty) = if self.pointee(base_ty).is_some() {

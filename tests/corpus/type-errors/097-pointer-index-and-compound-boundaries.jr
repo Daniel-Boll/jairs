@@ -1,0 +1,12 @@
+// EXPECT: E0214 E0223 E0223 — pointer indices and compound offsets keep their boundaries
+main :: () {
+  values: [2]s64;
+  p := *values[0];
+  q := *values[1];
+
+  wrong := p[true];
+  p *= 2;
+  p -= q;
+
+  values[0] = wrong;
+}

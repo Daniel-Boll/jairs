@@ -96,8 +96,9 @@ Two things about strings catch newcomers:
   count, `==` has two equally plausible meanings — same storage or same contents — and Jairs
   will not pick one for you. Comparing *contents* is `String.equal(a, b)` from the standard
   library; see [The standard library](/language/the-standard-library/).
-- **`s.data[i]` does not compile.** A `*u8` is not indexable. Reading one byte is
-  `String.byte_at(s, i)`, or by hand `(s.data + i).*` with a cast.
+- **`s.data[i]` is unchecked.** A raw pointer carries no length, so direct indexing is for code
+  that has already proved its own bound. `String.byte_at(s, i)` supplies the counted-string policy:
+  it returns `-1` for a negative or past-end index.
 
 ## Pointers
 
@@ -113,7 +114,8 @@ value := ptr.*;     // value : s64, read back through the pointer
 
 Field access auto-dereferences: if `p` is a `*Point`, `p.x` reads the field without an
 explicit `.*`. Pointer *arithmetic* (`p + n`, `p - n`, element-scaled) exists and is covered
-in [Memory](/language/memory/).
+in [Memory](/language/memory/). Raw `p[i]` is the unchecked place `(p + i).*`, and `p += n`
+or `p -= n` advances the pointer in the same element units.
 
 `null` is the null pointer. A memory source (`malloc`) and the allocator protocol that
 produces typed pointers are also in [Memory](/language/memory/).

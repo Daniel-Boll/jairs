@@ -12,9 +12,10 @@ mod harness;
 
 use harness::Program;
 use jr_mir::{
-    BinOp, Callees, MirBody, Operand, Rvalue, Statement, Terminator, const_prop, dce, is_pure,
-    optimize,
+    BinOp, Callees, MirBody, Operand, PlaceBase, Projection, Rvalue, Statement, Terminator,
+    const_prop, dce, is_pure, optimize,
 };
+use jr_pool::{Item, Pool};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -52,6 +53,26 @@ fn nops(body: &MirBody) -> usize {
         .iter()
         .flat_map(|block| &block.stmts)
         .filter(|stmt| matches!(stmt, Statement::Nop))
+        .count()
+}
+
+fn pointer_index_stores(body: &MirBody, pool: &Pool) -> usize {
+    body.blocks()
+        .iter()
+        .flat_map(|block| &block.stmts)
+        .filter(|stmt| {
+            let Statement::Store { place, .. } = stmt else {
+                return false;
+            };
+            let PlaceBase::Slot(slot) = place.base else {
+                return false;
+            };
+            matches!(pool.item(body.slot(slot).ty), Item::PointerType(_))
+                && place
+                    .projection
+                    .iter()
+                    .any(|step| matches!(step, Projection::Index(_)))
+        })
         .count()
 }
 
@@ -115,6 +136,27 @@ fn a_dead_load_is_kept() {
     assert!(
         has_rvalue(&body, |rvalue| matches!(rvalue, Rvalue::Load(_))),
         "a load whose result is unused must survive"
+    );
+}
+
+#[test]
+fn a_store_through_a_pointer_index_is_not_a_dead_store_to_the_pointer_spill() {
+    let mut program = Program::new();
+    let lowered = program.lower_clean(
+        "f :: () -> s64 {\n\
+         \x20 values: [2]s64;\n\
+         \x20 pointer := *values[0];\n\
+         \x20 pointer[1] = 22;\n\
+         \x20 return values[1];\n\
+         }\n",
+    );
+    let mut body = lowered.body(&program.interner, "f").clone();
+    assert_eq!(pointer_index_stores(&body, &program.pool), 1);
+    dce(&mut body, &program.pool);
+    assert_eq!(
+        pointer_index_stores(&body, &program.pool),
+        1,
+        "the pointer spill is only the address source; the store writes its pointee"
     );
 }
 
@@ -415,6 +457,28 @@ fn a_load_through_a_pointer_is_never_forwarded() {
         loads(&body),
         before,
         "a place reached through a `Deref` names memory this pass cannot reason about"
+    );
+}
+
+#[test]
+fn a_pointer_index_store_kills_forwarding_for_the_address_taken_slot() {
+    let mut program = Program::new();
+    let lowered = program.lower_clean(
+        "f :: () -> s64 {\n\
+         \x20 values: [2]s64;\n\
+         \x20 values[1] = 20;\n\
+         \x20 pointer := *values[0];\n\
+         \x20 pointer[1] = 22;\n\
+         \x20 return values[1];\n\
+         }\n",
+    );
+    let mut body = lowered.body(&program.interner, "f").clone();
+    let before = loads(&body);
+    jr_mir::forward_stores(&mut body, &program.pool);
+    assert_eq!(
+        loads(&body),
+        before,
+        "an indirect indexed store may alias any address-taken slot"
     );
 }
 

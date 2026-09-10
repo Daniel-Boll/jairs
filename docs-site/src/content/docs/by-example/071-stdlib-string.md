@@ -43,12 +43,10 @@ find :: (haystack: string, needle: string) -> s64
 contains :: (haystack: string, needle: string) -> bool
 ```
 
-`byte_at` exists because `s.data[i]` **does not compile** — `data` is a `*u8` and a pointer is not
-indexable — so reading a byte takes `(s.data + i).*` and a cast to `s64`. `byte_at` is that expression
-with a name, honest about being a workaround until pointer indexing arrives. Its out-of-range answer is
-**-1 rather than a trap**, unlike an out-of-range array index: an array's bound is known to the compiler
-and indexing past it is a *mistake*, while scanning a string until the bytes run out is an ordinary way
-to write a loop.
+`byte_at` adds counted-string policy around ADR-0238's unchecked `s.data[i]` read. Its out-of-range
+answer is **-1 rather than a trap**, unlike an out-of-range array index: an array's bound is known to
+the compiler and indexing past it is a *mistake*, while scanning until the string's bytes run out is
+an ordinary way to write a loop. Code that already proved its own bound may index `.data` directly.
 
 ```jr
 #import "Basic";
