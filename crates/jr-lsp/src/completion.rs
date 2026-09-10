@@ -7,14 +7,15 @@
 //! is a signature that drifts from the hover card's. Both come from
 //! [`crate::render::Decl`].
 //!
-//! # Why the field list derefs pointers and knows about `string`
+//! # Why the field list derefs pointers and knows compiler pseudo-fields
 //!
 //! Because `jr-sema`'s `check_field` does. It loops `pointee` until the type is not a
-//! pointer, and it answers `data` and `count` for `string` — pseudo-fields, because
-//! ADR-0004 fixes the layout as `{data: *u8, count: s64}` while ADR-0015 §2 keeps
-//! `string` from *being* that struct. A completion list that offered a field the checker
-//! then rejected, or hid one it accepts, would be worse than no list: it would be a
-//! second, disagreeing model of field access. This module reads the same pool.
+//! pointer, and it answers public pseudo-fields for compiler-known aggregates: `data`
+//! and `count` on `string`, and `data`, `count`, and `capacity` on `[..]T`. They are
+//! pseudo-fields because ADR-0004 and ADR-0136 fix those layouts without making either
+//! type a nominal struct. A completion list that offered a field the checker then
+//! rejected, or hid one it accepts, would be worse than no list: it would be a second,
+//! disagreeing model of field access. This module reads the same pool (ADR-0240).
 //!
 //! # What is deliberately approximate
 //!
@@ -311,8 +312,8 @@ fn shadows_alias(hir: &FileHir, name: jr_base::Symbol, offset: usize) -> bool {
 
 /// The fields of the receiver before a `.`.
 ///
-/// Mirrors `jr_sema::check_field`: pointers are followed to their pointee, `string`
-/// answers its two pseudo-fields, and a struct answers the pool's field list.
+/// Mirrors `jr_sema::check_field`: pointers are followed to their pointee, compiler-known
+/// aggregates answer their public pseudo-fields, and a struct answers the pool's field list.
 fn fields_at(
     db: &dyn Db,
     file: SourceFile,
@@ -352,6 +353,20 @@ fn fields_at(
         // `.count` is a load rather than a constant — completion cares what you may write,
         // not how it lowers (ADR-0044 §4).
         Item::ArrayType { .. } | Item::ViewType { .. } => vec![field("count", PoolId::S64)],
+        // `[..]T` publicly exposes all three words (ADR-0136 §2). The incomplete `xs.` being
+        // completed has not selected `.data` yet, so sema need not have interned `*T`; render
+        // that candidate directly from the already-known element type rather than mutating the
+        // shared pool from an editor query (ADR-0240).
+        Item::DynamicArrayType { elem } => vec![
+            CompletionItem {
+                label: "data".to_owned(),
+                kind: Some(CompletionItemKind::FIELD),
+                detail: Some(format!("*{}", type_name(&pool, sigs.as_ref(), *elem))),
+                ..CompletionItem::default()
+            },
+            field("count", PoolId::S64),
+            field("capacity", PoolId::S64),
+        ],
         Item::StructType { .. } => pool
             .fields_of(ty)
             .unwrap_or(&[])

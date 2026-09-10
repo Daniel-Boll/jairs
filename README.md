@@ -58,7 +58,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0239.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0240.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -141,7 +141,9 @@ Native dynamic arrays now have one generic operation set in `List`. A caller can
 `stack: [..]*Node`, append pointers, inspect or pop the top, index and mutate elements, hand out the
 used prefix as a view, clear while retaining capacity, and explicitly release storage. The same
 procedures specialise for existing `[..]s64` callers. Empty reads return `(zero, false)`, and a
-default-initialised pointer local is now correctly the typed null value rather than undefined.
+default-initialised pointer local is now correctly the typed null value rather than undefined. In
+the language server, completing `stack.` offers the same public `data`, `count`, and `capacity`
+pseudo-fields that sema accepts, with `data` preserving the concrete element type.
 
 `Hash_Table` now supplies the other requested generic container. `Table(K, V)` is zero-ready,
 including as `properties: Table(string, string)` inside `New(Node)`. Strings compare by content;
@@ -266,9 +268,9 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1431** workspace tests (**1444** under gate 7), with all six ordinary gates and the LLVM gate
-  green for ADR-0239.
-- **323** `.jr` corpus files outside the fixture-module directory, **239** accepted ADRs, **26** standard library
+- **1432** workspace tests (**1445** under gate 7), with all six ordinary gates green for
+  ADR-0240. Gate 7 was not rerun because no MIR, layout, codegen, or back-end code changed.
+- **323** `.jr` corpus files outside the fixture-module directory, **240** accepted ADRs, **26** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative
