@@ -567,9 +567,24 @@ fn fmt_type_ref_impl(
         TypeRef::Qualified { module, name } => {
             format!("{}.{}", interner.resolve(*module), interner.resolve(*name))
         }
-        // `$T` (ADR-0081 §1), printed with its `$` so a dump distinguishes a polymorphic variable from an
-        // ordinary name.
-        TypeRef::Poly(sym) => format!("${}", interner.resolve(*sym)),
+        // `$T` (ADR-0081 §1), printed with its `$` so a dump distinguishes a polymorphic variable
+        // from an ordinary name. A data-interface shape is included too: dropping it here would
+        // make constrained and unconstrained template signatures indistinguishable in snapshots.
+        TypeRef::Poly { name, interface } => {
+            let mut rendered = format!("${}", interner.resolve(*name));
+            if let Some(shape) = interface {
+                let shape = if is_top {
+                    format!("type#{}", shape.index())
+                } else if let Some(b) = body {
+                    fmt_type_ref_impl(&b.type_refs[shape.index()], interner, false, Some(b))
+                } else {
+                    format!("type#{}", shape.index())
+                };
+                rendered.push_str("/interface ");
+                rendered.push_str(&shape);
+            }
+            rendered
+        }
         // Printed by *arity* rather than by element, because the elements are `TypeRefId`s into an
         // arena this function may not have (the `is_top` split below shows why), and a snapshot
         // must never carry an index that load order can renumber.

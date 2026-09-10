@@ -750,7 +750,7 @@ impl<'a> ResolveCtx<'a> {
                 // A `using x: $T` promotes nothing: `$T` binds a type variable, and until a call
                 // instantiates it there is no concrete type with fields — so it names no struct, the
                 // same answer as a view or a procedure pointer (ADR-0081 §1).
-                | crate::hir::TypeRef::Poly(_)
+                | crate::hir::TypeRef::Poly { .. }
                 // A `using b: Box(s64)` promoting a parameterised struct's fields is out of this
                 // sub-wave's scope (ADR-0085 §5), so an `Apply` names no promotable struct here — the
                 // same answer as a `$T`.

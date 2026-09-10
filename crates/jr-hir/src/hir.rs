@@ -119,7 +119,16 @@ pub enum TypeRef {
     /// an existing type: sema treats `$T` as introducing `T` into the signature's scope, and a bare `T`
     /// elsewhere in the same signature as a use of it. Keeping them apart is what lets sema say which is
     /// meant instead of trying to resolve `$T` as a type that does not exist.
-    Poly(Symbol),
+    Poly {
+        /// The variable bound by this type reference.
+        name: Symbol,
+        /// The optional structural data-interface shape (ADR-0233 §1).
+        ///
+        /// This remains syntactic HIR: sema resolves the referenced type and decides whether a
+        /// concrete inferred type satisfies it. The child id belongs to the same type-ref arena as
+        /// this node.
+        interface: Option<TypeRefId>,
+    },
     /// A pointer type `*T`.
     Pointer(TypeRefId),
     /// A fixed-size array type `[N]T` (ADR-0039 §3).

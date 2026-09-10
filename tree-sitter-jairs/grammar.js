@@ -437,9 +437,23 @@ module.exports = grammar({
     type_arguments: ($) =>
       seq("(", optional(seq($._type, repeat(seq(",", $._type)))), ")"),
 
-    // $T — a polymorphic type variable (ADR-0081 §1). Its own rule, not a `name_type` with a leading
-    // `$`, because it binds a variable rather than naming an existing type.
-    poly_type: ($) => seq("$", optional("$"), $.identifier),
+    // $T — a polymorphic type variable (ADR-0081 §1), optionally constrained as
+    // `$T/interface Shape` (ADR-0233 §1). `interface` is contextual: aliasing the literal back to an
+    // identifier keeps the named node shape and lets the same spelling remain an ordinary identifier
+    // in every other grammar state.
+    poly_type: ($) =>
+      seq(
+        "$",
+        optional("$"),
+        field("name", $.identifier),
+        optional(
+          seq(
+            "/",
+            field("marker", alias("interface", $.identifier)),
+            field("interface", $._type),
+          ),
+        ),
+      ),
 
     // enum { RED; GREEN :: 5; } (ADR-0041).
     //

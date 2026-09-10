@@ -339,7 +339,13 @@ impl<'a> LowerCtx<'a> {
                     .name_token()
                     .map(|t| self.intern(t.text()))
                     .unwrap_or_else(|| self.intern("<error>"));
-                self.alloc_top_type_ref(TypeRef::Poly(sym))
+                let interface = poly
+                    .interface()
+                    .map(|shape| self.lower_type_expr_top(&shape));
+                self.alloc_top_type_ref(TypeRef::Poly {
+                    name: sym,
+                    interface,
+                })
             }
             TypeExpr::Pointer(p) => {
                 let inner = if let Some(pointee) = p.pointee() {
@@ -2140,7 +2146,11 @@ impl<'a> BodyLowerCtx<'a> {
                     .name_token()
                     .map(|t| self.intern(t.text()))
                     .unwrap_or_else(|| self.intern("<error>"));
-                self.alloc_type_ref(TypeRef::Poly(sym))
+                let interface = poly.interface().map(|shape| self.lower_type_expr(&shape));
+                self.alloc_type_ref(TypeRef::Poly {
+                    name: sym,
+                    interface,
+                })
             }
             TypeExpr::Pointer(p) => {
                 let inner = if let Some(pointee) = p.pointee() {
@@ -4391,9 +4401,9 @@ fn has_target_list(node: &SyntaxNode) -> bool {
 fn poly_var_names_of(params: &[Param], arena: &[TypeRef]) -> Vec<Symbol> {
     fn walk(id: TypeRefId, arena: &[TypeRef], out: &mut Vec<Symbol>) {
         match arena.get(id.index()) {
-            Some(TypeRef::Poly(sym)) => {
-                if !out.contains(sym) {
-                    out.push(*sym);
+            Some(TypeRef::Poly { name, .. }) => {
+                if !out.contains(name) {
+                    out.push(*name);
                 }
             }
             Some(TypeRef::Pointer(inner)) => walk(*inner, arena, out),

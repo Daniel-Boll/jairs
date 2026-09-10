@@ -896,6 +896,15 @@ impl PolyType {
         child_token(&self.0, IDENT)
     }
 
+    /// The optional data-interface shape — `Shape` in `$T/interface Shape` (ADR-0233 §1).
+    ///
+    /// The contextual `interface` marker is a direct `IDENT` token, while the shape is the only
+    /// child type node. Returning the child rather than interpreting token positions keeps
+    /// qualified and parameterised shape spellings available without another accessor.
+    pub fn interface(&self) -> Option<TypeExpr> {
+        child_node(&self.0)
+    }
+
     /// `true` for `$$T` — a comptime-required polymorphic parameter (ADR-0137). Distinguished
     /// from `$T` by the presence of a *second* `$` token as a child of the POLY_TYPE node.
     pub fn is_comptime(&self) -> bool {

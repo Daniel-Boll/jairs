@@ -321,6 +321,10 @@ fn literal_from_value(pool: &Pool, value: PoolId) -> Literal {
 /// a later pass ever mutated one.
 fn copy_type_ref(hir: &mut FileHir, id: TypeRefId) -> TypeRefId {
     let cloned = match hir.type_refs[id.index()].clone() {
+        TypeRef::Poly { name, interface } => TypeRef::Poly {
+            name,
+            interface: interface.map(|shape| copy_type_ref(hir, shape)),
+        },
         TypeRef::Pointer(inner) => TypeRef::Pointer(copy_type_ref(hir, inner)),
         TypeRef::Array {
             elem,
@@ -336,8 +340,8 @@ fn copy_type_ref(hir: &mut FileHir, id: TypeRefId) -> TypeRefId {
         TypeRef::View { elem } => TypeRef::View {
             elem: copy_type_ref(hir, elem),
         },
-        // A `$T`, a name, an inline aggregate or an error copies as itself: none references another entry
-        // in this arena (an inline struct/enum indexes its own arena, unchanged by the copy).
+        // A name, an inline aggregate or an error copies as itself: none references another entry in
+        // this arena (an inline struct/enum indexes its own arena, unchanged by the copy).
         other => other,
     };
     let new_id = TypeRefId::from_usize(hir.type_refs.len());
