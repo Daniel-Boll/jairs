@@ -179,7 +179,18 @@ fn valid_corpus_files_produce_no_sema_diagnostics() {
         let real: Vec<&_> = analysis
             .sema_diagnostics
             .iter()
-            .filter(|d| d.code != Some("E0212") && d.code != Some("E0269"))
+            .filter(|d| {
+                let imported_type_gap = d.code == Some("E0212") || d.code == Some("E0269");
+                // `163-generic-hash-table.jr` deliberately proves
+                // `New(Node)` with an imported `Table(string, string)` field.
+                // Without module resolution that field has no layout, so the
+                // derived E0266 is the intrinsic analogue of the imported-type
+                // diagnostics tolerated above. The with-modules CLI corpus
+                // test proves the real layout and executes both allocations.
+                let imported_layout_gap =
+                    name == "163-generic-hash-table.jr" && d.code == Some("E0266");
+                !imported_type_gap && !imported_layout_gap
+            })
             .collect();
         if !real.is_empty() {
             let messages: Vec<String> = real

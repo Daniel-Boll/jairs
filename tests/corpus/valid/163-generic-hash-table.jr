@@ -1,0 +1,278 @@
+// ADR-0232 — a zero-ready generic `Table(K, V)`.
+//
+// This closes the requested composition: `New(Node)` zeroes a real
+// `Table(string, string)` field, `[..]*Node` remains usable as a stack, common
+// keys work without setup, and arbitrary struct keys install policy callbacks.
+
+#import "Basic";
+#import "Hash_Table";
+#import "List";
+S :: #import "String";
+
+Node :: struct {
+  name: string;
+  children: [..]*Node;
+  properties: Table(string, string);
+}
+
+Point :: struct {
+  x: s64;
+  y: s64;
+}
+
+Kind :: enum {
+  ROOT;
+  LEAF;
+}
+
+hash_point :: (point: *Point, data: *u8) -> u64 {
+  return hash_combine(hash_s64(point.x), hash_s64(point.y));
+}
+
+equal_point :: (left: *Point, right: *Point, data: *u8) -> bool {
+  return left.x == right.x && left.y == right.y;
+}
+
+CAPTURE_ALLOCATIONS: s64;
+CAPTURE_RELEASES: s64;
+FAIL_ALLOCATIONS: s64;
+FAIL_RELEASES: s64;
+
+capture_allocate :: (size: s64) -> *u8 {
+  CAPTURE_ALLOCATIONS = CAPTURE_ALLOCATIONS + 1;
+  return malloc(size);
+}
+
+capture_release :: (allocation: *u8) {
+  CAPTURE_RELEASES = CAPTURE_RELEASES + 1;
+  free(allocation);
+}
+
+fail_seventh_allocate :: (size: s64) -> *u8 {
+  FAIL_ALLOCATIONS = FAIL_ALLOCATIONS + 1;
+  if FAIL_ALLOCATIONS == 7 {
+    return null;
+  }
+  return malloc(size);
+}
+
+fail_release :: (allocation: *u8) {
+  FAIL_RELEASES = FAIL_RELEASES + 1;
+  free(allocation);
+}
+
+wrong_release :: (allocation: *u8) {
+  exit(30);
+}
+
+main :: () {
+  root := New(Node);
+  child := New(Node);
+  if root == null || child == null {
+    exit(1);
+  }
+  root.name = "root";
+  child.name = "child";
+
+  // The table is zero-ready, including when embedded in a zeroed allocation.
+  if table_count(*root.properties) != 0 || table_capacity(*root.properties) != 0 {
+    exit(2);
+  }
+
+  // Use different storage for insertion and lookup to prove strings compare
+  // by content rather than by data-pointer identity.
+  key_bytes: [4]u8;
+  key_bytes[0] = #char "n";
+  key_bytes[1] = #char "a";
+  key_bytes[2] = #char "m";
+  key_bytes[3] = #char "e";
+  borrowed_key: string;
+  borrowed_key.data = *key_bytes[0];
+  borrowed_key.count = 4;
+  if !table_add(*root.properties, borrowed_key, "root") {
+    exit(3);
+  }
+  property, found_property := table_find(*root.properties, "name");
+  if !found_property || !S.equal(property, "root") {
+    exit(4);
+  }
+
+  // Pointer lookup supports mutation without changing the table's shape.
+  property_pointer := table_find_pointer(*root.properties, "name");
+  if property_pointer == null {
+    exit(5);
+  }
+  property_pointer.* = "tree";
+  changed_property, found_changed := table_find(*root.properties, borrowed_key);
+  if !found_changed || !S.equal(changed_property, "tree") {
+    exit(6);
+  }
+
+  if !push(*root.children, child) {
+    exit(7);
+  }
+  stack: [..]*Node;
+  if !push(*stack, root) || !push(*stack, child) {
+    exit(8);
+  }
+  top, has_top := pop(*stack);
+  if !has_top || top != child {
+    exit(9);
+  }
+
+  // Integer keys force several growths, update in place, remove through a
+  // tombstone, then iterate every remaining entry exactly once.
+  numbers: Table(s64, s64);
+  i := 0;
+  while i < 20 {
+    if !table_add(*numbers, i, i * 2) {
+      exit(10);
+    }
+    i = i + 1;
+  }
+  old_capacity := table_capacity(*numbers);
+  if old_capacity <= 8 {
+    exit(11);
+  }
+  updated := table_set(*numbers, 7, 99);
+  if updated == null || updated.* != 99 || table_capacity(*numbers) != old_capacity {
+    exit(12);
+  }
+  if !table_remove(*numbers, 3) || table_remove(*numbers, 3) || table_contains(*numbers, 3) {
+    exit(13);
+  }
+  seven, found_seven := table_find(*numbers, 7);
+  if !found_seven || seven != 99 || table_count(*numbers) != 19 {
+    exit(14);
+  }
+
+  iterator := table_iterator(*numbers);
+  seen := 0;
+  sum := 0;
+  keep_iterating := true;
+  while keep_iterating {
+    key, value, present := table_next(*iterator);
+    if present {
+      seen = seen + 1;
+      sum = sum + key + value.*;
+    } else {
+      keep_iterating = false;
+    }
+  }
+  // sum(i + 2i, i=0..19) - (3 + 6) - old(7 + 14) + new(7 + 99)
+  if seen != 19 || sum != 646 {
+    exit(15);
+  }
+
+  // Struct keys deliberately have no default byte policy. The callback pair
+  // gives them value semantics without exposing padding as equality.
+  points: Table(Point, string);
+  policy_data: *u8 = null;
+  if !table_set_key_policy(*points, hash_point, equal_point, policy_data) {
+    exit(16);
+  }
+  if !table_reserve(*points, 4) {
+    exit(17);
+  }
+  p: Point;
+  p.x = 4;
+  p.y = 2;
+  if !table_add(*points, p, "answer") {
+    exit(18);
+  }
+  same: Point;
+  same.x = 4;
+  same.y = 2;
+  point_value, found_point := table_find(*points, same);
+  if !found_point || !S.equal(point_value, "answer") {
+    exit(19);
+  }
+
+  // Every promised built-in scalar family gets an instantiated operation,
+  // not merely a type-checking claim.
+  kinds: Table(Kind, s64);
+  flags: Table(bool, s64);
+  pointers: Table(*Node, s64);
+  if !table_add(*kinds, Kind.ROOT, 1) || !table_add(*flags, true, 2) || !table_add(
+    *pointers,
+    root,
+    3,
+  ) {
+    exit(20);
+  }
+  kind_value, found_kind := table_find(*kinds, Kind.ROOT);
+  flag_value, found_flag := table_find(*flags, true);
+  pointer_value, found_pointer := table_find(*pointers, root);
+  if !found_kind || kind_value != 1 || !found_flag || flag_value != 2 || !found_pointer || pointer_value != 3 {
+    exit(21);
+  }
+
+  table_clear(*numbers);
+  if table_count(*numbers) != 0 || table_capacity(*numbers) != old_capacity {
+    exit(22);
+  }
+
+  // Allocation is transactional and ownership stays with the allocator
+  // captured by the first backing allocation.
+  saved_allocator := context.allocator;
+  saved_release := context.allocator_free;
+  saved_data := context.allocator_data;
+
+  captured: Table(s64, s64);
+  context.allocator = capture_allocate;
+  context.allocator_free = capture_release;
+  context.allocator_data = 0;
+  if !table_add(*captured, 1, 2) || CAPTURE_ALLOCATIONS != 4 {
+    exit(23);
+  }
+  context.allocator_free = wrong_release;
+  deinit(*captured);
+  if CAPTURE_RELEASES != 4 {
+    exit(24);
+  }
+
+  // Fail during a populated growth. The old arrays stay published, the two
+  // successful fresh allocations roll back, and retry can still grow.
+  failed: Table(s64, s64);
+  context.allocator = fail_seventh_allocate;
+  context.allocator_free = fail_release;
+  context.allocator_data = 0;
+  i = 0;
+  while i < 6 {
+    if !table_add(*failed, i, i + 10) {
+      exit(25);
+    }
+    i = i + 1;
+  }
+  if table_add(*failed, 6, 16) || table_count(*failed) != 6 || table_capacity(*failed) != 8 {
+    exit(26);
+  }
+  retained, found_retained := table_find(*failed, 0);
+  if !found_retained || retained != 10 || FAIL_ALLOCATIONS != 7 || FAIL_RELEASES != 2 {
+    exit(27);
+  }
+  if !table_add(*failed, 6, 16) || table_count(*failed) != 7 {
+    exit(28);
+  }
+  deinit(*failed);
+  if FAIL_RELEASES != 10 {
+    exit(29);
+  }
+
+  context.allocator = saved_allocator;
+  context.allocator_free = saved_release;
+  context.allocator_data = saved_data;
+
+  deinit(*points);
+  deinit(*kinds);
+  deinit(*flags);
+  deinit(*pointers);
+  deinit(*numbers);
+  deinit(*root.properties);
+  deinit(*root.properties);
+  free_data(*stack);
+  free_data(*root.children);
+  context.allocator_free(untyped(child));
+  context.allocator_free(untyped(root));
+  exit(42);
+}
