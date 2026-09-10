@@ -114,6 +114,71 @@ if has_parser then
       buf = vim.api.nvim_get_current_buf()
     end
 
+    -- Typed/inferred struct literals (ADR-0239). The punctuation is deliberately adjacent to two
+    -- older forms: `Point.{...}` must not become field access, and `.{...}` must not become the
+    -- bare member `.RED`. A clean parse alone cannot prove the shape, so this checks all three
+    -- nodes together and verifies the literal-only type/property captures.
+    local literals_file = vim.fn.tempname() .. ".jr"
+    vim.fn.writefile({
+      "Point :: struct {",
+      "  x: s64;",
+      "  y: s64;",
+      "}",
+      "make :: () -> Point {",
+      "  empty := Point.{};",
+      "  positional: Point = .{1, 2};",
+      "  named: Point = .{y = 4, x = 3};",
+      "  multiline := Point.{",
+      "    y = 6,",
+      "    x = 5,",
+      "  };",
+      "  colour := .RED;",
+      "  field := multiline.x;",
+      "  return multiline;",
+      "}",
+    }, literals_file)
+    vim.cmd.edit(vim.fn.fnameescape(literals_file))
+    local sl_buf = vim.api.nvim_get_current_buf()
+    local sl_ok, sl_parser = pcall(vim.treesitter.get_parser, sl_buf, "jairs")
+    if sl_ok and sl_parser then
+      local sl_tree = sl_parser:parse()[1]
+      check("struct literals parse with no ERROR node", not sl_tree:root():has_error())
+      local sl_kinds = {}
+      local function sl_walk(node)
+        sl_kinds[node:type()] = (sl_kinds[node:type()] or 0) + 1
+        for child in node:iter_children() do
+          sl_walk(child)
+        end
+      end
+      sl_walk(sl_tree:root())
+      check("typed and inferred forms produce struct_literal", sl_kinds.struct_literal == 4)
+      check("literal entries have dedicated nodes", sl_kinds.struct_literal_entry == 6)
+      check("`.RED` remains a member_expr beside literals", sl_kinds.member_expr == 1)
+      check("field access remains a field_expr beside literals", sl_kinds.field_expr == 1)
+
+      local sl_query_ok, sl_query = pcall(vim.treesitter.query.get, "jairs", "highlights")
+      if sl_query_ok and sl_query then
+        local saw_type = false
+        local property_entries = 0
+        for id, node in sl_query:iter_captures(sl_tree:root(), sl_buf, 0, -1) do
+          local capture = sl_query.captures[id]
+          local text = vim.treesitter.get_node_text(node, sl_buf)
+          if capture == "type" and text == "Point" and node:parent():type() == "struct_literal" then
+            saw_type = true
+          end
+          if capture == "property"
+              and node:parent():type() == "struct_literal_entry"
+              and (text == "x" or text == "y") then
+            property_entries = property_entries + 1
+          end
+        end
+        check("an explicit struct-literal type highlights as a type", saw_type)
+        check("named literal entries highlight as properties", property_entries == 4)
+      end
+    end
+    vim.cmd.edit(vim.fn.fnameescape(sample))
+    buf = vim.api.nvim_get_current_buf()
+
     -- Floats, for the same reason and found the same way: the grammar's `float_literal`
     -- required a fractional part, so `1e9` produced an ERROR node here while the compiler's
     -- lexer accepted it (ADR-0040). The drift gate sees an ERROR only once a corpus file

@@ -22,7 +22,7 @@ use jr_base::Interner;
 
 use crate::hir::{
     AggregateKind, AssignOp, BinOp, Body, BodyId, ConstValue, Expr, ExprId, FileHir, ForIterable,
-    ItemKind, Literal, Res, Stmt, StmtId, TypeRef, TypeRefId, UnOp,
+    ItemKind, Literal, Res, Stmt, StmtId, StructLitEntry, TypeRef, TypeRefId, UnOp,
 };
 
 /// Produces a human-readable dump of the HIR for one file.
@@ -524,6 +524,23 @@ fn fmt_expr_impl(expr: &Expr, interner: &Interner, is_top: bool, body: Option<&B
         Expr::ArrayLit { elem_ty, elems, .. } => {
             let parts: Vec<String> = elems.iter().map(|e| sub_expr(*e)).collect();
             format!("{}.[{}]", sub_expr(*elem_ty), parts.join(", "))
+        }
+        Expr::StructLit {
+            explicit_ty,
+            entries,
+            ..
+        } => {
+            let prefix = explicit_ty.map(&sub_expr).unwrap_or_default();
+            let parts: Vec<String> = entries
+                .iter()
+                .map(|entry| match entry {
+                    StructLitEntry::Positional(value) => sub_expr(*value),
+                    StructLitEntry::Named { name, value, .. } => {
+                        format!("{} = {}", sym(*name), sub_expr(*value))
+                    }
+                })
+                .collect();
+            format!("{prefix}.{{{}}}", parts.join(", "))
         }
         Expr::Field { receiver, name, .. } => {
             format!("{}.{}", sub_expr(*receiver), sym(*name))

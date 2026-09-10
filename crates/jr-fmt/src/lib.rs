@@ -99,6 +99,11 @@ pub struct Config {
     pub indent_width: usize,
     /// Where a switch arm's sole braced block begins.
     pub case_block_style: CaseBlockStyle,
+    /// Whether a non-empty multiline struct literal ends its final entry with a comma.
+    ///
+    /// This setting does not affect compact one-line literals or the empty `.{}` / `T.{}` forms.
+    /// Entries before the final one always keep their separating comma.
+    pub struct_literal_trailing_comma: bool,
     /// The column a line should not exceed.
     ///
     /// **What this covers, exactly.** A call's argument list and a procedure's parameter list are
@@ -123,6 +128,7 @@ impl Default for Config {
             indent_style: IndentStyle::Space,
             indent_width: 2,
             case_block_style: CaseBlockStyle::NextLine,
+            struct_literal_trailing_comma: true,
             max_width: 100,
         }
     }
@@ -176,6 +182,8 @@ struct Formatter {
     max_width: usize,
     /// Where a switch arm's sole braced block begins.
     case_block_style: CaseBlockStyle,
+    /// Whether the final entry in a non-empty multiline struct literal has a comma.
+    struct_literal_trailing_comma: bool,
 }
 
 impl Formatter {
@@ -189,6 +197,7 @@ impl Formatter {
             },
             max_width: config.max_width,
             case_block_style: config.case_block_style,
+            struct_literal_trailing_comma: config.struct_literal_trailing_comma,
         }
     }
 
@@ -2029,6 +2038,15 @@ impl Formatter {
                 }
                 self.emit("]");
             }
+            // `Point.{x = 1}`, `.{1, 2}` and `.{}`
+            // — typed and context-inferred record literals (ADR-0239).
+            //
+            // Entry values are nested inside dedicated `STRUCT_LITERAL_ENTRY` nodes, so the only
+            // direct expression child is the optional explicit type. This is deliberately not an
+            // array-literal-shaped "first expression is the type" convention: named entries need
+            // their own nodes, and keeping values there makes deleting the type/value distinction
+            // much harder.
+            STRUCT_LITERAL => self.format_struct_literal(node),
             FIELD_EXPR => {
                 if let Some(obj) = node.children().find(|n| is_expr_kind(n.kind())) {
                     self.format_expr(&obj);
@@ -2163,6 +2181,107 @@ impl Formatter {
         }
     }
 
+    /// Formats a typed or inferred struct literal (ADR-0239).
+    ///
+    /// A literal written on one line stays compact. A literal whose source spans lines stays
+    /// multiline, one entry per line, so a formatter pass does not collapse the record-shaped form
+    /// a reader chose. Comments also force the multiline path: flattening a `//` comment would
+    /// comment out the following entry, while dropping it would violate this formatter's primary
+    /// lossless-CST invariant.
+    fn format_struct_literal(&mut self, node: &SyntaxNode) {
+        if let Some(explicit_type) = node.children().find(|n| is_expr_kind(n.kind())) {
+            self.format_expr(&explicit_type);
+        }
+        self.emit(".{");
+
+        let entries: Vec<SyntaxNode> = node
+            .children()
+            .filter(|n| n.kind() == STRUCT_LITERAL_ENTRY)
+            .collect();
+        if entries.is_empty() {
+            self.emit("}");
+            return;
+        }
+
+        let direct_comments: Vec<SyntaxToken> = node
+            .children_with_tokens()
+            .filter_map(|element| element.into_token())
+            .filter(|token| token.kind().is_comment())
+            .collect();
+        let multiline = node.text().contains_char('\n') || !direct_comments.is_empty();
+
+        if !multiline {
+            for (index, entry) in entries.iter().enumerate() {
+                if index > 0 {
+                    self.emit(", ");
+                }
+                self.format_struct_literal_entry(entry);
+            }
+            self.emit("}");
+            return;
+        }
+
+        self.indent += 1;
+        let mut comment_index = 0;
+        for (entry_index, entry) in entries.iter().enumerate() {
+            while let Some(comment) = direct_comments.get(comment_index) {
+                if comment.text_range().start() >= entry.text_range().start() {
+                    break;
+                }
+                self.newline();
+                self.emit_indent();
+                self.emit_comment(comment);
+                comment_index += 1;
+            }
+
+            self.newline();
+            self.emit_indent();
+            self.format_struct_literal_entry(entry);
+            if entry_index + 1 < entries.len() || self.struct_literal_trailing_comma {
+                self.emit(",");
+            }
+        }
+
+        while let Some(comment) = direct_comments.get(comment_index) {
+            self.newline();
+            self.emit_indent();
+            self.emit_comment(comment);
+            comment_index += 1;
+        }
+
+        self.indent -= 1;
+        self.newline();
+        self.emit_indent();
+        self.emit("}");
+    }
+
+    /// Formats one positional expression or `name = expression` struct-literal entry.
+    fn format_struct_literal_entry(&mut self, node: &SyntaxNode) {
+        // Preserve an entry containing an internal comment as written. The enclosing literal still
+        // owns its line and trailing comma, while retaining the raw entry is safer than relocating a
+        // comment across the expression it describes.
+        if node
+            .children_with_tokens()
+            .filter_map(|element| element.into_token())
+            .any(|token| token.kind().is_comment())
+        {
+            self.emit(node.text().to_string().trim());
+            return;
+        }
+
+        if let Some(name) = node
+            .children_with_tokens()
+            .filter_map(|element| element.into_token())
+            .find(|token| token.kind() == IDENT)
+        {
+            self.emit(name.text());
+            self.emit(" = ");
+        }
+        if let Some(value) = node.children().find(|n| is_expr_kind(n.kind())) {
+            self.format_expr(&value);
+        }
+    }
+
     /// Emits an argument list, broken one per line if the flat form would overflow.
     ///
     /// Unlike a parameter list this takes no `reserve`: what follows a call on its line is a `;`,
@@ -2284,6 +2403,10 @@ fn is_expr_kind(kind: SyntaxKind) -> bool {
             // sequence. Omitting it here would leave it unemitted at every *nesting* site even with the
             // arm above, which is the second half of the trap that comment describes.
             | ARRAY_LITERAL
+            // ADR-0239's typed/inferred struct literal. Omitting this entry would silently delete
+            // the entire value at every initializer, return and argument site even though the
+            // emitter arm above exists.
+            | STRUCT_LITERAL
             | DEREF_EXPR
             | UNINIT_EXPR
             // Omitting this is how the formatter *deleted* every `cast` outright: an
@@ -2904,6 +3027,121 @@ mod tests {
         let src = "f :: () {\n    while i < 10 {\n        i = i + 1;\n    }\n}\n";
         let out = fmt(src);
         assert!(out.contains("while i < 10 {"), "got: {out}");
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn struct_literal_forms_survive_and_canonicalise() {
+        let src = concat!(
+            "Point :: struct { x:s64; y:s64; }\n",
+            "f :: () {\n",
+            "typed := Point.{x=1,y=2};\n",
+            "inferred: Point = .{1,2};\n",
+            "empty := Point.{};\n",
+            "also_empty: Point = .{};\n",
+            "member := .RED;\n",
+            "field := typed.x;\n",
+            "}\n",
+        );
+        let out = fmt(src);
+        assert!(
+            out.contains("typed := Point.{x = 1, y = 2};"),
+            "typed named entries must survive and canonicalise:\n{out}"
+        );
+        assert!(
+            out.contains("inferred: Point = .{1, 2};"),
+            "inferred positional entries must survive and canonicalise:\n{out}"
+        );
+        assert!(out.contains("empty := Point.{};"), "got:\n{out}");
+        assert!(out.contains("also_empty: Point = .{};"), "got:\n{out}");
+        assert!(
+            out.contains("member := .RED;"),
+            "a bare member must remain a bare member:\n{out}"
+        );
+        assert!(
+            out.contains("field := typed.x;"),
+            "field access must remain field access:\n{out}"
+        );
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn multiline_struct_literals_gain_a_final_comma_by_default() {
+        let src = concat!(
+            "Point :: struct { x: s64; y: s64; }\n",
+            "f :: () {\n",
+            "p := Point.{\n",
+            "x=1,\n",
+            "y=2\n",
+            "};\n",
+            "}\n",
+        );
+        let out = fmt(src);
+        assert!(
+            out.contains("p := Point.{\n    x = 1,\n    y = 2,\n  };"),
+            "the default must ensure a final comma on a non-empty multiline literal:\n{out}"
+        );
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn multiline_struct_literal_final_comma_can_be_disabled() {
+        let src = concat!(
+            "Point :: struct { x: s64; y: s64; }\n",
+            "f :: () {\n",
+            "p := Point.{\n",
+            "x=1,\n",
+            "y=2,\n",
+            "};\n",
+            "compact := Point.{x=3,y=4,};\n",
+            "empty := Point.{};\n",
+            "}\n",
+        );
+        let config = Config {
+            struct_literal_trailing_comma: false,
+            ..Config::default()
+        };
+        let out = format(src, file(), &config).expect("format failed");
+        assert!(
+            out.contains("p := Point.{\n    x = 1,\n    y = 2\n  };"),
+            "disabling the option must remove only the multiline final comma:\n{out}"
+        );
+        assert!(
+            out.contains("compact := Point.{x = 3, y = 4};"),
+            "compact literals are canonical and independent of the multiline option:\n{out}"
+        );
+        assert!(
+            out.contains("empty := Point.{};"),
+            "empty literals are independent of the multiline option:\n{out}"
+        );
+        let twice = format(&out, file(), &config).expect("second format failed");
+        assert_eq!(out, twice, "the no-final-comma form must be idempotent");
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn comments_in_multiline_struct_literals_survive() {
+        let src = concat!(
+            "Point :: struct { x: s64; y: s64; }\n",
+            "f :: () {\n",
+            "p := Point.{\n",
+            "// first field\n",
+            "x = 1, // explains x\n",
+            "/* second field */\n",
+            "y = 2,\n",
+            "};\n",
+            "}\n",
+        );
+        let out = fmt(src);
+        for comment in ["// first field", "// explains x", "/* second field */"] {
+            assert!(
+                out.contains(comment),
+                "struct-literal formatting dropped `{comment}`:\n{out}"
+            );
+        }
         assert_idempotent(src);
         assert_parses(&out);
     }

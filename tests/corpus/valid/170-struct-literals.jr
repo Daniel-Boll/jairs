@@ -1,0 +1,110 @@
+// Typed and context-inferred struct literals (ADR-0239).
+//
+// Named entries target fields independently of declaration order while their expressions still
+// execute in source order. Positional entries use declaration order, omitted fields are zeroed,
+// and the same construction works for `string`, parameterised structs and a `#run` body.
+#import "Basic";
+
+Point :: struct {
+  x: s64;
+  y: s64;
+}
+
+Wrapper :: struct {
+  point: Point;
+  weight: s64;
+}
+
+Box :: struct($T) {
+  value: T;
+  present: bool;
+}
+
+make_point :: (x: s64, y: s64) -> Point {
+  return .{
+    y = y,
+    x = x,
+  };
+}
+
+score :: (point: Point) -> s64 {
+  return point.x * 10 + point.y;
+}
+
+tail :: (text: string) -> string {
+  return .{
+    count = text.count - 1,
+    data = text.data + 1,
+  };
+}
+
+mark :: (state: *s64, digit: s64) -> s64 {
+  state.* = state.* * 10 + digit;
+  return digit;
+}
+
+comptime_point :: () -> Point {
+  return .{x = 20, y = 22};
+}
+
+COMPTIME :: #run comptime_point();
+
+main :: () {
+  typed := Point.{y = 2, x = 1};
+  positional := Point.{3, 4};
+  inferred: Point = .{x = 5, y = 6};
+  empty: Point = .{};
+  partial := Point.{y = 9};
+  nested: Wrapper = .{
+    weight = 7,
+    point = .{y = 6, x = 5},
+  };
+  boxed := Box(s64).{present = true, value = 11};
+  returned := make_point(8, 7);
+  argument := score(.{y = 3, x = 2});
+  text := tail("abc");
+
+  order := 0;
+  reordered := Point.{
+    y = mark(*order, 2),
+    x = mark(*order, 1),
+  };
+
+  if score(typed) != 12 {
+    exit(1);
+  }
+  if score(positional) != 34 {
+    exit(2);
+  }
+  if score(inferred) != 56 {
+    exit(3);
+  }
+  if score(empty) != 0 {
+    exit(4);
+  }
+  if score(partial) != 9 {
+    exit(5);
+  }
+  if score(nested.point) != 56 || nested.weight != 7 {
+    exit(6);
+  }
+  if boxed.value != 11 || !boxed.present {
+    exit(7);
+  }
+  if score(returned) != 87 {
+    exit(8);
+  }
+  if argument != 23 {
+    exit(9);
+  }
+  if text.count != 2 || text.data[0] != #char "b" {
+    exit(10);
+  }
+  if order != 21 || score(reordered) != 12 {
+    exit(11);
+  }
+  if score(COMPTIME) != 222 {
+    exit(12);
+  }
+  exit(0);
+}

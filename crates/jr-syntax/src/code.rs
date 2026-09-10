@@ -237,6 +237,13 @@ pub(crate) const E0134: &str = "E0134";
 /// to carry.
 pub(crate) const E0135: &str = "E0135";
 
+/// A malformed entry inside a typed or inferred struct literal.
+///
+/// Covers a missing initializer after `=`, an empty entry, and a missing separator. Keeping these
+/// under one parser code makes recovery produce a useful literal node without handing HIR a field
+/// initializer whose syntactic failure is indistinguishable from a valid omission.
+pub(crate) const E0136: &str = "E0136";
+
 /// Input nested more deeply than the parser's depth limit.
 ///
 /// Deliberately at the top of the parser's range rather than in sequence: it is a
@@ -288,6 +295,7 @@ mod tests {
         ("E0133", "a `#simd` with no array type"),
         ("E0134", "an `else` arm that is not final"),
         ("E0135", "a malformed polymorphic interface constraint"),
+        ("E0136", "a malformed struct literal entry"),
         ("E0199", "nesting depth limit"),
     ];
 

@@ -271,6 +271,9 @@ pub(crate) struct Ctx<'a> {
     /// `jr-mir` reads this to build `Field(position)` then `Index(i)` for a place whose HIR says
     /// `Index` then `Field` — the one place the two crates must agree, so one of them decides.
     pub(crate) soa_fields: FxHashMap<(ExprScope, jr_hir::ExprId), u32>,
+    /// The resolved destination of each supplied struct-literal entry (ADR-0239 §4).
+    pub(crate) struct_literals:
+        FxHashMap<(ExprScope, jr_hir::ExprId), Vec<crate::check::StructLiteralField>>,
     /// The **baked value** of each `$N` parameter of the procedure currently being resolved
     /// (ADR-0089 §1).
     ///
@@ -352,6 +355,7 @@ impl<'a> Ctx<'a> {
             comptime_calls: FxHashMap::default(),
             variadic_calls: FxHashMap::default(),
             soa_fields: FxHashMap::default(),
+            struct_literals: FxHashMap::default(),
             value_bindings: FxHashMap::default(),
             comptime_param_names: FxHashSet::default(),
             poly_var_names: FxHashSet::default(),

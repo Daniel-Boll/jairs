@@ -48,9 +48,6 @@ simply lacking them:
 - **Building an `enum_flags` value from a computed integer** — `cast(Perm, 3)` is
   <span class="jairs-status refused">refused</span>: most integers are valid flag sets, so a wrong
   one would look right, and members are combined with `|` instead.
-- **A struct literal shorthand**, `Point.{1, 2}`, is
-  <span class="jairs-status refused">refused</span> — it needs field-order decisions that an array
-  literal's element count doesn't supply.
 - **A `Code` value** — a first-class quoted syntax tree — is
   <span class="jairs-status refused">refused</span> until something can inspect or transform one;
   a value that can only be spliced is what a `string` already is.

@@ -1,0 +1,14 @@
+// EXPECT: malformed struct literal entries are diagnosed
+// RECOVER: the following declaration still parses
+Point :: struct {
+  x: s64;
+  y: s64;
+}
+
+broken :: () {
+  point := Point.{x = , y = 2};
+}
+
+after :: () {
+  value := 1;
+}

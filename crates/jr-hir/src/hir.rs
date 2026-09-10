@@ -483,6 +483,35 @@ pub enum Res {
 // Expressions
 // ---------------------------------------------------------------------------
 
+/// One initializer inside a typed or inferred struct literal (ADR-0239 §2).
+///
+/// The enum preserves the invariant that a field name and its span either both exist or both do
+/// not. A literal's `Vec<StructLitEntry>` is in source order; sema may map named entries to a
+/// different declaration-order destination later, but it must not reorder their evaluation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StructLitEntry {
+    /// A positional initializer.
+    Positional(ExprId),
+    /// A `name = value` initializer.
+    Named {
+        /// The field name as written.
+        name: Symbol,
+        /// Span of the field-name token.
+        name_span: Span,
+        /// The initializer expression.
+        value: ExprId,
+    },
+}
+
+impl StructLitEntry {
+    /// Returns the initializer expression.
+    pub fn value(&self) -> ExprId {
+        match self {
+            Self::Positional(value) | Self::Named { value, .. } => *value,
+        }
+    }
+}
+
 /// An expression node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
@@ -589,6 +618,20 @@ pub enum Expr {
         /// Span of the whole literal.
         span: Span,
     },
+    /// `T.{...}` or `.{...}` — a typed or context-inferred struct literal (ADR-0239 §1).
+    ///
+    /// The explicit type remains an expression for the same parser-level reason as
+    /// [`Expr::ArrayLit`]'s element type: the postfix parser cannot know whether its receiver denotes
+    /// a type. Name resolution treats only this child as a type position; entry values are ordinary
+    /// expressions.
+    StructLit {
+        /// The expression naming the type in `T.{...}`, or `None` for `.{...}`.
+        explicit_ty: Option<ExprId>,
+        /// Initializers in source order.
+        entries: Vec<StructLitEntry>,
+        /// Span of the whole literal.
+        span: Span,
+    },
     /// `a[]` — a view over the whole of `a` (ADR-0044 §2).
     ///
     /// A distinct expression rather than sugar for anything: it takes the *address* of its
@@ -690,6 +733,7 @@ impl Expr {
             Expr::Call { span, .. } => *span,
             Expr::Field { span, .. } => *span,
             Expr::ArrayLit { span, .. } => *span,
+            Expr::StructLit { span, .. } => *span,
             Expr::Index { span, .. } => *span,
             Expr::Slice { span, .. } => *span,
             Expr::Deref(_, span) => *span,

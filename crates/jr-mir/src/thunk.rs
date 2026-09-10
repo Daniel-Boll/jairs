@@ -348,6 +348,9 @@ impl Thunk<'_> {
             Expr::ArrayLit { .. } => Err(Poisoned::Here(
                 "an array literal has no compile-time value yet (ADR-0194 §4)",
             )),
+            Expr::StructLit { .. } => Err(Poisoned::Here(
+                "a struct literal has no direct file-scope compile-time value yet (ADR-0239 §5)",
+            )),
 
             // A `#run` whose value is already known folds to it; otherwise evaluating
             // the `#run` *is* evaluating its inner expression, which is what makes a
@@ -665,6 +668,15 @@ fn child_exprs(expr: &Expr) -> Vec<ExprId> {
         Expr::ArrayLit { elem_ty, elems, .. } => {
             let mut out = vec![*elem_ty];
             out.extend(elems.iter().copied());
+            out
+        }
+        Expr::StructLit {
+            explicit_ty,
+            entries,
+            ..
+        } => {
+            let mut out = explicit_ty.iter().copied().collect::<Vec<_>>();
+            out.extend(entries.iter().map(jr_hir::StructLitEntry::value));
             out
         }
         Expr::Field { receiver, .. } => vec![*receiver],

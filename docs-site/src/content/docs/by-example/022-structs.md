@@ -1,6 +1,6 @@
 ---
 title: Structs
-description: Declaring structs, nesting them, the empty struct, and chained field access as a place.
+description: Declaring, constructing and nesting structs, plus chained field access as a place.
 sidebar:
   order: 22
 ---
@@ -31,6 +31,27 @@ A struct is declared with `Name :: struct { ... }`, each field written as `name:
 - **The empty struct is legal** and occupies zero bytes. It is useful as a marker type.
 - **Structs nest by value.** `Entity` embeds a `Point` as its `position` field — the `Point`'s bytes live inline inside the `Entity`, not behind a pointer.
 - **Fields can be any type**, including other structs (`position`), integers (`health`), and `bool` (`alive`).
+
+## Struct literals
+
+```jr
+point := Point.{y = 9, x = 4};   // typed, named, order-independent
+other := Point.{4, 9};           // typed, positional, declaration order
+origin: Point = .{};             // inferred from the annotation, all zero
+partial := Point.{y = 9};        // omitted x is zero
+
+entity: Entity = .{
+    alive = true,
+    position = .{x = 4, y = 9},  // nested literal inherits Point
+    health = 100,
+};
+```
+
+`T.{...}` names the type. `.{...}` takes a concrete type from an annotation, return type,
+assignment target, parameter, or containing field. Entries are all named or all positional;
+mixing them is an error. Named entries may be reordered, but their expressions still run once in
+source order. Non-empty multiline literals receive a final comma by default; projects can set
+`[fmt] struct_literal_trailing_comma = false`.
 
 ## Field access is a place
 

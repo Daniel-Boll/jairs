@@ -809,6 +809,7 @@ module.exports = grammar({
         $.deref_expr,
         $.field_expr,
         $.array_literal,
+        $.struct_literal,
         $.index_expr,
         $.slice_expr,
         $.call_expr,
@@ -954,6 +955,59 @@ module.exports = grammar({
           ),
           "]",
         ),
+      ),
+
+    // `Point.{x = 1, y = 2}`, `.{1, 2}` and `.{}`
+    // — typed and context-inferred record literals (ADR-0239).
+    //
+    // The typed form has postfix precedence 7 beside `array_literal` and `field_expr`;
+    // one token after the dot distinguishes all three (`{`, `[` or an identifier). The
+    // inferred form has the same low precedence as `.RED`, and is likewise distinguished
+    // by the token after the dot. Keeping those precedences aligned with the existing
+    // forms is load-bearing: a high-precedence prefix rule for `.RED` previously split
+    // `dots[1].x` instead of producing one `field_expr`.
+    struct_literal: ($) =>
+      choice(
+        prec.left(
+          7,
+          seq(
+            field("type", $._expr),
+            ".",
+            "{",
+            optional(
+              seq(
+                field("entry", $.struct_literal_entry),
+                repeat(seq(",", field("entry", $.struct_literal_entry))),
+                optional(","),
+              ),
+            ),
+            "}",
+          ),
+        ),
+        prec(
+          1,
+          seq(
+            ".",
+            "{",
+            optional(
+              seq(
+                field("entry", $.struct_literal_entry),
+                repeat(seq(",", field("entry", $.struct_literal_entry))),
+                optional(","),
+              ),
+            ),
+            "}",
+          ),
+        ),
+      ),
+
+    // One node for both forms preserves source order while making a named destination explicit.
+    // A name followed by `=` cannot be a positional expression in Jairs, so the alternatives are
+    // separated by ordinary lookahead rather than precedence or a declared conflict.
+    struct_literal_entry: ($) =>
+      choice(
+        seq(field("name", $.identifier), "=", field("value", $._expr)),
+        field("value", $._expr),
       ),
 
     // Field access: expr.name

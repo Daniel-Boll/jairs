@@ -89,7 +89,7 @@ use jr_sema::{FileSignatures, TypeMap};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::escape::{self, Promotable};
-use crate::inputs::{ConstValues, ImportedProcs, OperatorCalls};
+use crate::inputs::{ConstValues, ImportedProcs, OperatorCalls, StructLiteralField};
 use crate::mir::{
     BinOp, BlockId, Callee, Facts, FileMir, MirBody, MirSpan, NumKind, Operand, Place, Poisoned,
     ProcRef, Projection, Rvalue, SlotId, Statement, Target, Terminator, UnOp, Unreachable,
@@ -475,6 +475,11 @@ impl Reach {
                 Expr::ArrayLit { elems, .. } => {
                     expr_work.extend(elems.iter().copied());
                 }
+                // The explicit type denotes no runtime value; initializer values are ordinary
+                // reached expressions in their source evaluation order (ADR-0239 §4).
+                Expr::StructLit { entries, .. } => {
+                    expr_work.extend(entries.iter().map(jr_hir::StructLitEntry::value));
+                }
                 Expr::Literal(_, _)
                 | Expr::Name { .. }
                 | Expr::Context(_)
@@ -659,7 +664,7 @@ fn scan(
             Expr::Error(_) => return Some("the body contains recovered syntax"),
             // Representable: a fixed array literal lowers to a slot and one store per element
             // (ADR-0194 §3), all of which MIR already has.
-            Expr::ArrayLit { .. } => {}
+            Expr::ArrayLit { .. } | Expr::StructLit { .. } => {}
             // Representable: `context` lowers to a load of the hidden parameter (ADR-0057 §2), which
             // is an ordinary place read and needs nothing new.
             Expr::Context(_) => {}
@@ -2718,6 +2723,44 @@ impl Lower<'_> {
                 }
                 self.define(ty, Rvalue::Load(place), span)
             }
+            // A record literal is a zeroed aggregate followed by one source-ordered store per
+            // supplied entry (ADR-0239 §4). Sema recorded each destination, so named entries may
+            // target declaration-order fields without MIR repeating name resolution.
+            Expr::StructLit { entries, .. } => {
+                let destinations = self
+                    .consts
+                    .struct_literal(self.scope(), id)
+                    .map(<[_]>::to_vec);
+                let Some(destinations) = destinations else {
+                    self.give_up("a struct literal has no checked destination plan");
+                    return self.define(ty, Rvalue::Undef, span);
+                };
+                if destinations.len() != entries.len() {
+                    self.give_up("a struct literal destination plan has the wrong length");
+                    return self.define(ty, Rvalue::Undef, span);
+                }
+
+                let slot = self.mir.push_slot(ty, None, span);
+                let place = Place::slot(slot);
+                self.emit(Statement::Zero {
+                    place: place.clone(),
+                    span,
+                });
+                for (entry, destination) in entries.iter().zip(destinations) {
+                    let value = self.expr(entry.value());
+                    let projection = match destination {
+                        StructLiteralField::Field(position) => Projection::Field(position),
+                        StructLiteralField::StringData => Projection::StringData,
+                        StructLiteralField::StringCount => Projection::StringCount,
+                    };
+                    self.emit(Statement::Store {
+                        place: place.clone().project(projection),
+                        value,
+                        span,
+                    });
+                }
+                self.define(ty, Rvalue::Load(place), span)
+            }
             // The hidden parameter's value: a `*Context` (ADR-0057 §2). Sema refused `context` in a
             // `#c_call` procedure (E0254), so `None` here would mean sema and lowering disagree —
             // `give_up` says so rather than emitting a placeholder, which is ADR-0017 §4's rule and
@@ -4386,7 +4429,7 @@ impl Lower<'_> {
         match self.body.expr(expr).clone() {
             // **An array literal has no place**, matching sema's `is_place`: the slot MIR materialises to
             // build one is an implementation detail, not storage a program can name (ADR-0194 §3).
-            Expr::ArrayLit { .. } => None,
+            Expr::ArrayLit { .. } | Expr::StructLit { .. } => None,
             // **`context` has no place of its own** — it is the pointer *value*. `context.allocator`
             // reaches storage through `field_place`, which dereferences a pointer receiver exactly as
             // `p.x` does (ADR-0057 §2), so the field is assignable and `context` itself is not.

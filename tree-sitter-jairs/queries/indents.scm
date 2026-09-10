@@ -7,6 +7,7 @@
   (field_list)
   (param_list)
   (arg_list)
+  (struct_literal)
 ] @indent.begin
 
 ; A closer ends the indentation range opened by its containing node.
@@ -21,6 +22,9 @@
 
 (arg_list
   ")" @indent.end)
+
+(struct_literal
+  "}" @indent.end)
 
 ; Reindent a line that begins with a closer before inserting it.
 [

@@ -15,6 +15,7 @@
   (field_list)
   (param_list)
   (arg_list)
+  (struct_literal)
 ] @indent
 
 ; The closing token ends the range, rather than each closer dedenting on its own.

@@ -1,0 +1,39 @@
+// EXPECT: E0300 E0300 E0300 E0300 E0300 E0218 E0214 E0300 E0218
+// Struct literals require a record context and keep their structural boundaries explicit
+// (ADR-0239).
+
+Pair :: struct {
+  left: s64;
+  right: s64;
+}
+
+Base :: struct {
+  value: s64;
+}
+
+Embedded :: struct {
+  using base: Base;
+}
+
+Choice :: union {
+  number: s64;
+  flag: bool;
+}
+
+main :: () {
+  no_context := .{left = 1};
+  scalar: s64 = .{1};
+  mixed := Pair.{left = 1, 2};
+  duplicate := Pair.{left = 1, left = 2};
+  excess := Pair.{1, 2, 3};
+  unknown := Pair.{missing = 1};
+  wrong := Pair.{left = true};
+  union_value := Choice.{number = 1};
+  promoted := Embedded.{value = 1};
+
+  no_context = mixed;
+  scalar = excess.left;
+  duplicate = unknown;
+  wrong = Pair.{};
+  union_value.number = promoted.base.value;
+}

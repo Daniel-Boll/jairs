@@ -385,6 +385,11 @@ fn imports_invalid_corpus_fails() {
         // `#char` is lowered before type checking: empty, multi-character and non-ASCII operands
         // are E0296 rather than a type error, so this belongs in the lowering-stage corpus.
         "imports/invalid/023-char-requires-one-ascii-byte.jr",
+        // **A struct literal at file scope** (ADR-0239 §5), beside the array-literal precedent
+        // rather than in `type-errors/`: E0230 belongs to `jr-db` const evaluation, which the
+        // sema-only corpus cannot observe. A procedure called by `#run` constructs and returns the
+        // same value in `valid/170`.
+        "imports/invalid/024-file-scope-struct-literal.jr",
     ] {
         let code = check_with_modules(vec![corpus_path(file)], Some("modules"));
         assert_eq!(code, 1, "{file} must report an error");

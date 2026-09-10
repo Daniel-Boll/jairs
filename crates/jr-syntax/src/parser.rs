@@ -29,7 +29,7 @@ use rowan::{Checkpoint, GreenNode, GreenNodeBuilder};
 use crate::code::{
     E0100, E0101, E0102, E0103, E0104, E0105, E0106, E0107, E0108, E0109, E0110, E0111, E0112,
     E0113, E0114, E0115, E0116, E0117, E0118, E0119, E0121, E0123, E0124, E0125, E0126, E0127,
-    E0128, E0129, E0130, E0131, E0132, E0133, E0134, E0135, E0199,
+    E0128, E0129, E0130, E0131, E0132, E0133, E0134, E0135, E0136, E0199,
 };
 use crate::kind::{SyntaxKind, SyntaxKind::*, SyntaxNode};
 use crate::lexer::{Token, lex};
@@ -2653,6 +2653,16 @@ impl<'src> Parser<'src> {
 
             match self.current() {
                 DOT => {
+                    // `T.{...}` is the explicitly typed half of ADR-0239's struct literal syntax.
+                    // It must win before field access for the same reason `T.[...]` does: `{` can
+                    // never begin a field name, so one token of lookahead decides the construct.
+                    if self.nth(1) == L_BRACE {
+                        self.start_node_at(cp, STRUCT_LITERAL);
+                        self.bump(); // `.`
+                        self.parse_struct_literal_entries();
+                        self.finish_node();
+                        continue;
+                    }
                     // **`T.[a, b, c]` is an array literal** (ADR-0194 §1), not a field access. One token of
                     // lookahead past the `.` decides it, and that is enough: a field name is always an
                     // `IDENT` and can never be a `[`.
@@ -2890,16 +2900,24 @@ impl<'src> Parser<'src> {
                 }
                 self.finish_node();
             }
-            // `.RED` (ADR-0046 §3). Reached only here, in *prefix* position: the postfix chain
-            // handles a `.` that follows an expression, so the two cannot be confused.
+            // `.RED` (ADR-0046 §3) or the inferred `.{...}` struct literal (ADR-0239 §1).
+            // Reached only here, in *prefix* position: the postfix chain handles a `.` that follows
+            // an expression. `{` and an identifier distinguish the two forms with one lookahead.
             DOT => {
-                self.start_node(MEMBER_EXPR);
-                self.bump(); // `.`
-                if !self.eat(IDENT) {
-                    let span = self.current_span();
-                    self.error(span, "expected a member name after `.`", E0117);
+                if self.nth(1) == L_BRACE {
+                    self.start_node(STRUCT_LITERAL);
+                    self.bump(); // `.`
+                    self.parse_struct_literal_entries();
+                    self.finish_node();
+                } else {
+                    self.start_node(MEMBER_EXPR);
+                    self.bump(); // `.`
+                    if !self.eat(IDENT) {
+                        let span = self.current_span();
+                        self.error(span, "expected a member name after `.`", E0117);
+                    }
+                    self.finish_node();
                 }
-                self.finish_node();
             }
             // `enum` is real syntax as of ADR-0041, but it is a *type* — so in expression
             // position it is still an error, and the message must say which kind. Leaving it
@@ -2959,6 +2977,71 @@ impl<'src> Parser<'src> {
                 self.finish_node();
             }
         }
+    }
+
+    /// Parses the `{...}` portion of a typed or inferred struct literal (ADR-0239).
+    ///
+    /// Entry nodes are retained even when a named entry is missing its value, so the CST remains a
+    /// faithful account of what was written and HIR can insert its ordinary error placeholder.
+    /// Recovery after a missing comma deliberately leaves an expression-start token untouched:
+    /// `.{x = 1 y = 2}` then reports E0136 once and still produces both entries.
+    fn parse_struct_literal_entries(&mut self) {
+        self.bump(); // `{`; callers enter only after seeing DOT + L_BRACE
+
+        while !self.at(R_BRACE) && !self.at(EOF) {
+            if self.at(COMMA) {
+                let span = self.current_span();
+                self.error(span, "expected a struct literal entry before `,`", E0136);
+                self.bump();
+                continue;
+            }
+
+            self.start_node(STRUCT_LITERAL_ENTRY);
+            if self.at(IDENT) && self.nth(1) == EQ {
+                self.bump(); // field name
+                self.bump(); // `=`
+                if self.at_set(EXPR_START) {
+                    self.parse_expr();
+                } else {
+                    let span = self.current_span();
+                    self.error(
+                        span,
+                        "expected a value after `=` in a struct literal entry",
+                        E0136,
+                    );
+                }
+            } else if self.at_set(EXPR_START) {
+                self.parse_expr();
+            } else {
+                let span = self.current_span();
+                self.error(span, "expected a struct literal entry", E0136);
+                self.start_node(ERROR);
+                self.bump();
+                self.finish_node();
+            }
+            self.finish_node();
+
+            if self.at(R_BRACE) || self.at(EOF) {
+                break;
+            }
+            if self.eat(COMMA) {
+                continue;
+            }
+
+            let span = self.current_span();
+            self.error(
+                span,
+                "expected `,` or `}` after a struct literal entry",
+                E0136,
+            );
+            if !self.at_set(EXPR_START) {
+                self.start_node(ERROR);
+                self.bump();
+                self.finish_node();
+            }
+        }
+
+        self.expect(R_BRACE);
     }
 
     /// Parses one argument, which may be `name = value` (ADR-0053 §1).
