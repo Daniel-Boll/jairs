@@ -57,7 +57,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0226.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0230.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -95,6 +95,26 @@ source-located check. A failed assertion reports one byte-identical reason, call
 backtrace in the VM, Cranelift and LLVM, while a true assertion is inert. The intrinsic may be
 shadowed by an ordinary declaration; a reached compile-time failure reports E0230.
 
+Procedure result positions may now carry declaration-only labels:
+`-> (value: s64, found: bool)`. Labels are preserved by formatting, Tree-sitter and LSP signatures,
+but remain positional metadata: they create no body locals, do not change procedure type identity,
+and do not alter call or return semantics. Duplicate labels are E0298. Jai's broader
+unparenthesized/defaulted named-return forms remain explicit compatibility gaps.
+
+`New(T)` now allocates one zero-initialized `T` through the active context allocator and returns
+`*T`. It preserves a null allocator result, works inside same-file polymorphic procedures, and
+supports representation-indirect recursive shapes such as a `Node` containing `[..]*Node`.
+Release remains explicit through the matching context allocator. The allocator protocol carries
+only a byte count, so `New` refuses types requiring alignment above its 16-byte guarantee.
+
+Polymorphic calls now infer variables through parameterised nominal types:
+`*Table($K, $V)` matched with `*Table(string, s64)` binds both variables from the struct instance's
+type arguments. Matching uses the constructor's declaration identity, not its name or field layout,
+and the constructor may itself be imported. A pure `$T` procedure declared in another module is
+now specialised in that declaration file through one root-program fixed point, including nested
+owner-to-owner demands; run, build, optimisation and diagnostics consume the same clone plan.
+Imported `$N`/mixed templates remain E0268, and imported polymorphic `#expand` remains E0272.
+
 Every fresh Jairs context now has a working allocator/free pair in the VM, Cranelift and LLVM;
 assigning a custom pair and copying one through `push_context` remain unchanged. Whole-file
 read/write/append operations live in `File`, and every successful read — including an empty file —
@@ -113,8 +133,8 @@ parsers. `parse_int(*string)` consumes the parsed prefix. Exact byte/string over
 wait for general procedure overloading rather than being approximated with more ad-hoc names.
 
 Compatibility claims now have an executable baseline rather than only a prose matrix. One strict
-manifest covers all **35 example-bearing guide groups**, and each entry runs a repository-owned
-probe in an isolated directory. Six selected examples are source-compatible at the pinned guide
+manifest covers all **35 example-bearing guide groups** with **37** repository-owned probes,
+including second probes for chapter 11's `New(int)` and chapter 17's result labels. Six selected examples are source-compatible at the pinned guide
 revision; the others pin a working port, an exact blocker, or an intentional divergence. Ordinary
 tests never read the submodule. The guide has 42 numbered groups and 315 examples, so the baseline
 deliberately makes no percentage claim; the full assessment and dependency-ordered plan live in
@@ -184,9 +204,9 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1362** workspace tests (**1375** under gate 7), with all six ordinary gates and gate 7 green
-  for ADR-0226.
-- **294** `.jr` corpus files, **226** accepted ADRs, **25** standard library
+- **1382** workspace tests (**1395** under gate 7), with all six ordinary gates and gate 7 green
+  for ADR-0230.
+- **302** `.jr` corpus files, **230** accepted ADRs, **25** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative
@@ -302,7 +322,7 @@ before: two gates run at once and race a shared binary.
 - **[`docs/jai-game-development-audit.md`](docs/jai-game-development-audit.md)** —
   the primary-source games audit, language/library gaps, and the staged `Game`
   facade plan whose foundation is now implemented.
-- **[`docs/adr/README.md`](docs/adr/README.md)** — all 226 accepted decision
+- **[`docs/adr/README.md`](docs/adr/README.md)** — all 230 accepted decision
   records.
 - **[`docs/spec/`](docs/spec/)** — the language specification chapters.
 - **[`examples/`](examples/)** — runnable programs, each verified.

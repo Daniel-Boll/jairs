@@ -1,0 +1,10 @@
+// The first owner in `imports/valid/023-cross-owner-generic-fixed-point.jr`.
+//
+// Instantiating `outer(s64)` reveals a call to an imported template. The root-scoped specialization pass must
+// therefore continue to a fixed point and materialize `Generic_Fixed_Inner.inner(s64)` in its own owner file.
+
+#import "Generic_Fixed_Inner";
+
+outer :: (value: $T) -> T {
+  return inner(value);
+}

@@ -552,11 +552,11 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> Con
     // returning here left its call unfolded — which `scan` then refused as "a name failed to resolve",
     // the callee naming no procedure. Found by running the feature's own probe.
     //
-    // **Third time.** The comment above records this trap being hit once before; ADR-0176 §6 records it
-    // being hit again, by the atomics, in exactly the same way and found by exactly the same probe. This
-    // condition is a *list of features*, every new one must be added to it, and **nothing enforces that** —
-    // so the failure is always "a name failed to resolve" on a program that is obviously fine, and the
-    // author always looks at the new feature's own code first.
+    // **Again.** The comment above records this trap being hit once before; ADR-0176 §6 records it
+    // being hit again by atomics, and ADR-0228 by `New`, in exactly the same way and found by exactly the
+    // same probe. This condition is a *list of features*, every new one must be added to it, and **nothing
+    // enforces that** — so the failure is always "a name failed to resolve" on a program that is obviously
+    // fine, and the author always looks at the new feature's own code first.
     if targets.is_empty()
         && checked_file.type_info_calls.is_empty()
         && checked_file.folded_calls.is_empty()
@@ -568,6 +568,7 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> Con
         && signatures.folded_calls.is_empty()
         && checked_file.any_calls.is_empty()
         && checked_file.pointer_views.is_empty()
+        && checked_file.allocations.is_empty()
         && checked_file.atomics.is_empty()
         && checked_file.assertions.is_empty()
     {
@@ -1005,6 +1006,11 @@ pub(crate) fn record_checked_folds(
     // thread.
     for ((scope, expr), ty) in checked_file.pointer_views.iter() {
         values.set_pointer_view(*scope, *expr, *ty);
+    }
+    // `New(T)` is real code like a pointer view, but it also needs the byte count sema obtained
+    // from layout. Copy both facts rather than asking MIR to recompute either (ADR-0228).
+    for ((scope, expr), (pointer, bytes)) in checked_file.allocations.iter() {
+        values.set_allocation(*scope, *expr, *pointer, *bytes);
     }
     // **A variadic call's packing, which `optimized_file_mir` copied and this did not** (ADR-0196 §6).
     // Sema decided how many arguments are fixed and what the trailing element type is; without it MIR

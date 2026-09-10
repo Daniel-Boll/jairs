@@ -255,6 +255,24 @@ fn a_procedure_returning_nothing_shows_no_arrow() {
 }
 
 #[test]
+fn a_single_named_result_survives_type_normalisation_in_hover() {
+    let source = "expect_char :: (s: *string, c: u8) -> (exists: bool) {\n    return c == 0;\n}\n\nmain :: () {\n    ok := expect_char(*\"\", 0);\n}\n";
+    let (db, search, file) = program(source);
+    let found = hover(
+        &db,
+        file,
+        search,
+        Encoding::Utf8,
+        at(source, "expect_char(*"),
+    )
+    .expect("the procedure call resolves");
+    assert_eq!(
+        hover_text(&found.contents),
+        "```jr\nmain\nexpect_char :: (s: *string, c: u8) -> (exists: bool)\n```"
+    );
+}
+
+#[test]
 fn hovering_an_undocumented_procedure_omits_the_rule() {
     let source =
         "add :: (a: s64) -> s64 {\n    return a;\n}\n\nmain :: () {\n    n := add(1);\n}\n";
@@ -2416,7 +2434,7 @@ fn semantic_tokens_distinguish_the_identifiers_a_grammar_cannot() {
 Colour :: enum {
     RED;
 }
-scale :: (factor: s64) -> s64 {
+scale :: (factor: s64) -> (scaled: s64) {
     total := factor;
     p: Point;
     total = total + p.x;
@@ -2447,6 +2465,11 @@ scale :: (factor: s64) -> s64 {
         kind_at(source, "factor: s64"),
         Some((String::from("parameter"), 1)),
         "a parameter is declared but not readonly"
+    );
+    assert_eq!(
+        kind_at(source, "scaled: s64"),
+        Some((String::from("parameter"), 1)),
+        "a result label is signature metadata classified as a parameter declaration"
     );
     assert_eq!(
         kind_at(source, "total := factor"),

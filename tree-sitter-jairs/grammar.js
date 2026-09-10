@@ -67,7 +67,9 @@ module.exports = grammar({
     // declared conflict lets GLR carry both and settle it; a `prec` would silently pick one, which
     // is the trap `loop_label` and `scope_decl` each walked into. The compiler's parser resolves it
     // the same way it always did — `ret_type` looks for the arrow after the `)`.
-    [$.result_list, $.proc_type_params],
+    // ADR-0227 wrapped each result position in `result`, so the conflict belongs at that new
+    // boundary: after the first type, a comma can continue either a results list or proc parameters.
+    [$.result, $.proc_type_params],
     // `f :: () -> (s64) #c_call` — does the directive belong to the returned *procedure type* or to `f`'s
     // own declaration? A genuine ambiguity, not a look-ahead question, and the compiler's own parser
     // resolves it **greedily in favour of the type**: `parse_proc_type` consumes the directive before
@@ -310,10 +312,17 @@ module.exports = grammar({
     ret_type: ($) =>
       seq("->", field("type", choice($.result_list, $._type))),
 
-    // `(T, U, …)` after `->` (ADR-0052 §1). A one-element list interns to the element itself, so
-    // `-> (T)` and `-> T` are the same type — normalised in `jr-pool`, not refused here.
+    // `(T, name: U, …)` after `->` (ADR-0052 §1, ADR-0227). A one-element list interns to the
+    // element itself, so `-> (T)` and `-> T` are the same type — labels stay declaration metadata
+    // rather than entering that identity.
     result_list: ($) =>
-      seq("(", $._type, repeat(seq(",", $._type)), ")"),
+      seq("(", $.result, repeat(seq(",", $.result)), ")"),
+
+    result: ($) =>
+      seq(
+        optional(seq(field("name", $.identifier), ":")),
+        field("type", $._type),
+      ),
 
     // #foreign libc "write"
     foreign_attr: ($) =>

@@ -1098,6 +1098,11 @@ pub struct Proc {
     pub notes: Vec<(Symbol, Option<String>)>,
     /// The return type, if present.
     pub ret: Option<TypeRefId>,
+    /// Optional declaration-only labels for a parenthesised result list (ADR-0227).
+    ///
+    /// Parallel to the written result positions. Empty for a bare `-> T`; a one-element
+    /// `-> (name: T)` keeps one entry even though its type normalises to `T`.
+    pub result_labels: Vec<Option<ResultLabel>>,
     /// The body, if this is not a foreign procedure.
     pub body: Option<BodyId>,
     /// Foreign binding info, if this is a `#foreign` procedure.
@@ -1113,6 +1118,18 @@ pub struct Proc {
     /// must be resolved against that arena, never against this one — indexing the
     /// wrong arena reads an unrelated node rather than failing.
     pub type_refs: Vec<TypeRef>,
+}
+
+/// A label attached to one positional result (ADR-0227).
+///
+/// It is declaration metadata, not a body binding. Keeping the span here lets the signature phase
+/// diagnose a duplicate at the second spelling without putting names into interned type identity.
+#[derive(Debug, Clone, Copy)]
+pub struct ResultLabel {
+    /// The label text.
+    pub name: Symbol,
+    /// The label token's source span.
+    pub span: Span,
 }
 
 /// A procedure parameter.

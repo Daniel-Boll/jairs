@@ -81,7 +81,7 @@ pub use inline::{
 };
 pub use inputs::{
     AnyLowering, ConstValues, FilledArg, FilledArgs, ImportedProc, ImportedProcs, ImportedValues,
-    OperatorCalls,
+    NewAllocation, OperatorCalls,
 };
 pub use mir::{
     AtomicOp, BinOp, BlockData, BlockId, Callee, Facts, FileMir, GlobalData, GlobalRef, MirBody,

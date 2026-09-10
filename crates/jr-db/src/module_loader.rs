@@ -587,6 +587,35 @@ pub fn frontend_diagnostics(
 /// Uses `no_eq` because [`Diagnostics`] is not `Eq`.
 #[salsa::tracked(returns(clone), no_eq)]
 pub fn file_diagnostics(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> Arc<Diagnostics> {
+    collect_file_diagnostics(db, file, catalog, crate::mir::file_mir(db, file, catalog))
+}
+
+/// Collects diagnostics for `file` using the specialisation plan of program `root` (ADR-0230 §3).
+///
+/// Imported template clones do not exist in [`file_mir`]'s compatibility view. Their check errors,
+/// E0280 convergence refusal and `#modify` failures therefore travel through this root-aware companion,
+/// which run/build/check use over the same reachable set they compile.
+#[salsa::tracked(returns(clone), no_eq)]
+pub fn file_diagnostics_for_root(
+    db: &dyn Db,
+    root: SourceFile,
+    file: SourceFile,
+    catalog: ModuleCatalog,
+) -> Arc<Diagnostics> {
+    collect_file_diagnostics(
+        db,
+        file,
+        catalog,
+        crate::mir::file_mir_for_root(db, root, file, catalog),
+    )
+}
+
+fn collect_file_diagnostics(
+    db: &dyn Db,
+    file: SourceFile,
+    catalog: ModuleCatalog,
+    mir: crate::mir::MirResult,
+) -> Arc<Diagnostics> {
     let mut all = Diagnostics::new();
     all.extend(frontend_diagnostics(db, file, catalog).iter().cloned());
 
@@ -603,7 +632,6 @@ pub fn file_diagnostics(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -
     let unused = crate::imports::unused_imports(db, file, catalog);
     all.extend(unused.diagnostics().into_vec());
 
-    let mir = crate::mir::file_mir(db, file, catalog);
     // Diagnostics only the **expanded** tree can produce (ADR-0073 §1): the unexpanded resolve withholds
     // unresolved-name errors in a body holding a pending computed `#insert`, because it cannot know what
     // the insert declares. Reported here rather than in `frontend_diagnostics` because expansion needs
@@ -612,7 +640,10 @@ pub fn file_diagnostics(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -
     // `main`", an internal-sounding message for an ordinary typo.
     all.extend(mir.expanded_diagnostics.iter().cloned());
     if !mir.gated {
-        let hir = file_hir(db, file);
+        // The same expanded HIR the MIR was lowered from. A root-scoped clone has no declaration in the
+        // base HIR, so pairing base HIR with expanded MIR would either skip its CFG diagnostic or index a
+        // different procedure.
+        let hir = mir.hir.clone();
         let interner = db.interner();
         let cfg = jr_mir::file_diagnostics(hir.as_ref(), mir.mir.as_ref(), interner);
         all.extend(cfg.into_vec());

@@ -126,6 +126,12 @@ pub(crate) struct Ctx<'a> {
     ///
     /// Empty in every test harness that checks a file alone, which is why every reader must tolerate a miss.
     pub(crate) imported_hirs: Vec<(FileId, &'a FileHir)>,
+    /// Complete owner environments for imported procedure templates.
+    ///
+    /// The ordinary import tables expose a template's resolved signature, but its parameter and return
+    /// `TypeRefId`s still index the owner's HIR. Pure-`$T` calls temporarily select one of these contexts
+    /// while inferring and concretizing the template.
+    pub(crate) imported_templates: Vec<crate::ImportedTemplateContext<'a>>,
     /// While resolving an **imported** parameterised struct's fields, that module's signatures (ADR-0117 §2).
     ///
     /// `None` in the ordinary case. Set for the duration of `resolve_instance_fields_in`, because a field naming
@@ -207,6 +213,8 @@ pub(crate) struct Ctx<'a> {
     /// depend on its pointee, so retyping is a store-then-load through a slot (the mechanism ADR-0076 §1
     /// already uses), and lowering needs to know the target type to make the slot.
     pub(crate) pointer_views: FxHashMap<(ExprScope, jr_hir::ExprId), PoolId>,
+    /// Each `New(T)` call as `(result pointer type, byte-count constant)` (ADR-0228).
+    pub(crate) allocations: FxHashMap<(ExprScope, jr_hir::ExprId), (PoolId, PoolId)>,
     /// Which atomic operation each `atomic_*` call performs, as an `AtomicOp` code (ADR-0176 §3).
     pub(crate) atomics: FxHashMap<(ExprScope, jr_hir::ExprId), u8>,
     /// Each compiler-recognised `assert` call and its optional decoded static message (ADR-0224 §2).
@@ -241,7 +249,7 @@ pub(crate) struct Ctx<'a> {
     /// expression's `(scope, id)`, so the pass can rewrite that exact call to target the instantiated
     /// procedure. Empty for a file with no polymorphic calls, which is every ordinary program.
     pub(crate) instantiations:
-        FxHashMap<(ExprScope, jr_hir::ExprId), (jr_hir::ProcId, Vec<PoolId>)>,
+        FxHashMap<(ExprScope, jr_hir::ExprId), (crate::TemplateRef, Vec<PoolId>)>,
     /// Each **comptime-value** call and the argument expressions its `$N` parameters need
     /// (ADR-0088 §1): `(proc, [arg ExprId per comptime parameter])`.
     ///
@@ -310,6 +318,7 @@ impl<'a> Ctx<'a> {
         pool: &'a mut Pool,
         imports: Vec<(&'a str, &'a FileSignatures)>,
         imported_hirs: Vec<(FileId, &'a FileHir)>,
+        imported_templates: Vec<crate::ImportedTemplateContext<'a>>,
         mode: Mode,
     ) -> Self {
         Self {
@@ -327,6 +336,7 @@ impl<'a> Ctx<'a> {
             type_info_calls: FxHashMap::default(),
             folded_calls: FxHashMap::default(),
             pointer_views: FxHashMap::default(),
+            allocations: FxHashMap::default(),
             atomics: FxHashMap::default(),
             assertions: FxHashMap::default(),
             folded_call_spans: FxHashMap::default(),
@@ -347,6 +357,7 @@ impl<'a> Ctx<'a> {
             pool,
             imports,
             imported_hirs,
+            imported_templates,
             resolving_in_module: None,
             sigs: FileSignatures::new(),
             mode,
@@ -819,7 +830,7 @@ impl<'a> Ctx<'a> {
     ///
     /// This file is searched **first**, which is ADR-0014 §3's resolution order unchanged: a local declaration
     /// shadows an imported one of the same name, and this must not be the one place that differs.
-    fn parameterised_struct_anywhere(
+    pub(crate) fn parameterised_struct_anywhere(
         &self,
         name: Symbol,
     ) -> Option<(FileId, &'a FileHir, StructId, Vec<Symbol>)> {
@@ -896,11 +907,11 @@ impl<'a> Ctx<'a> {
     /// the **importer** has bound, resolved to the importer's type; `set_instance_fields` then cached it for
     /// every later user of that instance. Silent wrong type and wrong layout, with no diagnostic.
     ///
-    /// The audit at `354d900` found this **latent rather than live** (`docs/assessment-2026-08-07.md` §4): the
-    /// only way to make an instance resolve while a foreign binding is in scope is to give it a type argument
-    /// that depends on one, and `Box(T)` for a bound `T` is E0212 — inference through a parameterised struct is
-    /// deferred (ADR-0085 §5). So the invariant held by accident of an unrelated refusal, and would have broken
-    /// the day that refusal lifted. It is cheaper to make it structural now than to rediscover it then.
+    /// The audit at `354d900` found this **latent rather than live** (`docs/assessment-2026-08-07.md` §4):
+    /// at the time, inference through a parameterised struct was still refused. ADR-0229 has now lifted that
+    /// refusal, so this narrowing is exercised by ordinary `Box(T)`/`Table(K, V)` inference rather than merely
+    /// guarding a future feature. Making the invariant structural before that lift is what kept it from
+    /// becoming a silent wrong type and layout now.
     fn resolve_instance_fields_in(
         &mut self,
         hir: &'a FileHir,

@@ -1,0 +1,8 @@
+// EXPECT: E0298 — result labels describe distinct positional results (ADR-0227).
+
+duplicate :: () -> (value: s64, value: bool) {
+  todo;
+}
+
+main :: () {
+}

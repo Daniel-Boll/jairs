@@ -63,8 +63,8 @@ pub mod resolve;
 pub use hir::{
     AssignOp, BinOp, Body, BodyId, ConstValue, ERROR_NAME, Enum, EnumId, EnumMember, Expr, ExprId,
     Field, FieldId, FileHir, ForIterable, ForeignInfo, InsertOperands, Item, ItemId, ItemKind,
-    ItemScope, Literal, Local, LocalId, Param, ParamId, Proc, ProcId, Res, Stmt, StmtId, Struct,
-    StructId, SwitchArm, TypeRef, TypeRefId, UnOp,
+    ItemScope, Literal, Local, LocalId, Param, ParamId, Proc, ProcId, Res, ResultLabel, Stmt,
+    StmtId, Struct, StructId, SwitchArm, TypeRef, TypeRefId, UnOp,
 };
 pub use instantiate::{Instantiation, InstantiationSite, expand_instantiations};
 pub use lower::{lower_file, lower_file_with_inserts};

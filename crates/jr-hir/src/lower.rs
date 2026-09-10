@@ -32,8 +32,8 @@ use jr_syntax::{
 use crate::hir::{
     AggregateKind, AssignOp, BinOp, Body, BodyId, ConstValue, Enum, EnumId, EnumMember, Expr,
     ExprId, Field, FileHir, ForIterable, ForeignInfo, InsertOperands, Item, ItemId, ItemKind,
-    ItemScope, Literal, Local, LocalId, Param, ParamId, Proc, ProcId, Res, Stmt, StmtId, Struct,
-    StructId, TypeRef, TypeRefId, UnOp,
+    ItemScope, Literal, Local, LocalId, Param, ParamId, Proc, ProcId, Res, ResultLabel, Stmt,
+    StmtId, Struct, StructId, TypeRef, TypeRefId, UnOp,
 };
 
 // ---------------------------------------------------------------------------
@@ -632,21 +632,28 @@ impl<'a> LowerCtx<'a> {
         // Return type. A `RESULT_LIST` is *not* a type node, so `rt.ty()` does not find one — the
         // list is checked for first (ADR-0052 §1), which is also what keeps `(s64, bool)` from
         // becoming a spellable type anywhere `TypeExpr` is accepted.
-        let ret = ast_proc.ret_type().and_then(|rt| {
-            let node = rt.syntax();
-            if let Some(list) = node
-                .children()
-                .find(|n| n.kind() == jr_syntax::SyntaxKind::RESULT_LIST)
-            {
-                let elems: Vec<TypeRefId> = list
-                    .children()
-                    .filter_map(jr_syntax::ast::TypeExpr::cast)
-                    .map(|t| self.lower_type_expr_top(&t))
-                    .collect();
-                return Some(self.alloc_top_type_ref(TypeRef::Results(elems)));
+        let (ret, result_labels) = if let Some(rt) = ast_proc.ret_type() {
+            if let Some(list) = rt.result_list() {
+                let mut elems = Vec::new();
+                let mut labels = Vec::new();
+                for result in list.results() {
+                    let Some(ty) = result.ty() else { continue };
+                    labels.push(result.name_token().map(|token| ResultLabel {
+                        name: self.intern(token.text()),
+                        span: self.span_of_token(&token),
+                    }));
+                    elems.push(self.lower_type_expr_top(&ty));
+                }
+                (
+                    Some(self.alloc_top_type_ref(TypeRef::Results(elems))),
+                    labels,
+                )
+            } else {
+                (rt.ty().map(|t| self.lower_type_expr_top(&t)), Vec::new())
             }
-            rt.ty().map(|t| self.lower_type_expr_top(&t))
-        });
+        } else {
+            (None, Vec::new())
+        };
 
         // `$$T` in return position is refused rather than lowered (ADR-0168 §1). Checked here, after the
         // return type is built, so a `(s64, $$T)` result list is caught too — the walk is over every
@@ -654,14 +661,8 @@ impl<'a> LowerCtx<'a> {
         //
         // A `$$T` *parameter* is legal and common; this is only about the return.
         if let Some(rt) = ast_proc.ret_type() {
-            let node = rt.syntax();
-            let written: Vec<jr_syntax::ast::TypeExpr> = if let Some(list) = node
-                .children()
-                .find(|n| n.kind() == jr_syntax::SyntaxKind::RESULT_LIST)
-            {
-                list.children()
-                    .filter_map(jr_syntax::ast::TypeExpr::cast)
-                    .collect()
+            let written: Vec<jr_syntax::ast::TypeExpr> = if let Some(list) = rt.result_list() {
+                list.results().filter_map(|result| result.ty()).collect()
             } else {
                 rt.ty().into_iter().collect()
             };
@@ -724,6 +725,7 @@ impl<'a> LowerCtx<'a> {
                 modify: None,
                 notes: Vec::new(),
                 ret: Some(ret_id),
+                result_labels: Vec::new(),
                 body: Some(body_id),
                 foreign: None,
                 span: pred_span,
@@ -795,6 +797,7 @@ impl<'a> LowerCtx<'a> {
                 })
                 .collect(),
             ret,
+            result_labels,
             body,
             foreign,
             span,
@@ -1439,6 +1442,7 @@ impl<'a> LowerCtx<'a> {
             // A baked clone keeps its original's notes: it *is* that procedure, specialised.
             notes: template.notes.clone(),
             ret: template.ret,
+            result_labels: template.result_labels.clone(),
             body,
             foreign: template.foreign.clone(),
             span: template.span,

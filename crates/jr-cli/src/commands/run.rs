@@ -26,7 +26,7 @@
 
 use anyhow::Result;
 use jr_base::SourceMap;
-use jr_db::{Db as _, JairsDatabase, RunOutcome, file_diagnostics, run_main};
+use jr_db::{Db as _, JairsDatabase, RunOutcome, file_diagnostics_for_root, run_main};
 use jr_diag::Severity;
 
 use crate::cli::{GlobalArgs, RunArgs};
@@ -83,7 +83,11 @@ pub fn run(args: RunArgs, global: &GlobalArgs) -> Result<i32> {
     // with what is about to be compiled.
     let mut diags = jr_diag::Diagnostics::new();
     for file in jr_db::reachable_files(&db, root, search) {
-        diags.extend(file_diagnostics(&db, file, search).iter().cloned());
+        diags.extend(
+            file_diagnostics_for_root(&db, root, file, search)
+                .iter()
+                .cloned(),
+        );
     }
     let errors = diags
         .iter()

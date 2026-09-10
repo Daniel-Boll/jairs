@@ -1,0 +1,17 @@
+// ADR-0229 — an imported parameterised struct may be the inference pattern of a local procedure.
+//
+// This is deliberately the other half from cross-file procedure specialization: `read` is local,
+// while the `Box` constructor whose nominal identity it matches belongs to `Generic_Structs`.
+
+#import "Generic_Structs";
+
+read :: (box: *Box($T)) -> T {
+  return box.value;
+}
+
+main :: () {
+  box: Box(s64);
+  box.value = 42;
+  value := read(*box);
+  next := value + 1;
+}

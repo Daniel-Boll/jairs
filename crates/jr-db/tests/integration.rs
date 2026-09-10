@@ -20,9 +20,10 @@ use std::{
 };
 
 use jr_db::{
-    Db as _, InMemoryModules, JairsDatabase, ModuleCatalog, SourceFile, checked, file_consts,
-    file_diagnostics, file_exports, file_hir, file_signatures, imports_of, module_file,
-    parse_diagnostics, parse_file, resolved,
+    Db as _, InMemoryModules, JairsDatabase, ModuleCatalog, OptLevel, RunOutcome, SourceFile,
+    checked, file_consts, file_diagnostics, file_diagnostics_for_root, file_exports, file_hir,
+    file_mir_for_root, file_signatures, imports_of, module_file, parse_diagnostics, parse_file,
+    resolved, run_main,
 };
 use jr_project::{
     ModuleCatalog as ProjectModuleCatalog, ModuleEntry as ProjectModuleEntry, ModuleOrigin,
@@ -606,6 +607,91 @@ fn load_with_modules(db: &mut JairsDatabase, path: &str, text: &str) -> SourceFi
     let sf = add_file(db, path, text);
     db.load_modules_transitively(sf);
     sf
+}
+
+#[test]
+fn cross_file_specialisation_reaches_each_owner_once_and_runs() {
+    let mut modules = InMemoryModules::new();
+    modules.add(
+        PathBuf::from("/modules/Inner.jr"),
+        "inner :: (value: $T) -> T { return value; }\n",
+    );
+    modules.add(
+        PathBuf::from("/modules/Outer.jr"),
+        "#import \"Inner\";\nouter :: (value: $T) -> T { return inner(value); }\n",
+    );
+
+    let mut db = JairsDatabase::with_in_memory_modules(modules);
+    let catalog = db.set_module_search_paths(vec![PathBuf::from("/modules")]);
+    let root = load_with_modules(
+        &mut db,
+        "main.jr",
+        "#import \"Outer\";\n\
+         choose :: (value: $T, baked: $$U) -> T { return value; }\n\
+         main :: () {\n\
+           assert(outer(42) == 42);\n\
+           assert(outer(43) == 43);\n\
+           assert(choose(7, true) == 7);\n\
+         }\n",
+    );
+    let config = db.set_build_config(true, OptLevel::Standard);
+
+    assert_eq!(
+        run_main(&db, root, catalog, config),
+        Ok(RunOutcome::Completed)
+    );
+
+    let outer = db
+        .source_file("/modules/Outer.jr")
+        .expect("transitive loading must register Outer");
+    let inner = db
+        .source_file("/modules/Inner.jr")
+        .expect("transitive loading must register Inner");
+    assert_eq!(
+        file_mir_for_root(&db, root, outer, catalog).hir.procs.len(),
+        2,
+        "two same-type callers must share Outer.outer(s64)"
+    );
+    assert_eq!(
+        file_mir_for_root(&db, root, inner, catalog).hir.procs.len(),
+        2,
+        "the concrete Outer clone must demand exactly one Inner.inner(s64)"
+    );
+}
+
+#[test]
+fn root_diagnostics_include_errors_from_imported_template_clones() {
+    let mut modules = InMemoryModules::new();
+    modules.add(
+        PathBuf::from("/modules/Owner.jr"),
+        "bad :: (value: $T) -> T { return value.missing; }\n",
+    );
+
+    let mut db = JairsDatabase::with_in_memory_modules(modules);
+    let catalog = db.set_module_search_paths(vec![PathBuf::from("/modules")]);
+    let root = load_with_modules(
+        &mut db,
+        "main.jr",
+        "#import \"Owner\";\nmain :: () { value := bad(42); }\n",
+    );
+    let owner = db
+        .source_file("/modules/Owner.jr")
+        .expect("transitive loading must register Owner");
+
+    assert!(
+        !file_diagnostics(&db, owner, catalog).has_errors(),
+        "the unbound template is intentionally withheld until a concrete clone exists"
+    );
+    let diagnostics = file_diagnostics_for_root(&db, root, owner, catalog);
+    let concrete = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == Some("E0218"))
+        .expect("the s64 clone must reject field access");
+    assert_eq!(
+        concrete.backtrace.len(),
+        1,
+        "the clone error must point back to the importing call"
+    );
 }
 
 // ---------------------------------------------------------------------------

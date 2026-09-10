@@ -549,6 +549,12 @@ pub enum SyntaxKind {
     /// things that happen to share brackets — and a consumer finding a `RESULT_LIST` by kind
     /// knows it has several types without inspecting what is inside.
     RESULT_LIST,
+    /// One position in a parenthesised result list: `exists: bool` or an unnamed `bool`
+    /// (ADR-0227).
+    ///
+    /// A separate node rather than a flat optional identifier beside a type, so tooling can
+    /// distinguish the declaration-only label from a type name without relying on token position.
+    RESULT_PARAM,
     /// A destructuring target list: the `q, ok` of `q, ok := f();` (ADR-0052 §2).
     ///
     /// Holds a `NAME` per target, and an `UNDERSCORE` token for each discarded position — which is

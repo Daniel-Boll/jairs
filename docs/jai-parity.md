@@ -166,7 +166,7 @@ should start from this rather than rediscover it.
 ## 4. `jai_parser` is worth mining, not porting
 
 Its `tests/` directory is 40+ files of real Jai syntax corner cases — here-strings, `ifx`, dotless
-struct literals, inline assembly, named returns, `#exists`, import-with-arguments, discard,
+struct literals, inline assembly, broader defaulted/implicit named-return semantics, `#exists`, import-with-arguments, discard,
 comma-separated declarations. **That is a ready-made checklist for the next syntax audit.** Several are
 deliberately *invalid* Jai (`tests/dot.jai:17`, `tests/hang.jai`), so treat a construct that appears
 only under `tests/` as "the grammar admits it", not "real programs need it".

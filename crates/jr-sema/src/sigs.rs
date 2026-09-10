@@ -153,6 +153,12 @@ pub struct ProcSig {
     /// The return type. [`PoolId::VOID`] when the source omitted the arrow —
     /// never `None`, per ADR-0015 §3.
     pub ret: PoolId,
+    /// Optional declaration-only labels for a parenthesised result list (ADR-0227).
+    ///
+    /// Parallel to the written result positions and empty for a bare `-> T`. These names are
+    /// deliberately absent from [`Item::ProcType`](jr_pool::Item::ProcType), so renaming one
+    /// cannot change type identity.
+    pub result_names: Vec<Option<jr_base::Symbol>>,
     /// The polymorphic type-variable names this signature introduces, in first-seen order (ADR-0081 §1).
     ///
     /// Empty for an ordinary procedure. Non-empty means the signature is a **template**: its `params`

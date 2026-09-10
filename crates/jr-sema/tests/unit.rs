@@ -22,6 +22,125 @@ fn todo_requires_no_expression_type_even_in_a_valued_procedure() {
 }
 
 #[test]
+fn named_result_labels_do_not_change_type_identity_or_create_bindings() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "labeled :: (n: s64) -> (value: s64) {\n\
+             value := n + 1;\n\
+             return value;\n\
+         }\n\
+         apply :: (f: (s64) -> s64, n: s64) -> s64 {\n\
+             return f(n);\n\
+         }\n\
+         main :: () -> s64 {\n\
+             return apply(labeled, 41);\n\
+         }\n",
+    );
+    analysis.assert_silent();
+}
+
+#[test]
+fn duplicate_named_result_labels_are_e0298() {
+    let mut program = Program::new();
+    let analysis =
+        program.analyse("duplicate :: () -> (value: s64, value: bool) {\n    todo;\n}\n");
+    assert_eq!(analysis.codes(), vec!["E0298"]);
+}
+
+#[test]
+fn new_accepts_a_recursive_struct_behind_pointer_and_dynamic_array_indirection() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "Table :: struct($K, $V) {\n\
+             count: s64;\n\
+         }\n\
+         Node :: struct {\n\
+             name: string;\n\
+             children: [..]*Node;\n\
+             properties: Table(string, string);\n\
+         }\n\
+         main :: () {\n\
+             node := New(Node);\n\
+             stack: [..]*Node;\n\
+             stack.count = 0;\n\
+             first: *Node = node;\n\
+         }\n",
+    );
+    analysis.assert_silent();
+}
+
+#[test]
+fn new_needs_a_type_argument() {
+    let mut program = Program::new();
+    let analysis = program.analyse("main :: () {\n    value := 1;\n    node := New(value);\n}\n");
+    assert_eq!(analysis.codes(), vec!["E0261"]);
+}
+
+#[test]
+fn new_needs_an_implicit_context() {
+    let mut program = Program::new();
+    let analysis = program.analyse("raw :: () #c_call {\n    node := New(s64);\n}\n");
+    assert_eq!(analysis.codes(), vec!["E0254"]);
+}
+
+#[test]
+fn new_refuses_alignment_the_allocator_protocol_cannot_request() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "Wide :: struct {\n\
+             value: s64 #align 32;\n\
+         }\n\
+         main :: () {\n\
+             value := New(Wide);\n\
+         }\n",
+    );
+    assert_eq!(analysis.codes(), vec!["E0266"]);
+}
+
+#[test]
+fn polymorphic_calls_infer_through_parameterised_nominal_types() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "Table :: struct($K, $V) {\n\
+             key: K;\n\
+             value: V;\n\
+         }\n\
+         measure :: (table: *Table($K, $V)) -> s64 {\n\
+             return size_of(K) * 10 + size_of(V);\n\
+         }\n\
+         main :: () -> s64 {\n\
+             table: Table(s64, u8);\n\
+             return measure(*table);\n\
+         }\n",
+    );
+    analysis.assert_silent();
+    let measure = analysis
+        .signatures
+        .lookup(program.interner.get("measure").unwrap())
+        .and_then(|entry| entry.proc)
+        .unwrap();
+    let (_, (template, key)) = analysis.instantiations.iter().next().unwrap();
+    assert_eq!(template.file, jr_base::FileId::from_usize(0));
+    assert_eq!(template.proc, measure);
+    assert_eq!(key, &[PoolId::S64, PoolId::U8]);
+}
+
+#[test]
+fn parameterised_inference_requires_the_same_nominal_declaration() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "Left :: struct($T) { value: T; }\n\
+         Right :: struct($T) { value: T; }\n\
+         read :: (value: *Left($T)) -> T { return value.value; }\n\
+         main :: () {\n\
+             right: Right(s64);\n\
+             n := read(*right);\n\
+         }\n",
+    );
+    assert_eq!(analysis.codes(), vec!["E0268"]);
+}
+
+#[test]
 fn an_integer_literal_takes_its_type_from_its_context() {
     // The rule that makes `valid/005-decl-typed.jr` legal in a subset with no
     // `cast`. If this regresses, that corpus file stops checking.

@@ -186,6 +186,8 @@ impl Program {
             &[],
             // No imported HIRs: an imported *parameterised* struct is out of this harness's scope (ADR-0117 §1).
             &[],
+            // No imported polymorphic template owners.
+            &[],
             &mut self.pool,
             &self.interner,
         );

@@ -149,6 +149,22 @@ stdout = "start\nbody\ninner\nlast\n"
 stderr = ""
 
 [[probe]]
+id = "11-new"
+chapter = "11"
+upstream_path = "examples/11/11.4_memory.jai"
+jairs_path = "probes/11/new.jr"
+status = "ported"
+classification = "runtime"
+reason = "The guide's New(int) spelling now works and yields zeroed allocator-owned storage; Jairs uses postfix dereference and explicit matching context release."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = "new:8\n"
+stderr = ""
+
+[[probe]]
 id = "12-pointer-to-struct"
 chapter = "12"
 upstream_path = "examples/12/12.5_pointer_to_struct.jai"
@@ -243,6 +259,22 @@ formatted = true
 exit = 1
 stdout = ""
 codes = ["E0200"]
+
+[[probe]]
+id = "17-named-result-labels"
+chapter = "17"
+upstream_path = "examples/17/17.5_multiple_return.jai"
+jairs_path = "probes/17/named-result-labels.jr"
+status = "ported"
+classification = "syntactic"
+reason = "Jairs preserves parenthesized declaration-only result labels; Jai's unparenthesized spelling, defaults, and implicit result bindings remain broader."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = ""
+stderr = ""
 
 [[probe]]
 id = "18-pointer-iteration"

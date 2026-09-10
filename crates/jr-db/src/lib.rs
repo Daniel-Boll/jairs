@@ -60,6 +60,7 @@ pub mod module_loader;
 mod queries;
 pub mod run;
 pub mod sema;
+mod specialization;
 pub mod workspace;
 
 // The salsa macro generates undocumented associated functions (new, field
@@ -165,8 +166,9 @@ pub use queries::{
 
 pub use module_loader::{
     InMemoryModules, IndexedModule, ModuleCatalog, ModuleCatalogEntry, ModuleIndex,
-    ModuleLookupResult, ModuleName, ResolveResult, file_diagnostics, file_exports, file_hir,
-    frontend_diagnostics, imports_of, module_file, module_index, module_name_of, resolved,
+    ModuleLookupResult, ModuleName, ResolveResult, file_diagnostics, file_diagnostics_for_root,
+    file_exports, file_hir, frontend_diagnostics, imports_of, module_file, module_index,
+    module_name_of, resolved,
 };
 
 pub use build::{
@@ -186,7 +188,8 @@ pub use docs::{FileDocs, file_docs};
 pub use imports::{UnusedImport, UnusedImports, unused_imports};
 pub use jr_mir::ConstValues;
 pub use mir::{
-    MirResult, dump_mir, dump_optimized_mir, file_mir, imported_procs, optimized_file_mir,
+    MirResult, dump_mir, dump_optimized_mir, file_mir, file_mir_for_root, imported_procs,
+    optimized_file_mir, optimized_file_mir_for_root,
 };
 pub use run::{RunOutcome, main_of, reachable_files, run_main, run_main_with_host};
 pub use workspace::{MAX_FILES, WorkspaceFileList, WorkspaceFiles, walk};

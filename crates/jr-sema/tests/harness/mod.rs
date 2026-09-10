@@ -14,7 +14,7 @@ use jr_base::{FileId, Interner};
 use jr_diag::Diagnostics;
 use jr_hir::{FileHir, ItemScope, ResolveMap};
 use jr_pool::{Pool, PoolId};
-use jr_sema::{FileSignatures, ImportedFile, TypeMap};
+use jr_sema::{FileSignatures, ImportedFile, ImportedTemplateContext, TemplateRef, TypeMap};
 use rustc_hash::FxHashMap;
 
 /// One analysed file: everything a test might want to assert about.
@@ -33,6 +33,10 @@ pub struct Analysis {
     pub earlier_diagnostics: Diagnostics,
     /// Compiler-recognised assertions, keyed by the call expression.
     pub assertions: FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), Option<String>>,
+    /// Direct modules used while resolving type annotations in this file.
+    pub type_name_imports: Vec<String>,
+    /// Polymorphic demands, including the declaration file of each template.
+    pub instantiations: FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), (TemplateRef, Vec<PoolId>)>,
 }
 
 impl Analysis {
@@ -97,6 +101,39 @@ impl Program {
         modules: &[(&str, FileId, &FileHir, &ResolveMap)],
         module_signatures: &[(&str, &FileSignatures)],
     ) -> Analysis {
+        let template_contexts: Vec<ImportedTemplateContext<'_>> = modules
+            .iter()
+            .filter_map(|(name, module_file, hir, _)| {
+                let (_, signatures) = module_signatures
+                    .iter()
+                    .find(|(module_name, _)| module_name == name)?;
+                Some(ImportedTemplateContext {
+                    file: *module_file,
+                    hir,
+                    signatures,
+                    imports: Vec::new(),
+                    imported_hirs: Vec::new(),
+                })
+            })
+            .collect();
+        self.analyse_with_import_contexts(
+            source,
+            file,
+            modules,
+            module_signatures,
+            &template_contexts,
+        )
+    }
+
+    /// Analyses a file with explicit declaration environments for imported templates.
+    pub fn analyse_with_import_contexts(
+        &mut self,
+        source: &str,
+        file: FileId,
+        modules: &[(&str, FileId, &FileHir, &ResolveMap)],
+        module_signatures: &[(&str, &FileSignatures)],
+        template_contexts: &[ImportedTemplateContext<'_>],
+    ) -> Analysis {
         let parsed = jr_syntax::parse(source, file);
         let mut earlier = Diagnostics::new();
         earlier.extend(parsed.diagnostics().iter().cloned());
@@ -142,8 +179,11 @@ impl Program {
             &resolve,
             &signatures.signatures,
             module_signatures,
-            // No imported HIRs: an imported *parameterised* struct is out of this harness's scope (ADR-0117 §1).
-            &[],
+            &modules
+                .iter()
+                .map(|(_, module_file, hir, _)| (*module_file, *hir))
+                .collect::<Vec<_>>(),
+            template_contexts,
             &mut self.pool,
             &self.interner,
         );
@@ -161,6 +201,8 @@ impl Program {
             sema_diagnostics,
             earlier_diagnostics: earlier,
             assertions: checked.assertions,
+            type_name_imports: checked.type_name_imports,
+            instantiations: checked.instantiations,
         }
     }
 
@@ -170,11 +212,46 @@ impl Program {
         source: &str,
         file: FileId,
     ) -> (FileHir, ResolveMap, FileSignatures) {
+        self.analyse_module_with_imports(source, file, &[])
+    }
+
+    /// Analyses a module's declarations against already-lowered direct imports.
+    pub fn analyse_module_with_imports(
+        &mut self,
+        source: &str,
+        file: FileId,
+        modules: &[(&str, FileId, &FileHir, &ResolveMap)],
+    ) -> (FileHir, ResolveMap, FileSignatures) {
         let parsed = jr_syntax::parse(source, file);
         let (hir, _) = jr_hir::lower_file(&parsed, file, &self.interner);
-        let (resolve, _) = jr_hir::resolve(&hir, &[], &self.interner);
-        let signatures =
-            jr_sema::file_signatures(&hir, file, &resolve, &[], &mut self.pool, &self.interner);
+        let owned_exports: Vec<(&str, ItemScope)> = modules
+            .iter()
+            .map(|(name, _, module_hir, _)| (*name, module_hir.export_scope()))
+            .collect();
+        let exports: Vec<jr_hir::ImportedModule<'_>> = owned_exports
+            .iter()
+            .map(|(name, scope)| jr_hir::ImportedModule::bare(name, scope))
+            .collect();
+        let (resolve, _) = jr_hir::resolve(&hir, &exports, &self.interner);
+        let imports: Vec<ImportedFile<'_>> = modules
+            .iter()
+            .map(
+                |(name, module_file, module_hir, module_resolve)| ImportedFile {
+                    name,
+                    file: *module_file,
+                    hir: module_hir,
+                    resolve: module_resolve,
+                },
+            )
+            .collect();
+        let signatures = jr_sema::file_signatures(
+            &hir,
+            file,
+            &resolve,
+            &imports,
+            &mut self.pool,
+            &self.interner,
+        );
         (hir, resolve, signatures.signatures)
     }
 }

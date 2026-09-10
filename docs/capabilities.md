@@ -9,13 +9,13 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1362** workspace tests (**1375** under gate 7), with all six ordinary gates and gate 7 green
-  for ADR-0226.
-- **294** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
-  (**305** counting those).
-- **225** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **1377** workspace tests (**1390** under gate 7), with all six ordinary gates and gate 7 green
+  for ADR-0229.
+- **299** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
+  (**310** counting those).
+- **229** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **25** standard library modules under `modules/`.
-- Diagnostic codes run **E0001–E0297**; **E0298** is the first free one
+- Diagnostic codes run **E0001–E0298**; **E0299** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership
   table, and `crates/jr-cli/tests/codes.rs` is what makes the "first free"
   claim fail a test when it rots).
@@ -39,7 +39,8 @@ behind them — that narrative is not duplicated here):
 | Inspect tokens or the CST | `jr parse file.jr` | Debug aid |
 | Measure language-server latency | `jr bench file.jr` | Reports min/median/p95 cold, warm and after an edit. **Reports, never judges** — no threshold, not a gate (ADR-0033), so a performance regression is invisible to CI by construction |
 | Measure compile throughput | `jr bench --throughput paths…` | Lines and bytes per second for `check` and `build`, cold only — a compiler is a process, so there is no warm throughput to report (ADR-0146). Same contract: reports, never judges |
-| Run the executable guide-compatibility baseline | `cargo test -p jr-cli --test compatibility` | One strict manifest covers all 35 example-bearing top-level groups in the pinned `The_Way_to_Jai` guide. Every row runs a repository-owned probe in an isolated directory and records a source-compatible example, a port, an exact blocker, or an intentional divergence. Six representatives are source-compatible at the pinned revision. The test never reads the submodule, and 35 representatives do **not** justify a percentage claim (ADR-0219, ADR-0222) |
+| Run the executable guide-compatibility baseline | `cargo test -p jr-cli --test compatibility` | One strict manifest covers all 35 example-bearing top-level groups in the pinned `The_Way_to_Jai` guide with 37 owned probes; chapter 11 separately pins `New(int)` and chapter 17 declaration-only result labels. Every row runs in an isolated directory and records a source-compatible example, a port, an exact blocker, or an intentional divergence. Six representatives are source-compatible at the pinned revision. The test never reads the submodule, and this sample does **not** justify a percentage claim (ADR-0219, ADR-0222, ADR-0227, ADR-0228) |
+| Allocate one zeroed value | `p := New(Point)` | Uses the active context allocator and returns `*Point`; a null allocator result stays null, release is explicit through the matching allocator, and the type's required alignment must be at most 16 bytes. Representation-indirect recursive shapes such as `Node { children: [..]*Node; }` work (ADR-0228) |
 | Own a game-loop foundation | `Game.open`, `begin_frame`, `end_frame`, `close` | One explicit `Game.App` owns SDL/window/Simp startup, one event drain, close latching, monotonic delta time, presentation and idempotent teardown (ADR-0210). Only one App may be open because Simp has one process-global renderer, and its lifecycle stays on one thread. Held input, primitive helpers, textures, PNG, text and audio are later slices |
 | Print anything | `print("x = %, ok = %\n", 42, true)` from `modules/Basic` | Written in Jairs (ADR-0189, ADR-0193). Every integer width signed and unsigned including `S64_MIN`, floats, `bool`, `string`, pointers as hex, a struct one level deep, an array's and a view's elements, and an enum by **member name**. A nested aggregate or enum *field* still prints `..`: a field's type is an *id* and an id cannot be resolved to a `*Type_Info` |
 | Build text incrementally | `Basic.String_Builder`, `append`, `print_to_builder`, `builder_to_string`, `free_buffers` | A zero value lazily captures the active allocator triple; explicit initialization resets first. Private buffers stay chained and stable, conversion copies through the caller's current allocator, and cleanup is idempotent. `print_to_builder` uses the same renderer as `print`, supports one-based `%1`/`%2` selection, and bypasses `format`'s 4096-byte staging limit. Byte and pointer-length append have explicit names until general procedure overloading exists (ADR-0217) |
@@ -77,7 +78,7 @@ The authoritative version of this list is
 | `variant { … }` — a tagged union: a write sets the tag, reading another case **traps**, `switch` destructures it (ADR-0068) | a recursive variant; one in a `#foreign` signature; eliding the check inside a matching arm |
 | `enum { RED; GREEN :: 5; }`, nominal, namespaced members, and bare `.RED` from context — including as a `switch` case (ADR-0067). A member's value may **name a constant** whose initialiser is a literal, and auto-numbering continues from it (ADR-0129) | a value needing evaluation (`2 + 2`, a `#run`, another file's constant); a member naming a **sibling** member |
 | `enum_flags { READ; WRITE; }` — powers of two, combines with `& \| ^ ~` | building one from a computed integer (`cast(Perm, 3)` is refused) |
-| procedures, one result or several: `-> (s64, bool)`, `q, ok := f();`, `_` to discard; `#must` propagates a final `bool` failure (ADR-0151) | a multi-result call as a `return` operand |
+| procedures, one result or several: `-> (s64, bool)`, optional declaration-only labels such as `-> (value: s64, found: bool)`, `q, ok := f();`, `_` to discard; `#must` propagates a final `bool` failure (ADR-0151, ADR-0227) | a multi-result call as a `return` operand; unparenthesized/defaulted named results or implicit result bindings |
 | a procedure as a **value**: `f := add`, a `(s64, s64) -> s64` parameter or **struct field**, `f(...)` calls through it; `(T)` with no arrow for a void return; `(T) -> U #c_call` names a C-convention pointer type (ADR-0175) | a cross-file or `#foreign` procedure value; comparing or printing one |
 | named arguments `f(b = 2, a = 1)` and literal defaults `(b: s64 = 10)` | a non-literal default; a named argument on a cross-file call, or in a `#run` |
 | `::` constant, `:=` inferred, `: T = v` typed, `---` uninit | |
@@ -111,8 +112,8 @@ The authoritative version of this list is
 | `#insert "…"` of a **string literal**, lowered where it is written (ADR-0072). **Also at file scope**, where it generates *declarations* (ADR-0184): the generated items go straight into the file's arena, so a generated constant, struct or procedure is an ordinary one | a first-class `Code` value and inspectable code tree |
 | `#insert <expr>;` of a **computed** operand — a constant or a `#run` whose text is evaluated at compile time and spliced (ADR-0073) | **At file scope a computed operand may generate only a library declaration** (E0294, ADR-0184 §4) — a phase-order refusal, not a policy one |
 | **`#code { … }`** — unquoted source spliced into the enclosing scope, sugar over `#insert` (ADR-0080) | a `Code` **value** — declined, not deferred |
-| **`$T` polymorphic procedures** — inferred from the argument, instantiated once per distinct tuple of bound types, checked per instantiation, run as ordinary procedures in both engines (ADR-0081–0084). A template may call another template (ADR-0120) | two-way unification and explicit type arguments; a **cross-file** instantiation (E0268) |
-| **polymorphic structs** — `Box :: struct($T) { value: T; }` used as `Box(s64)`, keyed on `(decl, args)` (ADR-0085). Crosses a module boundary (ADR-0117) | inferring a struct's argument through a `$T` parameter; `using` on a parameterised struct; recursive `List($T)` |
+| **`$T` polymorphic procedures** — inferred from arguments directly, through pointers/views/vectors/dynamic arrays, and through parameterised nominal instances such as `*Table($K, $V)` (ADR-0081–0084, ADR-0229); instantiated once per bound-type tuple and checked/run as ordinary procedures. A template may call another template (ADR-0120) | two-way unification and explicit type arguments; a **cross-file** instantiation (E0268) |
+| **polymorphic structs** — `Box :: struct($T) { value: T; }` used as `Box(s64)`, keyed on `(decl, args)` (ADR-0085). Crosses a module boundary (ADR-0117), and its concrete arguments may drive a local procedure's `$T` inference (ADR-0229) | `using` on a parameterised struct; recursive `List($T)` |
 | `talloc(n)` / `reset_temporary_storage()` — a per-context bump arena, valid until reset, no per-piece free (ADR-0065) | aligned `talloc` and a configurable region size |
 | **`[N]T` sized by a `$N` comptime parameter** (ADR-0089) | a length needing *arithmetic over `N`*, or one naming a constant from another file |
 | **`$N` comptime-value parameter and instantiation** (ADR-0087, ADR-0088) | a non-constant argument (E0271); a mixed `$T`+`$N` template |

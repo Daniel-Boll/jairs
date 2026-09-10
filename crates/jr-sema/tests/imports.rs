@@ -5,6 +5,7 @@ mod harness;
 use harness::Program;
 use jr_base::FileId;
 use jr_pool::PoolId;
+use jr_sema::ImportedTemplateContext;
 
 const SHAPES: &str = "\
 Rect :: struct {
@@ -71,6 +72,129 @@ main :: () {
         &[("Shapes", &shapes_sigs)],
     );
     assert_eq!(analysis.codes(), vec!["E0214"]);
+}
+
+#[test]
+fn an_imported_pure_type_template_reports_its_owner_and_resolves_in_the_owner_environment() {
+    let mut program = Program::new();
+    let generic_file = FileId::from_usize(2);
+    let owner_file = FileId::from_usize(1);
+    let caller_file = FileId::from_usize(0);
+
+    let (generic_hir, generic_resolve, generic_sigs) =
+        program.analyse_module("Box :: struct($T) {\n    value: T;\n}\n", generic_file);
+    let owner_source = "\
+#import \"Generic\";
+
+read_box :: (box: *Box($T)) -> T {
+    todo;
+}
+
+make_box :: () -> Box(s64) {
+    todo;
+}
+";
+    let (owner_hir, owner_resolve, owner_sigs) = program.analyse_module_with_imports(
+        owner_source,
+        owner_file,
+        &[("Generic", generic_file, &generic_hir, &generic_resolve)],
+    );
+    let owner_context = ImportedTemplateContext {
+        file: owner_file,
+        hir: &owner_hir,
+        signatures: &owner_sigs,
+        imports: vec![("Generic", &generic_sigs)],
+        imported_hirs: vec![(generic_file, &generic_hir)],
+    };
+
+    let caller = "\
+#import \"Owner\";
+
+main :: () {
+    box := make_box();
+    value: s64 = read_box(*box);
+}
+";
+    let analysis = program.analyse_with_import_contexts(
+        caller,
+        caller_file,
+        &[("Owner", owner_file, &owner_hir, &owner_resolve)],
+        &[("Owner", &owner_sigs)],
+        &[owner_context],
+    );
+    analysis.assert_silent();
+
+    let read_box = owner_sigs
+        .lookup(program.interner.get("read_box").unwrap())
+        .and_then(|entry| entry.proc)
+        .unwrap();
+    let (_, (template, key)) = analysis.instantiations.iter().next().unwrap();
+    assert_eq!(template.file, owner_file);
+    assert_eq!(template.proc, read_box);
+    assert_eq!(key, &[PoolId::S64]);
+    assert!(
+        analysis.type_name_imports.is_empty(),
+        "resolving the owner's `Generic.Box` must not mark an owner-only import as used by the caller"
+    );
+}
+
+#[test]
+fn imported_comptime_and_mixed_templates_remain_e0268() {
+    let mut program = Program::new();
+    let owner_file = FileId::from_usize(1);
+    let owner_source = "\
+sized :: ($N: s64) -> s64 {
+    return N;
+}
+
+picked :: (value: $$T) -> T {
+    return value;
+}
+";
+    let (owner_hir, owner_resolve, owner_sigs) = program.analyse_module(owner_source, owner_file);
+    let caller = "\
+#import \"Owner\";
+
+main :: () {
+    a := sized(4);
+    b := picked(5);
+}
+";
+    let analysis = program.analyse_with_imports(
+        caller,
+        FileId::from_usize(0),
+        &[("Owner", owner_file, &owner_hir, &owner_resolve)],
+        &[("Owner", &owner_sigs)],
+    );
+    assert_eq!(analysis.codes(), vec!["E0268", "E0268"]);
+    assert!(analysis.instantiations.is_empty());
+}
+
+#[test]
+fn an_imported_polymorphic_expand_macro_remains_e0272() {
+    let mut program = Program::new();
+    let owner_file = FileId::from_usize(1);
+    let owner_source = "\
+expanded :: (value: $T) -> T #expand {
+    return value;
+}
+";
+    let (owner_hir, owner_resolve, owner_sigs) = program.analyse_module(owner_source, owner_file);
+    let caller = "\
+#import \"Owner\";
+
+main :: () {
+    value := expanded(42);
+}
+";
+    let analysis = program.analyse_with_imports(
+        caller,
+        FileId::from_usize(0),
+        &[("Owner", owner_file, &owner_hir, &owner_resolve)],
+        &[("Owner", &owner_sigs)],
+    );
+    assert_eq!(analysis.codes(), vec!["E0272"]);
+    assert!(analysis.instantiations.is_empty());
 }
 
 #[test]

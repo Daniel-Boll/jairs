@@ -1,0 +1,38 @@
+// Named results are declaration metadata: labels survive tooling, but calls and procedure types remain
+// positional (ADR-0227).
+
+expect_char :: (s: *string, c: u8) -> (exists: bool) {
+  if s.*.count == 0 {
+    return false;
+  }
+  return s.*.data.* == c;
+}
+
+increment :: (n: s64) -> (value: s64) {
+  // The label is not an implicit body binding, so a local may deliberately reuse its spelling.
+  value := n + 1;
+  return value;
+}
+
+classify :: (n: s64) -> (value: s64, ok: bool) {
+  return n, n >= 0;
+}
+
+apply :: (f: (s64) -> s64, n: s64) -> s64 {
+  return f(n);
+}
+
+main :: () -> s64 {
+  text := "Jairs";
+  if !expect_char(*text, #char "J") {
+    return 1;
+  }
+  if apply(increment, 41) != 42 {
+    return 2;
+  }
+  value, ok := classify(7);
+  if value != 7 || !ok {
+    return 3;
+  }
+  return 0;
+}

@@ -1,0 +1,13 @@
+// ADR-0230 — specialization reaches a cross-owner fixed point.
+//
+// The root directly demands `Generic_Fixed_Outer.outer(s64)`. Only the instantiated body of `outer` reveals
+// the imported demand for `Generic_Fixed_Inner.inner(s64)`, so one owner-local expansion pass is insufficient.
+// Both templates are their file's first procedure, which also makes this the compact same-local-`ProcId`
+// collision probe: `(owner file, ProcId)` must distinguish them.
+
+#import "Generic_Fixed_Outer";
+
+main :: () {
+  answer := outer(42);
+  next := answer + 1;
+}

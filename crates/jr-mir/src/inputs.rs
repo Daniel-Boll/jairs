@@ -160,6 +160,8 @@ pub struct ConstValues {
     /// builder needs the target type to make the slot. A folded value would be wrong — the *address* is only
     /// known at run time.
     pointer_views: FxHashMap<(ExprScope, ExprId), PoolId>,
+    /// Each `New(T)` call's already-resolved pointer type and byte-count constant (ADR-0228).
+    allocations: FxHashMap<(ExprScope, ExprId), NewAllocation>,
     /// Which atomic operation each `atomic_*` call performs (ADR-0176 §3).
     atomics: FxHashMap<(ExprScope, ExprId), crate::AtomicOp>,
     /// The optional static message of each compiler-recognised `assert` call (ADR-0224).
@@ -237,6 +239,15 @@ pub enum AnyLowering {
         /// The result type `T`, so the builder can build `*T` for the deref.
         result: PoolId,
     },
+}
+
+/// The two layout facts MIR needs to lower `New(T)` without computing layout itself (ADR-0228).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewAllocation {
+    /// The result type, `*T`.
+    pub pointer: PoolId,
+    /// An interned `s64` constant containing `size_of(T)`.
+    pub bytes: PoolId,
 }
 
 impl ConstValues {
@@ -330,6 +341,16 @@ impl ConstValues {
             self.pointer_views.entry((to, expr)).or_insert(ty);
         }
 
+        let allocations: Vec<(ExprId, NewAllocation)> = self
+            .allocations
+            .iter()
+            .filter(|((scope, _), _)| *scope == from)
+            .map(|((_, expr), allocation)| (*expr, *allocation))
+            .collect();
+        for (expr, allocation) in allocations {
+            self.allocations.entry((to, expr)).or_insert(allocation);
+        }
+
         let assertions: Vec<(ExprId, Option<String>)> = self
             .assertions
             .iter()
@@ -391,6 +412,24 @@ impl ConstValues {
     #[must_use]
     pub fn pointer_view(&self, scope: ExprScope, expr: ExprId) -> Option<PoolId> {
         self.pointer_views.get(&(scope, expr)).copied()
+    }
+
+    /// Records one context allocation.
+    pub fn set_allocation(
+        &mut self,
+        scope: ExprScope,
+        expr: ExprId,
+        pointer: PoolId,
+        bytes: PoolId,
+    ) {
+        self.allocations
+            .insert((scope, expr), NewAllocation { pointer, bytes });
+    }
+
+    /// The concrete allocation represented by this call, if it is `New(T)`.
+    #[must_use]
+    pub fn allocation(&self, scope: ExprScope, expr: ExprId) -> Option<NewAllocation> {
+        self.allocations.get(&(scope, expr)).copied()
     }
 
     /// Records that a call is an atomic, from `jr-sema`'s wire code (ADR-0176 §3).
@@ -495,6 +534,8 @@ impl ConstValues {
         self.runs.retain(|(recorded, _), _| *recorded != scope);
         self.any_ops.retain(|(recorded, _), _| *recorded != scope);
         self.pointer_views
+            .retain(|(recorded, _), _| *recorded != scope);
+        self.allocations
             .retain(|(recorded, _), _| *recorded != scope);
         self.atomics.retain(|(recorded, _), _| *recorded != scope);
         self.assertions

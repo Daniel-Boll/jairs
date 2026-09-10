@@ -106,7 +106,10 @@ mod signature;
 mod sigs;
 mod suggest;
 
-pub use check::{AnyOp, ArgSlot, CheckOutput, FoldedCalls, VariadicCall, check_file};
+pub use check::{
+    AnyOp, ArgSlot, CheckOutput, FoldedCalls, ImportedTemplateContext, TemplateRef, VariadicCall,
+    check_file,
+};
 pub use map::TypeMap;
 pub use signature::{ImportedFile, SignatureOutput, file_signatures};
 pub use sigs::{FileSignatures, ProcSig, SigEntry, SigKind};

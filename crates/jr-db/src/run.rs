@@ -27,7 +27,7 @@ use jr_vm::{Mode, Program, Value, Vm, VmError};
 
 use crate::{
     BuildConfig, Db, SourceFile,
-    mir::optimized_file_mir,
+    mir::optimized_file_mir_for_root,
     module_loader::{ModuleCatalog, file_hir, imports_of, module_file},
 };
 
@@ -108,7 +108,7 @@ fn run_main_impl(
     // only a problem if it is *reached*, and deciding that statically is the call graph this
     // query deliberately does not build.
     {
-        let mir = optimized_file_mir(db, root, catalog, config);
+        let mir = optimized_file_mir_for_root(db, root, root, catalog, config);
         if let Some(Err(reason)) = mir
             .mir
             .iter()
@@ -128,7 +128,7 @@ fn run_main_impl(
     // across a nested query call, which is the rule the rest of this crate follows.
     let mut inputs = Vec::with_capacity(files.len());
     for file in files {
-        let mir = optimized_file_mir(db, file, catalog, config);
+        let mir = optimized_file_mir_for_root(db, root, file, catalog, config);
         if mir.gated {
             continue;
         }

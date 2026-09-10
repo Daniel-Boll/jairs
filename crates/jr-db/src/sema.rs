@@ -82,7 +82,7 @@ pub struct SignatureResult {
 /// its variables bind to, in `poly_vars` order (ADR-0082 §1, ADR-0083 §1).
 pub type Instantiations = rustc_hash::FxHashMap<
     (jr_hir::ExprScope, jr_hir::ExprId),
-    (jr_hir::ProcId, Vec<jr_pool::PoolId>),
+    (jr_sema::TemplateRef, Vec<jr_pool::PoolId>),
 >;
 
 /// Each comptime-value call and the argument *expressions* its `$N` parameters need (ADR-0088 §1).
@@ -141,6 +141,13 @@ pub struct CheckResult {
     /// pointer is a store-then-load through a slot, and lowering needs the target type to build the slot.
     pub pointer_views:
         Arc<rustc_hash::FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), jr_pool::PoolId>>,
+    /// Each `New(T)` call as `(result pointer type, byte-count constant)` (ADR-0228).
+    pub allocations: Arc<
+        rustc_hash::FxHashMap<
+            (jr_hir::ExprScope, jr_hir::ExprId),
+            (jr_pool::PoolId, jr_pool::PoolId),
+        >,
+    >,
     /// Which atomic operation each `atomic_*` call performs, as a wire code (ADR-0176 §3).
     ///
     /// Rides beside `pointer_views` for the same reason: an intrinsic's callee resolves to nothing, so MIR
@@ -249,6 +256,77 @@ struct ImportedInputs {
     resolve: Arc<ResolveMap>,
 }
 
+/// Owns the `Arc`s behind one imported template's declaration environment.
+///
+/// [`jr_sema::ImportedTemplateContext`] is a borrowed view because sema must not own another file's
+/// query results. This holder keeps those results alive across `check_file`, including the owner's own
+/// direct imports: a type name in the imported template's signature resolves in the owner's environment,
+/// not in the caller's (ADR-0230 §2).
+struct ImportedTemplateInputs {
+    file: jr_base::FileId,
+    hir: Arc<jr_hir::FileHir>,
+    signatures: Arc<FileSignatures>,
+    imports: Vec<(Arc<str>, Arc<FileSignatures>)>,
+    imported_hirs: Vec<(jr_base::FileId, Arc<jr_hir::FileHir>)>,
+}
+
+impl ImportedTemplateInputs {
+    fn borrowed(&self) -> jr_sema::ImportedTemplateContext<'_> {
+        jr_sema::ImportedTemplateContext {
+            file: self.file,
+            hir: self.hir.as_ref(),
+            signatures: self.signatures.as_ref(),
+            imports: self
+                .imports
+                .iter()
+                .map(|(name, signatures)| (name.as_ref(), signatures.as_ref()))
+                .collect(),
+            imported_hirs: self
+                .imported_hirs
+                .iter()
+                .map(|(file, hir)| (*file, hir.as_ref()))
+                .collect(),
+        }
+    }
+}
+
+/// Gathers the declaration environments for every directly imported template owner.
+///
+/// The nested gathers deliberately stop at one level: sema needs the owner's direct imports to resolve
+/// the template's own type references, while a template called from its body is recorded as a fresh
+/// demand and handled by that callee owner's own context in the root-scoped fixed point.
+fn imported_template_inputs(
+    db: &dyn Db,
+    file: SourceFile,
+    catalog: ModuleCatalog,
+) -> Vec<ImportedTemplateInputs> {
+    imported_module_files(db, file, catalog)
+        .into_iter()
+        .map(|(_, module)| {
+            let imports = imported_module_files(db, module, catalog)
+                .into_iter()
+                .map(|(name, imported)| (name, file_signatures(db, imported, catalog).signatures))
+                .collect();
+            let imported_hirs = imported_module_files(db, module, catalog)
+                .into_iter()
+                .map(|(_, imported)| {
+                    (
+                        crate::queries::resolve_file_id(db, imported),
+                        file_hir(db, imported),
+                    )
+                })
+                .collect();
+            ImportedTemplateInputs {
+                file: crate::queries::resolve_file_id(db, module),
+                hir: file_hir(db, module),
+                signatures: file_signatures(db, module, catalog).signatures,
+                imports,
+                imported_hirs,
+            }
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // file_signatures — tracked query
 // ---------------------------------------------------------------------------
@@ -347,6 +425,11 @@ pub fn checked(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> CheckRe
         .iter()
         .map(|(id, hir)| (*id, hir.as_ref()))
         .collect();
+    let imported_template_inputs = imported_template_inputs(db, file, catalog);
+    let imported_templates: Vec<_> = imported_template_inputs
+        .iter()
+        .map(ImportedTemplateInputs::borrowed)
+        .collect();
 
     let mut pool = lock_pool(db);
     let output = jr_sema::check_file(
@@ -356,6 +439,7 @@ pub fn checked(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> CheckRe
         own.signatures.as_ref(),
         &imports,
         &imported_hirs,
+        &imported_templates,
         &mut pool,
         interner,
     );
@@ -438,6 +522,11 @@ pub(crate) fn checked_expanded(
         .iter()
         .map(|(id, hir)| (*id, hir.as_ref()))
         .collect();
+    let imported_template_inputs = imported_template_inputs(db, file, catalog);
+    let imported_templates: Vec<_> = imported_template_inputs
+        .iter()
+        .map(ImportedTemplateInputs::borrowed)
+        .collect();
 
     // **Signatures are recomputed over the expanded tree** (ADR-0184 §3), and this is a *correction*:
     // the comment here used to say `#insert` reuses the unexpanded signatures "because it adds no
@@ -484,6 +573,7 @@ pub(crate) fn checked_expanded(
         &sig_output.signatures,
         &imports,
         &imported_hirs,
+        &imported_templates,
         &mut pool,
         interner,
     );
@@ -516,6 +606,7 @@ pub(crate) fn checked_expanded(
 /// this **recomputes signatures over the expanded tree**: an instantiation *is* a new procedure, so its
 /// signature does not exist in the base file's. That is the one structural difference between the two
 /// expansions (ADR-0082 §3).
+#[derive(Clone)]
 pub(crate) struct Instantiated {
     /// The base HIR with one appended procedure per distinct instantiation.
     pub hir: Arc<jr_hir::FileHir>,
@@ -571,7 +662,7 @@ pub(crate) fn instantiated(
 /// A bound rather than "until stable" for the reason [`crate::consts`]'s round limit is one: a bug in the
 /// progress check should be a diagnosable stop rather than a hang. Eight is far past anything a written
 /// program reaches, because a round only happens when a *new* structural key appeared.
-const MAX_INSTANTIATION_ROUNDS: usize = 8;
+pub(crate) const MAX_INSTANTIATION_ROUNDS: usize = 8;
 
 /// Instantiation did not reach a fixed point (ADR-0120 §4).
 ///
@@ -579,43 +670,57 @@ const MAX_INSTANTIATION_ROUNDS: usize = 8;
 /// which lives here. The alternative to refusing is lowering a call whose target was never appended —
 /// which is exactly the `no routine for file N proc M` this ADR exists to remove, so a stop that names
 /// itself is strictly better than running out of rounds quietly.
-const E0280: &str = "E0280";
+pub(crate) const E0280: &str = "E0280";
 
 /// A polymorphic call site.
-type CallSite = (jr_hir::ExprScope, jr_hir::ExprId);
+pub(crate) type CallSite = (jr_hir::ExprScope, jr_hir::ExprId);
 
-/// The structural key an instantiation dedupes on: the template plus its bound types, or its baked
-/// values (ADR-0005, ADR-0088 §3).
-type CallKey = (jr_hir::ProcId, Vec<jr_pool::PoolId>);
+/// The structural key a type instantiation dedupes on: the template's full identity plus its bound
+/// types (ADR-0005, ADR-0230 §1).
+pub(crate) type TypeCallKey = (jr_sema::TemplateRef, Vec<jr_pool::PoolId>);
+
+/// A comptime-value instantiation key: full template identity, inferred type bindings, then baked values.
+///
+/// Pure `$N` has an empty type tuple. A mixed `$$T` call appears in both checker maps, and combining them
+/// here is load-bearing: separate type-only and value-only clones let the latter redirect win while losing
+/// the former's bindings (ADR-0137 says one clone carries both).
+pub(crate) type ComptimeCallKey = (
+    jr_sema::TemplateRef,
+    Vec<jr_pool::PoolId>,
+    Vec<jr_pool::PoolId>,
+);
 
 /// One expansion round's output.
-struct Expansion {
+pub(crate) struct Expansion {
     /// The starting HIR with one appended procedure per distinct key.
-    hir: Arc<jr_hir::FileHir>,
+    pub(crate) hir: Arc<jr_hir::FileHir>,
     /// Name resolution over it.
-    resolve: Arc<ResolveMap>,
+    pub(crate) resolve: Arc<ResolveMap>,
     /// Signatures over it, the appended procedures included.
-    signatures: Arc<FileSignatures>,
+    pub(crate) signatures: Arc<FileSignatures>,
     /// Its check.
-    check: CheckResult,
+    pub(crate) check: CheckResult,
     /// The resolve's and check's diagnostics.
-    diagnostics: Diagnostics,
+    pub(crate) diagnostics: Diagnostics,
     /// The appended procedures, `new_ids[i]` for the i-th key.
-    new_ids: Vec<jr_hir::ProcId>,
+    pub(crate) new_ids: Vec<jr_hir::ProcId>,
     /// Each clone's body scope paired with its template's (ADR-0120 §5).
-    body_scopes: Vec<(jr_hir::ExprScope, jr_hir::ExprScope)>,
+    pub(crate) body_scopes: Vec<(jr_hir::ExprScope, jr_hir::ExprScope)>,
     /// Where the comptime-value keys start in [`Self::new_ids`].
-    comptime_start: usize,
+    pub(crate) comptime_start: usize,
 }
 
 /// Every `$T` call site and its key, in a **deterministic** order.
 ///
 /// `FxHashMap` iteration is not stable and the appended `ProcId`s must be reproducible across runs, since
 /// a snapshot depends on them. Sorted by call site.
-fn type_call_sites(check: &CheckResult) -> Vec<(CallSite, CallKey)> {
-    let mut calls: Vec<(CallSite, CallKey)> = check
+pub(crate) fn type_call_sites(check: &CheckResult) -> Vec<(CallSite, TypeCallKey)> {
+    let mut calls: Vec<(CallSite, TypeCallKey)> = check
         .instantiations
         .iter()
+        // A mixed `$$T` call is keyed by `comptime_call_sites`, which combines these type bindings with
+        // the baked values. Emitting a second type-only clone would split one instantiation in two.
+        .filter(|(call, _)| !check.comptime_calls.contains_key(call))
         .map(|(&call, target)| (call, target.clone()))
         .collect();
     calls.sort_by_key(|(call, _)| (scope_ord(call.0), call.1.index()));
@@ -628,11 +733,12 @@ fn type_call_sites(check: &CheckResult) -> Vec<(CallSite, CallKey)> {
 /// that the call site is one `values` was not computed for, which is the case for a clone's body. Either
 /// way the call is skipped rather than keyed with a hole, and the caller's redirect for it is absent,
 /// which `scan` then refuses.
-fn comptime_call_sites(
+pub(crate) fn comptime_call_sites(
     check: &CheckResult,
     values: &jr_mir::ConstValues,
-) -> Vec<(CallSite, CallKey)> {
-    let mut calls: Vec<(CallSite, CallKey)> = Vec::new();
+    file: jr_base::FileId,
+) -> Vec<(CallSite, ComptimeCallKey)> {
+    let mut calls: Vec<(CallSite, ComptimeCallKey)> = Vec::new();
     for (call, (template, args)) in check.comptime_calls.iter() {
         let mut resolved = Vec::with_capacity(args.len());
         let mut all_present = true;
@@ -646,7 +752,17 @@ fn comptime_call_sites(
             }
         }
         if all_present {
-            calls.push((*call, (*template, resolved)));
+            let (template, bindings) = check.instantiations.get(call).map_or(
+                (
+                    jr_sema::TemplateRef {
+                        file,
+                        proc: *template,
+                    },
+                    Vec::new(),
+                ),
+                |(template, bindings)| (*template, bindings.clone()),
+            );
+            calls.push((*call, (template, bindings, resolved)));
         }
     }
     calls.sort_by_key(|(call, _)| (scope_ord(call.0), call.1.index()));
@@ -663,7 +779,7 @@ fn comptime_call_sites(
 ///
 /// Rebuilding from `start_hir` each round rather than appending incrementally keeps `new_ids[i]` paired
 /// with `keys[i]`, so the appended `ProcId`s stay a function of the key list alone.
-/// Builds the backtrace frame for one instantiation, or `None` when there is no site to name.
+/// Builds the materialised backtrace for one instantiation, or `None` when there is no site to name.
 ///
 /// # Why the span comes from the *call*, not the template
 ///
@@ -674,10 +790,11 @@ fn comptime_call_sites(
 ///
 /// A missing site yields `None` rather than a frame pointing somewhere plausible. A backtrace naming the
 /// wrong line is worse than no backtrace, because a reader trusts it and stops looking.
-fn instantiation_site(
-    hir: &jr_hir::FileHir,
+pub(crate) fn build_instantiation_site(
+    demanding_hir: &jr_hir::FileHir,
+    template_hir: &jr_hir::FileHir,
     interner: &jr_base::Interner,
-    sigs: &SignatureResult,
+    signatures: &FileSignatures,
     pool: &jr_pool::Pool,
     template: jr_hir::ProcId,
     bindings: &[(jr_base::Symbol, jr_pool::PoolId)],
@@ -687,8 +804,8 @@ fn instantiation_site(
     // The demanding expression's span, read from the arena the scope names. A body id that is somehow
     // absent answers `None`, which costs the backtrace rather than panicking inside a query.
     let span = match scope {
-        jr_hir::ExprScope::TopLevel => hir.expr_spans.get(expr.index()).copied(),
-        jr_hir::ExprScope::Body(body) => hir
+        jr_hir::ExprScope::TopLevel => demanding_hir.expr_spans.get(expr.index()).copied(),
+        jr_hir::ExprScope::Body(body) => demanding_hir
             .bodies
             .get(body.index())
             .and_then(|b| b.expr_spans.get(expr.index()).copied()),
@@ -697,7 +814,7 @@ fn instantiation_site(
     // A `Proc` carries no name — the name lives on the `Item` that declares it (a procedure value can
     // be anonymous), so the template's item is what to look up. An instantiation of something unnamed
     // answers `None`: with no name to print, a frame would say "in instantiation of ``".
-    let name = hir.items.iter().find_map(|item| match item.kind {
+    let name = template_hir.items.iter().find_map(|item| match item.kind {
         jr_hir::ItemKind::Const {
             value: jr_hir::ConstValue::Proc(p) | jr_hir::ConstValue::Operator(p, _),
         } if p == template => item.name,
@@ -710,7 +827,7 @@ fn instantiation_site(
         let bound = bindings
             .iter()
             .map(|(var, ty)| {
-                let text = binding_type_text(sigs, pool, ty);
+                let text = binding_type_text(signatures, pool, ty);
                 format!("${} = {text}", interner.resolve(*var))
             })
             .collect::<Vec<_>>()
@@ -718,15 +835,26 @@ fn instantiation_site(
         format!("in instantiation of `{name}({bound})`")
     };
 
-    Some(jr_hir::InstantiationSite {
-        frame: jr_diag::InstantiationFrame::new(span, description),
-        // `TopLevel` is recorded as `None`: a constant initialiser has no enclosing procedure, so the
-        // chain ends there rather than looking for one.
-        called_from: match scope {
-            jr_hir::ExprScope::TopLevel => None,
-            jr_hir::ExprScope::Body(_) => Some(scope),
-        },
-    })
+    let mut frames = vec![jr_diag::InstantiationFrame::new(span, description)];
+    // ADR-0230 §5 materialises the parent chain while the demanding HIR is in hand. A later check may
+    // run in another file's HIR, where this `ExprScope` would be an ambiguous arena index.
+    if let jr_hir::ExprScope::Body(body) = scope
+        && let Some(parent) = demanding_hir
+            .procs
+            .iter()
+            .enumerate()
+            .find_map(|(index, proc)| {
+                (proc.body == Some(body)).then_some(jr_hir::ProcId::from_usize(index))
+            })
+        && let Some((_, site)) = demanding_hir
+            .instantiation_sites
+            .iter()
+            .find(|(proc, _)| *proc == parent)
+    {
+        frames.extend(site.frames.iter().cloned());
+    }
+
+    Some(jr_hir::InstantiationSite { frames })
 }
 
 /// A bound type rendered for a backtrace frame.
@@ -735,8 +863,12 @@ fn instantiation_site(
 /// scalar builtins. Anything else answers `?` rather than a half-built spelling like `*` — the same call
 /// ADR-0075 §3 made for `Type_Info`, where a composite falls back to its kind instead of a name that
 /// looks real and is not.
-fn binding_type_text(sigs: &SignatureResult, pool: &jr_pool::Pool, ty: &jr_pool::PoolId) -> String {
-    if let Some(name) = sigs.signatures.type_name(*ty) {
+fn binding_type_text(
+    signatures: &FileSignatures,
+    pool: &jr_pool::Pool,
+    ty: &jr_pool::PoolId,
+) -> String {
+    if let Some(name) = signatures.type_name(*ty) {
         return name.to_owned();
     }
     // The signatures know a *declared* type's source name and nothing about a builtin, which has no
@@ -768,8 +900,8 @@ pub(crate) fn instantiated_from(
     }
     let file_id = crate::queries::resolve_file_id(db, file);
 
-    let mut keys: Vec<CallKey> = Vec::new();
-    let mut comptime_keys: Vec<CallKey> = Vec::new();
+    let mut keys: Vec<TypeCallKey> = Vec::new();
+    let mut comptime_keys: Vec<ComptimeCallKey> = Vec::new();
     // One representative call site per **distinct** key, parallel to `keys` (ADR-0128 §2). The first
     // site to demand a key is the one recorded: a second call with the same bound types reuses the same
     // clone, so there is one body and it can carry only one backtrace. Naming the first demand is
@@ -783,7 +915,10 @@ pub(crate) fn instantiated_from(
     let mut harvest: CheckResult = start_check.clone();
     for _ in 0..MAX_INSTANTIATION_ROUNDS {
         let mut fresh = false;
-        for (site, key) in type_call_sites(&harvest) {
+        for (site, key) in type_call_sites(&harvest)
+            .into_iter()
+            .filter(|(_, (template, _))| template.file == file_id)
+        {
             if !keys.contains(&key) {
                 keys.push(key);
                 key_sites.push(site);
@@ -791,7 +926,7 @@ pub(crate) fn instantiated_from(
             }
         }
         if let Some(values) = comptime_values.as_deref() {
-            for (site, key) in comptime_call_sites(&harvest, values) {
+            for (site, key) in comptime_call_sites(&harvest, values, file_id) {
                 if !comptime_keys.contains(&key) {
                     comptime_keys.push(key);
                     comptime_key_sites.push(site);
@@ -803,6 +938,55 @@ pub(crate) fn instantiated_from(
             converged = true;
             break;
         }
+        let base_sigs_for_sites = file_signatures(db, file, catalog);
+        let pool_for_sites = crate::sema::read_pool(db);
+        let type_sites: Vec<Option<jr_hir::InstantiationSite>> = keys
+            .iter()
+            .zip(&key_sites)
+            .map(|((template, bound_types), site)| {
+                let vars = base_sigs_for_sites
+                    .signatures
+                    .proc_sig(template.proc)
+                    .map(|sig| sig.poly_vars.clone())
+                    .unwrap_or_default();
+                let bindings: Vec<(jr_base::Symbol, jr_pool::PoolId)> =
+                    vars.into_iter().zip(bound_types.iter().copied()).collect();
+                build_instantiation_site(
+                    start_hir.as_ref(),
+                    start_hir.as_ref(),
+                    db.interner(),
+                    base_sigs_for_sites.signatures.as_ref(),
+                    &pool_for_sites,
+                    template.proc,
+                    &bindings,
+                    Some(*site),
+                )
+            })
+            .collect();
+        let comptime_sites: Vec<Option<jr_hir::InstantiationSite>> = comptime_keys
+            .iter()
+            .zip(&comptime_key_sites)
+            .map(|((template, bound_types, _), site)| {
+                let vars = base_sigs_for_sites
+                    .signatures
+                    .proc_sig(template.proc)
+                    .map(|sig| sig.poly_vars.clone())
+                    .unwrap_or_default();
+                let bindings: Vec<(jr_base::Symbol, jr_pool::PoolId)> =
+                    vars.into_iter().zip(bound_types.iter().copied()).collect();
+                build_instantiation_site(
+                    start_hir.as_ref(),
+                    start_hir.as_ref(),
+                    db.interner(),
+                    base_sigs_for_sites.signatures.as_ref(),
+                    &pool_for_sites,
+                    template.proc,
+                    &bindings,
+                    Some(*site),
+                )
+            })
+            .collect();
+        drop(pool_for_sites);
         let built = expand_round(
             db,
             file,
@@ -810,8 +994,8 @@ pub(crate) fn instantiated_from(
             &start_hir,
             &keys,
             &comptime_keys,
-            &key_sites,
-            &comptime_key_sites,
+            &type_sites,
+            &comptime_sites,
         );
         harvest = built.check.clone();
         expansion = Some(built);
@@ -833,7 +1017,7 @@ pub(crate) fn instantiated_from(
     }
     let mut comptime_masks: Vec<(CallSite, Vec<bool>)> = Vec::new();
     if let Some(values) = comptime_values.as_deref() {
-        for (call, key) in comptime_call_sites(&expansion.check, values) {
+        for (call, key) in comptime_call_sites(&expansion.check, values, file_id) {
             let Some(index) = comptime_keys.iter().position(|k| *k == key) else {
                 continue;
             };
@@ -844,7 +1028,7 @@ pub(crate) fn instantiated_from(
             // The template's `comptime_params` flags exactly, because the checker preserved source order.
             let mask = base_sigs
                 .signatures
-                .proc_sig(key.0)
+                .proc_sig(key.0.proc)
                 .map(|sig| sig.comptime_params.clone())
                 .unwrap_or_default();
             comptime_masks.push((call, mask));
@@ -884,15 +1068,15 @@ pub(crate) fn instantiated_from(
 }
 
 /// One round: append a procedure per key and recompute resolve, signatures and the check.
-fn expand_round(
+pub(crate) fn expand_round(
     db: &dyn Db,
     file: SourceFile,
     catalog: ModuleCatalog,
     start_hir: &jr_hir::FileHir,
-    keys: &[CallKey],
-    comptime_keys: &[CallKey],
-    key_sites: &[CallSite],
-    comptime_key_sites: &[CallSite],
+    keys: &[TypeCallKey],
+    comptime_keys: &[ComptimeCallKey],
+    key_sites: &[Option<jr_hir::InstantiationSite>],
+    comptime_key_sites: &[Option<jr_hir::InstantiationSite>],
 ) -> Expansion {
     let file_id = crate::queries::resolve_file_id(db, file);
     let interner = db.interner();
@@ -911,29 +1095,21 @@ fn expand_round(
         .iter()
         .enumerate()
         .map(|(n, (template, bound_types))| {
+            debug_assert_eq!(template.file, file_id);
             let vars = base_sigs_for_vars
                 .signatures
-                .proc_sig(*template)
+                .proc_sig(template.proc)
                 .map(|sig| sig.poly_vars.clone())
                 .unwrap_or_default();
             let bindings: Vec<(jr_base::Symbol, jr_pool::PoolId)> =
                 vars.into_iter().zip(bound_types.iter().copied()).collect();
-            let site = instantiation_site(
-                start_hir,
-                interner,
-                &base_sigs_for_vars,
-                &pool_for_names,
-                *template,
-                &bindings,
-                key_sites.get(n).copied(),
-            );
             jr_hir::Instantiation {
-                template: *template,
+                template: template.proc,
                 bindings,
                 // A `$T` instantiation has no comptime-value bakings — that path is comptime-value's
                 // (ADR-0088 §3); this vector is empty, which the appender reads as "keep every parameter".
                 comptime_values: Vec::new(),
-                site,
+                site: key_sites.get(n).cloned().flatten(),
             }
         })
         .collect();
@@ -942,8 +1118,12 @@ fn expand_round(
     // position, `None` at a runtime parameter's, and the appender drops the `Some` params and bakes
     // their literals.
     let comptime_start = instantiations.len();
-    for (n, (template, values)) in comptime_keys.iter().enumerate() {
-        let sig = base_sigs_for_vars.signatures.proc_sig(*template);
+    for (n, (template, bound_types, values)) in comptime_keys.iter().enumerate() {
+        debug_assert_eq!(template.file, file_id);
+        let sig = base_sigs_for_vars.signatures.proc_sig(template.proc);
+        let vars = sig.map(|s| s.poly_vars.clone()).unwrap_or_default();
+        let bindings: Vec<(jr_base::Symbol, jr_pool::PoolId)> =
+            vars.into_iter().zip(bound_types.iter().copied()).collect();
         let comptime_flags = sig.map(|s| s.comptime_params.clone()).unwrap_or_default();
         let mut value_iter = values.iter().copied();
         let comptime_values: Vec<Option<jr_pool::PoolId>> = comptime_flags
@@ -951,20 +1131,12 @@ fn expand_round(
             .map(|&is_comptime| if is_comptime { value_iter.next() } else { None })
             .collect();
         instantiations.push(jr_hir::Instantiation {
-            template: *template,
-            bindings: Vec::new(),
+            template: template.proc,
+            bindings,
             comptime_values,
             // A `$N` instantiation has no type bindings, so its description names the baked
             // parameters' template rather than a `$T = …` list (ADR-0128 §2).
-            site: instantiation_site(
-                start_hir,
-                interner,
-                &base_sigs_for_vars,
-                &pool_for_names,
-                *template,
-                &[],
-                comptime_key_sites.get(n).copied(),
-            ),
+            site: comptime_key_sites.get(n).cloned().flatten(),
         });
     }
     drop(pool_for_names);
@@ -1060,6 +1232,11 @@ fn expand_round(
         .iter()
         .map(|(id, hir)| (*id, hir.as_ref()))
         .collect();
+    let imported_template_inputs = imported_template_inputs(db, file, catalog);
+    let imported_templates: Vec<_> = imported_template_inputs
+        .iter()
+        .map(ImportedTemplateInputs::borrowed)
+        .collect();
     let output = jr_sema::check_file(
         hir.as_ref(),
         file_id,
@@ -1067,6 +1244,7 @@ fn expand_round(
         signatures.as_ref(),
         &check_imports,
         &check_imported_hirs,
+        &imported_templates,
         &mut pool,
         interner,
     );
@@ -1157,6 +1335,7 @@ fn translate_check_output(
         operator_calls: Arc::new(operator_calls),
         filled_args: Arc::new(filled_args),
         pointer_views: Arc::new(output.pointer_views),
+        allocations: Arc::new(output.allocations),
         atomics: Arc::new(output.atomics),
         assertions: Arc::new(output.assertions),
         folded_calls: Arc::new(output.folded_calls),

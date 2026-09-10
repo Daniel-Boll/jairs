@@ -163,7 +163,28 @@ impl Decl<'_> {
             (None, _) => Vec::new(),
         };
 
-        let ret = sig.map(|sig| self.type_name_of(sig.ret));
+        let ret = sig.map(|sig| {
+            if sig.result_names.is_empty() {
+                return self.type_name_of(sig.ret);
+            }
+            let elems: Vec<PoolId> = self
+                .pool
+                .results_elems(sig.ret)
+                .map(<[PoolId]>::to_vec)
+                .unwrap_or_else(|| vec![sig.ret]);
+            let parts: Vec<String> = elems
+                .iter()
+                .enumerate()
+                .map(|(index, ty)| {
+                    let ty = self.type_name_of(*ty);
+                    match sig.result_names.get(index).copied().flatten() {
+                        Some(name) => format!("{}: {ty}", self.interner.resolve(name)),
+                        None => ty,
+                    }
+                })
+                .collect();
+            format!("({})", parts.join(", "))
+        });
         match ret {
             // Jairs writes no arrow for a procedure that returns nothing, so neither
             // does this.

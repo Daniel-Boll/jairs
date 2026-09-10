@@ -25,7 +25,7 @@ use jr_pool::TargetLayout;
 use rustc_hash::FxHashMap;
 
 use crate::{
-    BuildConfig, Db, SourceFile, mir::optimized_file_mir, module_loader::ModuleCatalog,
+    BuildConfig, Db, SourceFile, mir::optimized_file_mir_for_root, module_loader::ModuleCatalog,
     run::main_of,
 };
 
@@ -118,7 +118,7 @@ pub fn build_object(
     // never be held across a nested query call.
     let mut inputs = Vec::with_capacity(files.len());
     for file in files {
-        let mir = optimized_file_mir(db, file, catalog, config);
+        let mir = optimized_file_mir_for_root(db, root, file, catalog, config);
         if mir.gated {
             continue;
         }

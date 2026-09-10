@@ -28,7 +28,7 @@
 //!   pp.x = 1;`, so `.` looks through any number of pointers, and the result is
 //!   assignable because a dereference always has an address.
 
-use jr_base::{Interner, Span, Symbol, TextRange};
+use jr_base::{FileId, Interner, Span, Symbol, TextRange};
 use jr_diag::{Diagnostic, Diagnostics};
 use jr_hir::{
     AssignOp, BinOp, BodyId, Expr, ExprId, ExprScope, FileHir, ItemKind, Literal, ProcId, Res,
@@ -53,6 +53,52 @@ use crate::sigs::{FileSignatures, ProcSig, SigKind};
 /// phase for a named file-level declaration's initialiser, which the check phase deliberately does not
 /// revisit. Both hand it to `jr-db`, which keys every entry into the one `run` channel `jr-mir` reads.
 pub type FoldedCalls = FxHashMap<(ExprScope, ExprId), PoolId>;
+
+/// The declaration-site identity of a polymorphic procedure template.
+///
+/// A [`ProcId`] is only an arena index within one HIR file. Cross-file specialization therefore
+/// needs the declaring [`FileId`] too, exactly as a direct MIR callee does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TemplateRef {
+    /// The file that owns the template declaration.
+    pub file: FileId,
+    /// The procedure within that file's HIR arena.
+    pub proc: ProcId,
+}
+
+/// The declaration environment needed to infer and concretize an imported pure-`$T` template.
+///
+/// A template's `TypeRefId`s index its owner's HIR, and names within those type references resolve
+/// against the owner's own declarations and direct imports. Passing only the exported `ProcSig`
+/// would therefore be insufficient and could silently read the caller's arenas instead.
+#[derive(Clone)]
+pub struct ImportedTemplateContext<'a> {
+    /// The owner file.
+    pub file: FileId,
+    /// The owner's HIR, whose type-reference arenas contain the template signature.
+    pub hir: &'a FileHir,
+    /// The owner's complete signatures.
+    pub signatures: &'a FileSignatures,
+    /// The owner's direct imported signatures, in source order.
+    pub imports: Vec<(&'a str, &'a FileSignatures)>,
+    /// The owner's direct imported HIRs, for parameterised nominal type resolution.
+    pub imported_hirs: Vec<(FileId, &'a FileHir)>,
+}
+
+#[derive(Clone)]
+enum ImportedTemplateCallee<'a> {
+    PureType {
+        template: TemplateRef,
+        sig: Box<ProcSig>,
+        owner: ImportedTemplateContext<'a>,
+    },
+    HasComptime {
+        name: Symbol,
+    },
+    MissingOwnerContext {
+        name: Symbol,
+    },
+}
 
 /// A compiler intrinsic: a call the compiler recognises by name and types itself.
 ///
@@ -87,6 +133,8 @@ enum Intrinsic {
     Untyped,
     /// `view(p, count)` — a `[]T` over `count` elements at `p` (ADR-0109 §1).
     View,
+    /// `New(T)` — one zero-initialised `T` allocated through the active context (ADR-0228).
+    New,
     /// `os()` — the target operating system, as a `Basic.Operating_System` (ADR-0180 §2).
     ///
     /// The only intrinsic that takes **no** arguments, and the only one whose answer comes from the
@@ -112,6 +160,13 @@ enum Intrinsic {
     /// `assert(condition[, "message"])` — a source-located run-time check (ADR-0224).
     Assert,
 }
+
+/// Minimum alignment promised by the context allocator protocol.
+///
+/// The default native allocator is libc `malloc`, and the VM deliberately matches its 16-byte
+/// guarantee. The protocol carries only a byte count, not an alignment, so `New` cannot honestly
+/// request anything stricter from a custom allocator either (ADR-0228 §2).
+const CONTEXT_ALLOCATOR_ALIGNMENT: u32 = 16;
 
 /// How a `Type_Info` field's type is checked.
 #[derive(Debug, Clone, Copy)]
@@ -267,6 +322,12 @@ pub struct CheckOutput {
     /// Real code rather than a fold, so it goes to `jr-mir` rather than into `folded_calls`: a pointer's bits
     /// do not depend on its pointee, and retyping is a store-then-load through a slot.
     pub pointer_views: FxHashMap<(ExprScope, ExprId), PoolId>,
+    /// Each `New(T)` call, carrying `(result pointer type, byte-count constant)` (ADR-0228).
+    ///
+    /// The byte count is interned here because MIR deliberately knows no layout. The result type is
+    /// recorded rather than recovered from syntax so parameterised and instantiated types cross the
+    /// sema-to-MIR boundary once, already resolved.
+    pub allocations: FxHashMap<(ExprScope, ExprId), (PoolId, PoolId)>,
     /// Which atomic operation each `atomic_*` call performs (ADR-0176 §3).
     ///
     /// Recorded here for the reason `pointer_views` is: an intrinsic's callee resolves to nothing, so MIR
@@ -303,7 +364,7 @@ pub struct CheckOutput {
     ///
     /// The expansion pass in `jr-db` reads this to append a substituted procedure per distinct key and
     /// rewrite the call to target it. Empty for a file with no polymorphic calls.
-    pub instantiations: FxHashMap<(ExprScope, ExprId), (jr_hir::ProcId, Vec<PoolId>)>,
+    pub instantiations: FxHashMap<(ExprScope, ExprId), (TemplateRef, Vec<PoolId>)>,
     /// Each comptime-value call and the argument expressions its `$N` parameters need (ADR-0088 §1):
     /// `(proc, [arg ExprId per comptime parameter])`.
     ///
@@ -379,6 +440,7 @@ pub fn check_file(
     signatures: &FileSignatures,
     imports: &[(&str, &FileSignatures)],
     imported_hirs: &[(jr_base::FileId, &FileHir)],
+    imported_templates: &[ImportedTemplateContext<'_>],
     pool: &mut Pool,
     interner: &Interner,
 ) -> CheckOutput {
@@ -398,6 +460,7 @@ pub fn check_file(
         pool,
         imports.to_vec(),
         imported_hirs.to_vec(),
+        imported_templates.to_vec(),
         Mode::Check,
     );
     ctx.sigs = signatures.clone();
@@ -519,7 +582,7 @@ pub fn check_file(
         let watermark = ctx.diags.len();
         ctx.check_stmt(body, root);
         if let Some(proc) = owner.get(&body) {
-            let frames = instantiation_backtrace(hir, &owner, *proc);
+            let frames = instantiation_backtrace(hir, *proc);
             ctx.diags.attach_frames_since(watermark, &frames);
         }
         ctx.body = None;
@@ -547,6 +610,7 @@ pub fn check_file(
         filled_calls: ctx.filled_calls,
         folded_calls: ctx.folded_calls,
         pointer_views: ctx.pointer_views,
+        allocations: ctx.allocations,
         atomics: ctx.atomics,
         assertions: ctx.assertions,
         folded_call_spans: ctx.folded_call_spans,
@@ -563,13 +627,8 @@ pub fn check_file(
 ///
 /// Empty for an ordinary procedure, which is the common case and costs one failed map lookup.
 ///
-/// # Why it walks, rather than reporting one frame
-///
-/// A template that calls a template produces a clone whose body calls another clone, so a diagnostic in
-/// the innermost one is only explicable by the whole chain: `main` demanded `outer($T = bool)`, whose
-/// body demanded `inner($T = bool)`, and the error is in `inner`. Each site records the *arena* its
-/// demanding call sat in, so `owner` turns that into the enclosing procedure and the walk continues while
-/// that procedure is itself an instantiation.
+/// The expansion planner materialises the complete chain at the demand site, including cross-file
+/// callers whose body scopes cannot be interpreted in this HIR arena.
 ///
 /// Innermost first because that is the order [`jr_diag`]'s renderer prints, and it matches how a reader
 /// reads an error: the thing that broke, then why it was asked for.
@@ -577,43 +636,28 @@ pub fn check_file(
 /// **Bounded**, like every other fixed-point walk in this compiler (`MAX_OPT_ROUNDS`,
 /// `MAX_INSTANTIATION_ROUNDS`): a recursive template could otherwise produce a cycle, and a diagnostic
 /// path is the worst place to hang. A truncated backtrace is still useful; a hung `jr check` is not.
-fn instantiation_backtrace(
-    hir: &FileHir,
-    owner: &FxHashMap<BodyId, ProcId>,
-    proc: ProcId,
-) -> Vec<jr_diag::InstantiationFrame> {
+fn instantiation_backtrace(hir: &FileHir, proc: ProcId) -> Vec<jr_diag::InstantiationFrame> {
     /// Enough to explain any chain a person wrote, and short enough that a cycle costs nothing.
     const MAX_BACKTRACE_FRAMES: usize = 8;
 
-    let mut frames = Vec::new();
-    let mut current = proc;
-    for _ in 0..MAX_BACKTRACE_FRAMES {
-        let Some((_, site)) = hir.instantiation_sites.iter().find(|(p, _)| *p == current) else {
-            break;
-        };
-        frames.push(site.frame.clone());
-        // Continue only while the demanding call sat in a body whose procedure is itself an
-        // instantiation; a call from an ordinary procedure ends the chain, which is where the user's
-        // own code begins.
-        let Some(ExprScope::Body(body)) = site.called_from else {
-            break;
-        };
-        let Some(next) = owner.get(&body) else {
-            break;
-        };
-        if *next == current {
-            break;
-        }
-        current = *next;
-    }
-    frames
+    hir.instantiation_sites
+        .iter()
+        .find(|(candidate, _)| *candidate == proc)
+        .map(|(_, site)| {
+            site.frames
+                .iter()
+                .take(MAX_BACKTRACE_FRAMES)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
 // Statements
 // ---------------------------------------------------------------------------
 
-impl Ctx<'_> {
+impl<'a> Ctx<'a> {
     /// Checks one statement of a body.
     pub(crate) fn check_stmt(&mut self, body: BodyId, stmt: StmtId) {
         let scope = ExprScope::Body(body);
@@ -1524,7 +1568,7 @@ impl Ctx<'_> {
 // Expressions
 // ---------------------------------------------------------------------------
 
-impl Ctx<'_> {
+impl<'a> Ctx<'a> {
     /// Types one expression, imposing `expected` on it where that is meaningful.
     ///
     /// `expected` is what makes ADR-0016 §1 work: an integer literal has no type
@@ -3567,6 +3611,7 @@ impl Ctx<'_> {
             // other boundary intrinsics because its *result* type comes from an argument's pointee rather than
             // from anything the ordinary call path could compute.
             Some(Intrinsic::View) => return self.check_view(scope, id, callee, args, span),
+            Some(Intrinsic::New) => return self.check_new(scope, id, callee, args, span),
             // **`os()` folds to a `Basic.Operating_System` member** (ADR-0180 §2). Intercepted here
             // because it takes no arguments and its *type* is a library enum the compiler has to look up
             // by name — neither of which the ordinary call path can do.
@@ -3574,61 +3619,9 @@ impl Ctx<'_> {
             None => {}
         }
 
-        // **A call to an *imported* polymorphic procedure is refused** (E0268, ADR-0104 §2). Cross-file
-        // instantiation is deferred (ADR-0082 §5), and `callee_poly` deliberately returns `None` for an
-        // imported template — but the claim in its own docs, that the template's signature then "reports an
-        // honest mismatch", turned out to be **false**: a `$T` parameter's type is `PoolId::ERROR`, which
-        // matches anything, so the call was *accepted* and reached the engines as "no routine for file 2
-        // proc 0" — a leaked internal error for a program the module boundary forbids. Refused here, before
-        // the ordinary path, so the deferral is a diagnostic rather than an ICE.
-        if let Some(name) = self.imported_template_callee(scope, callee) {
-            self.check_expr(scope, callee, None);
-            for arg in args {
-                self.check_expr(scope, *arg, None);
-            }
-            self.diags.push(
-                Diagnostic::error(
-                    span,
-                    format!(
-                        "`{}` is polymorphic and declared in another module",
-                        self.interner.resolve(name)
-                    ),
-                )
-                .with_code(E0268)
-                .with_note(
-                    "instantiating a template across a module boundary is not yet supported, so the \
-                     compiler cannot build a concrete copy of it here",
-                )
-                .with_help(
-                    "wrap it in a non-polymorphic procedure in the module that declares it, and call that",
-                ),
-            );
-            return PoolId::ERROR;
-        }
-
-        // **A call to a polymorphic procedure is instantiated** (ADR-0082 §1): infer each `$T` from the
-        // corresponding argument, record `(proc, bound types)` for the expansion pass, and return the
-        // concrete return type. Handled before the ordinary call path, whose signature is a template with
-        // `ERROR` parameters that a direct type-check would compare `42` against.
-        if let Some((proc, sig)) = self.callee_poly(scope, callee) {
-            // **A `#modify` predicate now runs** (ADR-0095 §1): the call is instantiated like any other,
-            // and the predicate's clone is evaluated in `file_mir` — a `false` there refuses this
-            // instantiation with E0275. ADR-0093 §3's E0274 refusal is lifted, exactly as E0268 was for
-            // `$T` and E0271's first meaning for `$N`: each such refusal named the sub-wave that removes it.
-            return self.check_polymorphic_call(scope, id, callee, proc, &sig, args, span);
-        }
-
-        // **A call to a `#expand` macro is refused, by design** (ADR-0090 §3): a macro's body must be
-        // *spliced* into this scope, and the splice is the next sub-wave. Refused rather than allowed to
-        // fall through to the ordinary call path, which is what happened before this check existed —
-        // `#expand` was accepted and silently behaved as an ordinary procedure, the "a directive that is
-        // ignored is worse than one that is rejected" failure ADR-0058 §3 names. Arguments are still
-        // typed, so an error inside one is reported too.
-        // **A call to an *imported* macro is refused** (ADR-0091 §3). A same-file macro call never reaches
-        // here: `jr-hir`'s lowering splices it away before sema sees a call at all. What does reach here is
-        // a **cross-file** one, because the macro-body map is built per file — and before this refusal it
-        // reached the VM as "internal compiler error: no routine for file 1 proc 0", the fifth time
-        // compiler internals leaked for a reasonable program. Refused with a sentence a reader can act on.
+        // **An imported `#expand` macro is refused before template dispatch.** A polymorphic macro also
+        // has a template signature; checking that first would silently turn the macro into an ordinary
+        // owner-specialised procedure and bypass ADR-0091's cross-file splice boundary.
         if self.callee_is_imported_macro(scope, callee) {
             for arg in args {
                 self.check_expr(scope, *arg, None);
@@ -3646,6 +3639,91 @@ impl Ctx<'_> {
                 .with_help("move the macro into this file, or make it an ordinary procedure"),
             );
             return PoolId::ERROR;
+        }
+
+        // Imported **pure `$T`** templates now participate in the same inference as local ones, while
+        // retaining their declaration-site identity. Imported `$N` and mixed `$T`+`$N` templates remain
+        // refused: their values require cross-file const evaluation, which is a distinct dependency from
+        // type-only specialization.
+        if let Some(imported) = self.imported_template_callee(scope, callee) {
+            match imported {
+                ImportedTemplateCallee::PureType {
+                    template,
+                    sig,
+                    owner,
+                    ..
+                } => {
+                    return self.check_polymorphic_call(
+                        scope,
+                        id,
+                        callee,
+                        template,
+                        sig.as_ref(),
+                        Some(owner),
+                        args,
+                        span,
+                    );
+                }
+                ImportedTemplateCallee::HasComptime { name } => {
+                    self.check_expr(scope, callee, None);
+                    for arg in args {
+                        self.check_expr(scope, *arg, None);
+                    }
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            format!(
+                                "`{}` has a compile-time parameter and is declared in another module",
+                                self.interner.resolve(name)
+                            ),
+                        )
+                        .with_code(E0268)
+                        .with_note(
+                            "cross-file specialization currently accepts pure `$T` templates only; \
+                             imported `$N` and mixed `$T`+`$N` templates also require the owner's \
+                             compile-time value evaluation",
+                        )
+                        .with_help(
+                            "wrap it in a non-polymorphic procedure in the module that declares it, and call that",
+                        ),
+                    );
+                    return PoolId::ERROR;
+                }
+                ImportedTemplateCallee::MissingOwnerContext { name } => {
+                    self.check_expr(scope, callee, None);
+                    for arg in args {
+                        self.check_expr(scope, *arg, None);
+                    }
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            format!(
+                                "the declaration environment for imported template `{}` is unavailable",
+                                self.interner.resolve(name)
+                            ),
+                        )
+                        .with_code(E0268)
+                        .with_note(
+                            "the template's type references belong to its declaring file and cannot be \
+                             inferred safely from the caller's HIR arenas",
+                        ),
+                    );
+                    return PoolId::ERROR;
+                }
+            }
+        }
+
+        // **A call to a polymorphic procedure is instantiated** (ADR-0082 §1): infer each `$T` from the
+        // corresponding argument, record `(proc, bound types)` for the expansion pass, and return the
+        // concrete return type. Handled before the ordinary call path, whose signature is a template with
+        // `ERROR` parameters that a direct type-check would compare `42` against.
+        if let Some((template, sig)) = self.callee_poly(scope, callee) {
+            // **A `#modify` predicate now runs** (ADR-0095 §1): the call is instantiated like any other,
+            // and the predicate's clone is evaluated in `file_mir` — a `false` there refuses this
+            // instantiation with E0275. ADR-0093 §3's E0274 refusal is lifted, exactly as E0268 was for
+            // `$T` and E0271's first meaning for `$N`: each such refusal named the sub-wave that removes it.
+            return self
+                .check_polymorphic_call(scope, id, callee, template, &sig, None, args, span);
         }
 
         // **A call to a comptime-value-parameterised procedure is instantiated** (ADR-0088 §1): its `$N`
@@ -3981,6 +4059,7 @@ impl Ctx<'_> {
             "typed" => Intrinsic::Typed,
             "untyped" => Intrinsic::Untyped,
             "view" => Intrinsic::View,
+            "New" => Intrinsic::New,
             "os" => Intrinsic::Os,
             "atomic_load" => Intrinsic::AtomicLoad,
             "atomic_store" => Intrinsic::AtomicStore,
@@ -4701,6 +4780,88 @@ impl Ctx<'_> {
         let result = self.pool.pointer_to(described);
         self.pointer_views.insert((scope, id), result);
         self.expect(None, result, span)
+    }
+
+    /// Types `New(T)` and records the concrete allocation for MIR (ADR-0228).
+    fn check_new(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        callee: ExprId,
+        args: &[ExprId],
+        span: Span,
+    ) -> PoolId {
+        self.types.set_expr(scope, callee, PoolId::VOID);
+        if args.len() != 1 {
+            self.wrong_intrinsic_arity("New", 1, args.len(), span);
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            return PoolId::ERROR;
+        }
+
+        self.type_position.insert((scope, args[0]));
+        let described = self.described_type(scope, args[0]);
+        self.types.set_expr(scope, args[0], PoolId::TYPE);
+        let Some(described) = described else {
+            if let Expr::Name { name, .. } = self.expr_of(scope, args[0])
+                && self.poly_var_names.contains(&name)
+            {
+                return PoolId::ERROR;
+            }
+            self.diags.push(
+                Diagnostic::error(span, "`New` needs a type to allocate")
+                    .with_code(E0261)
+                    .with_note("its argument is the allocated type, e.g. `New(Node)`"),
+            );
+            return PoolId::ERROR;
+        };
+        if described == PoolId::ERROR {
+            return PoolId::ERROR;
+        }
+
+        // Reuse the context diagnostic exactly: file scope and `#c_call` bodies have no allocator to call.
+        if self.context_expr_type(scope, span) == PoolId::ERROR {
+            return PoolId::ERROR;
+        }
+
+        let Ok(layout) = jr_pool::layout_of(self.pool, jr_pool::TargetLayout::LP64, described)
+        else {
+            let text = self.describe(described);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("`New` cannot allocate `{text}`, which has no runtime layout"),
+                )
+                .with_code(E0266)
+                .with_note("only a run-time value type has storage an allocator can provide"),
+            );
+            return PoolId::ERROR;
+        };
+        if layout.align > CONTEXT_ALLOCATOR_ALIGNMENT {
+            let text = self.describe(described);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!(
+                        "`New` cannot allocate `{text}`, which needs {}-byte alignment",
+                        layout.align
+                    ),
+                )
+                .with_code(E0266)
+                .with_note(
+                    "the context allocator takes only a byte count and promises at least 16-byte alignment",
+                )
+                .with_help("allocate aligned storage explicitly, or use a type aligned to at most 16 bytes"),
+            );
+            return PoolId::ERROR;
+        }
+
+        let result = self.pool.pointer_to(described);
+        let bytes = self.pool.int_value(PoolId::S64, layout.size);
+        self.allocations.insert((scope, id), (result, bytes));
+        self.types.set_expr(scope, id, result);
+        result
     }
 
     /// Types `view(p, count)` — a `[]T` over `count` elements at `p` (ADR-0109 §1).
@@ -5682,39 +5843,57 @@ impl Ctx<'_> {
         self.sigs.proc_sig(proc).cloned()
     }
 
-    /// The name of an **imported polymorphic** procedure this callee names, or `None` (ADR-0104 §2).
+    /// An imported template callee, classified by whether sema can safely infer it in this wave.
     ///
-    /// The counterpart of [`Self::callee_poly`] across a module boundary. It exists because that function's
-    /// documented assumption was wrong: an imported template does *not* report an honest mismatch on the
-    /// ordinary path, because a `$T` parameter's type is `PoolId::ERROR` and `ERROR` matches anything — so
-    /// the call type-checked and the missing instantiation surfaced as an internal error in whichever engine
-    /// ran first.
-    fn imported_template_callee(&mut self, scope: ExprScope, callee: ExprId) -> Option<Symbol> {
+    /// Pure `$T` templates carry the owner's complete type-resolution environment. Any template with a
+    /// comptime parameter remains E0268, and a missing owner environment is refused rather than indexing
+    /// the caller's HIR with declaration-file `TypeRefId`s.
+    fn imported_template_callee(
+        &mut self,
+        scope: ExprScope,
+        callee: ExprId,
+    ) -> Option<ImportedTemplateCallee<'a>> {
         let Expr::Name { res, name, .. } = self.expr_of(scope, callee) else {
             return None;
         };
-        let Res::Imported(_, imported) = self.resolve.get(scope, callee).unwrap_or(res) else {
+        let Res::Imported(import, imported) = self.resolve.get(scope, callee).unwrap_or(res) else {
             return None;
         };
-        // Asked of the imported *signatures*, which is what this crate has of another file — the same
-        // evidence `callee_is_imported_macro` uses, and recorded by the same pass.
-        self.imports
+        let ItemKind::Import { path, .. } = &self.hir.item(import).kind else {
+            return None;
+        };
+        let (_, signatures) = self
+            .imports
             .iter()
-            .any(|(_, sigs)| sigs.is_template_name(imported))
-            .then_some(name)
+            .find(|(module, _)| *module == path.as_str())?;
+        let entry = signatures.lookup(imported)?;
+        let proc = entry.proc?;
+        let sig = signatures.proc_sig(proc)?.clone();
+        if !sig.is_template() {
+            return None;
+        }
+        if sig.comptime_params.iter().any(|&is_comptime| is_comptime) {
+            return Some(ImportedTemplateCallee::HasComptime { name });
+        }
+        let file = signatures.file();
+        let Some(owner) = self
+            .imported_templates
+            .iter()
+            .find(|owner| owner.file == file && owner.signatures.file() == file)
+            .cloned()
+        else {
+            return Some(ImportedTemplateCallee::MissingOwnerContext { name });
+        };
+        Some(ImportedTemplateCallee::PureType {
+            template: TemplateRef { file, proc },
+            sig: Box::new(sig),
+            owner,
+        })
     }
 
-    /// The callee's `(ProcId, ProcSig)` when it names a **local polymorphic** procedure (ADR-0082 §1).
-    ///
-    /// `None` for an ordinary procedure (no `$T`), and for an *imported* polymorphic one: cross-file
-    /// instantiation is deferred (ADR-0082 §5).
-    ///
-    /// **This used to claim the imported case then "reports an honest mismatch" on the ordinary path, and it
-    /// did not** (ADR-0104 §2). A `$T` parameter's type is `PoolId::ERROR`, and `ERROR` matches anything — so
-    /// the call type-checked and the missing instantiation leaked out of whichever engine ran first as "no
-    /// routine for file N proc M". [`Self::imported_template_callee`] refuses it with E0268 before the
-    /// ordinary path is reached, which is what makes the deferral a diagnostic instead of an ICE.
-    fn callee_poly(&mut self, scope: ExprScope, callee: ExprId) -> Option<(ProcId, ProcSig)> {
+    /// The callee's declaration identity and signature when it names a **local polymorphic** procedure
+    /// (ADR-0082 §1).
+    fn callee_poly(&mut self, scope: ExprScope, callee: ExprId) -> Option<(TemplateRef, ProcSig)> {
         let Expr::Name { res, .. } = self.expr_of(scope, callee) else {
             return None;
         };
@@ -5733,7 +5912,13 @@ impl Ctx<'_> {
         // routed there too, and it records the comptime arguments alongside the type
         // bindings so the instantiation carries both. This is the mixed case ADR-0088
         // deferred and PLAN §7 named as "wave 7 — `$$T`".
-        (!sig.poly_vars.is_empty()).then_some((proc, sig))
+        (!sig.poly_vars.is_empty()).then_some((
+            TemplateRef {
+                file: self.file,
+                proc,
+            },
+            sig,
+        ))
     }
 
     /// The `(proc, sig)` of a **local** procedure with a `$N` comptime-value parameter that `callee`
@@ -5742,9 +5927,7 @@ impl Ctx<'_> {
     /// Shaped like [`Self::callee_poly`], and separate from it because the two templates key on different
     /// things: a `$T` instantiation keys on the argument's *type* (known here), a `$N` one on the
     /// argument's *value* (known only after const-eval, downstream). An imported callee falls through —
-    /// cross-file instantiation is deferred (ADR-0082 §5) — and is refused by
-    /// [`Self::imported_template_callee`], since the "honest mismatch" this comment used to promise does not
-    /// happen (ADR-0104 §2).
+    /// imported comptime templates are refused by [`Self::imported_template_callee`].
     fn callee_comptime_template(
         &mut self,
         scope: ExprScope,
@@ -5860,12 +6043,58 @@ impl Ctx<'_> {
         sig.ret
     }
 
-    /// Types a call to a local polymorphic procedure, recording the instantiation (ADR-0082 §1).
+    /// Runs `f` with an imported template's declaration environment selected.
+    ///
+    /// The caller's `ResolveMap`, body, locals and expression types stay selected because `f` may not inspect
+    /// owner expressions. Only type-reference resolution moves: HIR arena, file identity, direct imports,
+    /// imported HIRs and module signatures. `sigs` is replaced with an owner clone too, so resolving a type
+    /// reached only through one of the owner's imports cannot record that import as used by the caller.
+    fn with_imported_template_context<R>(
+        &mut self,
+        owner: &ImportedTemplateContext<'a>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let saved_hir = self.hir;
+        let saved_file = self.file;
+        let saved_imports = core::mem::replace(&mut self.imports, owner.imports.clone());
+        let saved_imported_hirs =
+            core::mem::replace(&mut self.imported_hirs, owner.imported_hirs.clone());
+        let saved_module = self.resolving_in_module;
+        let saved_sigs = core::mem::replace(&mut self.sigs, owner.signatures.clone());
+        let saved_pending_insert = self.file_has_pending_insert;
+
+        self.hir = owner.hir;
+        self.file = owner.file;
+        self.resolving_in_module = Some(owner.signatures);
+        self.file_has_pending_insert = owner.hir.items.iter().any(|item| {
+            matches!(
+                item.kind,
+                ItemKind::Insert {
+                    operand: Some(_),
+                    ..
+                }
+            )
+        });
+
+        let result = f(self);
+
+        self.hir = saved_hir;
+        self.file = saved_file;
+        self.imports = saved_imports;
+        self.imported_hirs = saved_imported_hirs;
+        self.resolving_in_module = saved_module;
+        self.sigs = saved_sigs;
+        self.file_has_pending_insert = saved_pending_insert;
+        result
+    }
+
+    /// Types a call to a polymorphic procedure, recording the owner-qualified instantiation
+    /// (ADR-0082 §1).
     ///
     /// Infers each `$T` from the corresponding argument's type, binds it, re-resolves the signature to
     /// concrete parameter and return types, checks the arguments against those, and records
-    /// `(proc, bound types)` for the expansion pass. The return type is the concrete one, so the call's
-    /// value is usable exactly as an ordinary call's.
+    /// `(TemplateRef, bound types)` for the expansion pass. An imported template is inferred and
+    /// concretized in its owner's type environment; caller arguments remain typed in the caller.
     ///
     /// Refuses — with E0268 — the cases this sub-wave does not instantiate (ADR-0082 §5): more than one
     /// distinct `$T`, or a `$T` that no argument position pins. A refusal here is by design and named, not
@@ -5875,8 +6104,9 @@ impl Ctx<'_> {
         scope: ExprScope,
         id: ExprId,
         callee: ExprId,
-        proc: ProcId,
+        template: TemplateRef,
         sig: &ProcSig,
+        owner: Option<ImportedTemplateContext<'a>>,
         args: &[ExprId],
         span: Span,
     ) -> PoolId {
@@ -5907,24 +6137,40 @@ impl Ctx<'_> {
             return PoolId::ERROR;
         }
 
-        // Infer **each** variable from the first parameter whose declared type *is* `$Var` directly (a bare
-        // poly variable), typing every argument on the way (ADR-0083 §3). A nested `*$T`/`[]$T` position is
-        // not an inference site — that needs a unifier this wave still does not build (ADR-0083 §4).
-        let hir_params = self.hir.proc(proc).params.clone();
+        // Infer **each** variable from the parameter shapes that expose it, typing every argument on the
+        // way. ADR-0084 added pointer/view peeling; ADR-0229 adds parameterised nominal arguments while
+        // preserving declaration identity.
+        let hir_params = owner.as_ref().map_or_else(
+            || self.hir.proc(template.proc).params.clone(),
+            |owner| owner.hir.proc(template.proc).params.clone(),
+        );
+        let arg_types: Vec<PoolId> = args
+            .iter()
+            .map(|arg| self.check_expr(scope, *arg, None))
+            .collect();
         let mut bindings: Vec<(Symbol, PoolId)> = Vec::new();
-        for (index, param) in hir_params.iter().enumerate() {
-            let Some(arg) = args.get(index) else { continue };
-            let arg_ty = self.check_expr(scope, *arg, None);
-            if arg_ty == PoolId::ERROR {
-                continue;
+        let mut infer = |ctx: &mut Self| {
+            for (index, param) in hir_params.iter().enumerate() {
+                let Some(&arg_ty) = arg_types.get(index) else {
+                    continue;
+                };
+                if arg_ty == PoolId::ERROR {
+                    continue;
+                }
+                // Match the parameter's `TypeRef` structure against the argument's resolved type, binding a
+                // `$T` wherever a `TypeRef::Poly` meets a concrete type — directly (`$T` ↔ `U`), through
+                // pointer/view/vector structure (ADR-0084, ADR-0148), or through the arguments of the same
+                // parameterised nominal declaration (ADR-0229). First binding for a variable wins; a later
+                // occurrence is a *use*, checked against it below. A shape mismatch binds nothing.
+                if let Some(t) = param.ty {
+                    ctx.infer_var_in(t, arg_ty, &mut bindings);
+                }
             }
-            // Match the parameter's `TypeRef` structure against the argument's resolved type, binding a
-            // `$T` wherever a `TypeRef::Poly` meets a concrete type — directly (`$T` ↔ `U`) or one layer
-            // deep (`*$T` ↔ `*U`, `[]$T` ↔ `[]U`), ADR-0084 §1. First binding for a variable wins; a later
-            // occurrence is a *use*, checked against it below. A shape mismatch binds nothing (§2).
-            if let Some(t) = param.ty {
-                self.infer_var_in(t, arg_ty, &mut bindings);
-            }
+        };
+        if let Some(owner) = owner.as_ref() {
+            self.with_imported_template_context(owner, &mut infer);
+        } else {
+            infer(self);
         }
 
         // Every variable the signature introduces must have been pinned by a direct argument. One that was
@@ -5955,7 +6201,7 @@ impl Ctx<'_> {
                     Diagnostic::error(span, "cannot infer every `$T` from the arguments of this call")
                         .with_code(E0268)
                         .with_note(
-                            "each type variable is inferred from an argument that pins it — directly, or through a pointer or view (ADR-0084)",
+                            "each type variable is inferred from an argument that pins it — directly, through structural wrappers, or through an instance of the same parameterised nominal type (ADR-0084, ADR-0229)",
                         ),
                 );
             }
@@ -5973,28 +6219,63 @@ impl Ctx<'_> {
         // rather than restores a shadowed binding"; it stayed latent because the two known callers put the
         // inner call last. Order-dependent invisible breakage is the worst kind, so the save/restore is here
         // rather than a rule about where to put a call.
-        let shadowed: Vec<(Symbol, Option<PoolId>)> = bindings
-            .iter()
-            .map(|(var, _)| (*var, self.type_bindings.get(var).copied()))
-            .collect();
-        for (var, ty) in &bindings {
-            self.type_bindings.insert(*var, *ty);
-        }
-        for (index, param) in hir_params.iter().enumerate() {
-            if let (Some(arg), Some(t)) = (args.get(index), param.ty) {
-                let want = self.resolve_type(ExprScope::TopLevel, t, span);
-                if want != PoolId::ERROR {
-                    self.check_expr(scope, *arg, Some(want));
-                }
+        let (concrete_params, ret) = if let Some(owner) = owner.as_ref() {
+            // The owner's environment must not see unrelated type bindings from a template in the caller.
+            // Only this imported template's inferred variables are in scope while its TypeRefs resolve.
+            let caller_bindings = core::mem::take(&mut self.type_bindings);
+            for (var, ty) in &bindings {
+                self.type_bindings.insert(*var, *ty);
             }
-        }
-        let ret = self.hir.proc(proc).ret.map_or(PoolId::VOID, |t| {
-            self.resolve_type(ExprScope::TopLevel, t, span)
-        });
-        for (var, previous) in shadowed {
-            match previous {
-                Some(ty) => self.type_bindings.insert(var, ty),
-                None => self.type_bindings.remove(&var),
+            let concrete = self.with_imported_template_context(owner, |ctx| {
+                let params: Vec<PoolId> = hir_params
+                    .iter()
+                    .map(|param| {
+                        param.ty.map_or(PoolId::ERROR, |ty| {
+                            ctx.resolve_type(ExprScope::TopLevel, ty, span)
+                        })
+                    })
+                    .collect();
+                let ret = owner
+                    .hir
+                    .proc(template.proc)
+                    .ret
+                    .map_or(PoolId::VOID, |ty| {
+                        ctx.resolve_type(ExprScope::TopLevel, ty, span)
+                    });
+                (params, ret)
+            });
+            self.type_bindings = caller_bindings;
+            concrete
+        } else {
+            let shadowed: Vec<(Symbol, Option<PoolId>)> = bindings
+                .iter()
+                .map(|(var, _)| (*var, self.type_bindings.get(var).copied()))
+                .collect();
+            for (var, ty) in &bindings {
+                self.type_bindings.insert(*var, *ty);
+            }
+            let params: Vec<PoolId> = hir_params
+                .iter()
+                .map(|param| {
+                    param.ty.map_or(PoolId::ERROR, |ty| {
+                        self.resolve_type(ExprScope::TopLevel, ty, span)
+                    })
+                })
+                .collect();
+            let ret = self.hir.proc(template.proc).ret.map_or(PoolId::VOID, |ty| {
+                self.resolve_type(ExprScope::TopLevel, ty, span)
+            });
+            for (var, previous) in shadowed {
+                match previous {
+                    Some(ty) => self.type_bindings.insert(var, ty),
+                    None => self.type_bindings.remove(&var),
+                };
+            }
+            (params, ret)
+        };
+        for ((arg, want), param) in args.iter().zip(concrete_params).zip(hir_params.iter()) {
+            if param.ty.is_some() && want != PoolId::ERROR {
+                self.check_expr(scope, *arg, Some(want));
             };
         }
 
@@ -6011,7 +6292,7 @@ impl Ctx<'_> {
                     .map_or(PoolId::ERROR, |(_, t)| *t)
             })
             .collect();
-        self.instantiations.insert((scope, id), (proc, key));
+        self.instantiations.insert((scope, id), (template, key));
 
         // For a **mixed** `$$T` template (ADR-0137), also record the comptime arguments so the
         // pre-pass evaluates them and the instantiation clone bakes their values. A pure `$T`
@@ -6031,18 +6312,19 @@ impl Ctx<'_> {
                 })
                 .collect();
             self.comptime_calls
-                .insert((scope, id), (proc, comptime_args));
+                .insert((scope, id), (template.proc, comptime_args));
         }
         ret
     }
 
     /// Binds a type variable by matching a parameter's `TypeRef` structure against an argument's resolved
-    /// type, one structural layer deep (ADR-0084 §1).
+    /// type (ADR-0084 §1, ADR-0148 §1, ADR-0229).
     ///
     /// `$T` against `U` binds `T = U`; `*$T` against `*U` peels both pointers and binds `T = U`; `[]$T`
-    /// against `[]U` peels both views. A shape that does not align — `*$T` against a non-pointer — binds
-    /// nothing (ADR-0084 §2), leaving the variable for another position to pin or the argument check to
-    /// reject. The first binding for a variable wins; a later occurrence is a *use*, checked against it.
+    /// against `[]U` peels both views; `Box($T)` against `Box(U)` peels matching nominal arguments. A shape
+    /// that does not align — `*$T` against a non-pointer, or `Box($T)` against another declaration — binds
+    /// nothing, leaving the variable for another position to pin or the argument check to reject. The first
+    /// binding for a variable wins; a later occurrence is a *use*, checked against it.
     ///
     /// One-directional and not a unifier (ADR-0084 §3): it reads a binding *out of* the argument type,
     /// with no substitution back and no occurs-check.
@@ -6082,13 +6364,31 @@ impl Ctx<'_> {
                     self.infer_var_in(elem, arg_elem, bindings);
                 }
             }
+            // A parameterised nominal type binds only against an instance of the **same declaration**
+            // (ADR-0229). Equal names or equal fields do not make two structs the same type.
+            TypeRef::Apply { name, args } => {
+                let Some((decl_file, _, sid, _)) = self.parameterised_struct_anywhere(name) else {
+                    return;
+                };
+                let Item::StructType {
+                    decl: arg_decl,
+                    args: arg_args,
+                } = self.pool.item(arg_ty)
+                else {
+                    return;
+                };
+                let want_decl = jr_pool::DeclId::new(decl_file, sid.as_u32());
+                if *arg_decl != want_decl || args.len() != arg_args.len() {
+                    return;
+                }
+                for (param_arg, &arg_arg) in args.iter().zip(arg_args) {
+                    self.infer_var_in(*param_arg, arg_arg, bindings);
+                }
+            }
             // Any other shape (a name, an array — whose length is part of its identity and not matched
             // here — a struct, a proc type) contains no directly-bindable variable in this sub-wave's
             // model, so it contributes no binding. A later sub-wave that wants `[$N]$T` inference adds
             // arms here.
-            // Inferring `$T` through a parameterised struct — `(b: Box($T))` binding `T` from a
-            // `Box(s64)` argument — is nested inference through a nominal type, deferred with the rest
-            // of that step (ADR-0085 §5). So `Apply` binds nothing here this sub-wave.
             // A qualified name is a *name*: it binds nothing, exactly as a bare one does, and for
             // the same reason (ADR-0179 §5).
             TypeRef::Name(_)
@@ -6096,7 +6396,6 @@ impl Ctx<'_> {
             | TypeRef::Array { .. }
             | TypeRef::Results(_)
             | TypeRef::Proc { .. }
-            | TypeRef::Apply { .. }
             | TypeRef::Struct(_)
             | TypeRef::Union(_)
             | TypeRef::Variant(_)
