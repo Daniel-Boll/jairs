@@ -65,8 +65,10 @@ main :: () {
 }
 ```
 
-Defaults must be literals for now; a non-literal default, a named argument on a *cross-file*
-call, and a named argument inside a `#run` are each <span class="jairs-status absent">absent</span>.
+Defaults must be literals for now. Named arguments and omitted defaults work across module
+boundaries and inside `#run`, using the same resolved positional list as an ordinary call.
+Non-literal defaults and Jai's inferred parameter spelling such as `height := 1` remain
+<span class="jairs-status absent">absent</span>.
 
 ## Aggregate returns
 

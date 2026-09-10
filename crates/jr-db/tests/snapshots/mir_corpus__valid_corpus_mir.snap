@@ -21468,3 +21468,50 @@ proc $inst8 -> s64 {
     store s0 <- v1
     return 48_s64
 }
+
+========================================
+165-run-filled-arguments.jr
+========================================
+proc encode -> s64 {
+  params: v0: *Context, v1: s64, v2: s64, v3: s64
+  bb0(v0: *Context, v1: s64, v2: s64, v3: s64):
+    v4: s64 = v1 * 100_s64
+    v5: s64 = v2 * 10_s64
+    v6: s64 = v4 + v5
+    v7: s64 = v6 + v3
+    return v7
+}
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: bool = 435_s64 != 435_s64
+    branch v1 ? bb2() : bb1()
+  bb2():
+    goto bb3(true)
+  bb1():
+    v3: bool = 217_s64 != 217_s64
+    goto bb3(v3)
+  bb3(v2: bool):
+    branch v2 ? bb5() : bb4()
+  bb5():
+    goto bb6(true)
+  bb4():
+    v6: bool = 638_s64 != 638_s64
+    goto bb6(v6)
+  bb6(v4: bool):
+    branch v4 ? bb8() : bb7()
+  bb8():
+    goto bb9(true)
+  bb7():
+    v10: bool = 195_s64 != 195_s64
+    goto bb9(v10)
+  bb9(v7: bool):
+    branch v7 ? bb10() : bb11()
+  bb10():
+    discard call extern proc1(1_s64)
+    goto bb12()
+  bb11():
+    goto bb12()
+  bb12():
+    return
+}

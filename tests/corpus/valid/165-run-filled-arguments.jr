@@ -1,0 +1,29 @@
+// `#run` uses the same resolved positional argument list as an ordinary call (ADR-0234).
+//
+// This needs both halves. An omitted default used to be refused for having one operand too few,
+// while a same-arity named call was more dangerous: the thunk lowered source order and could compute
+// the wrong value without any diagnostic. File and body scopes are both present because their
+// expression arenas start at zero and `FilledArgs` is deliberately keyed by `ExprScope` too.
+#import "Basic";
+
+encode :: (a: s64, b: s64 = 3, c: s64 = 5) -> s64 {
+  return a * 100 + b * 10 + c;
+}
+
+// Omit both defaults: 4, 3, 5.
+FILE_DEFAULTS :: #run encode(4);
+
+// Same arity, completely reordered: 2, 1, 7.
+FILE_REORDERED :: #run encode(c = 7, a = 2, b = 1);
+
+main :: () {
+  // Positional then named, with the skipped middle parameter defaulted: 6, 3, 8.
+  body_mixed := #run encode(6, c = 8);
+
+  // Reordered names plus one omitted default: 1, 9, 5.
+  body_reordered := #run encode(b = 9, a = 1);
+
+  if FILE_DEFAULTS != 435 || FILE_REORDERED != 217 || body_mixed != 638 || body_reordered != 195 {
+    exit(1);
+  }
+}

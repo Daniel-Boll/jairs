@@ -56,10 +56,9 @@ use jr_vm::{Mode, Routine, Value, Vm, VmError};
 /// ```
 ///
 /// because `file_mir` folds *imported constants*, which needs the importer's `file_consts`. So this
-/// carries the inputs and the MIR is lowered here instead, with the same empty
-/// `ImportedValues`/`OperatorCalls`/`FilledArgs` this module already passes for its own file — which is
-/// the honest position: const-eval runs before the check phase that fills those, for the importer and
-/// the imported file alike (ADR-0018 §3).
+/// carries the inputs and the MIR is lowered here instead. `ImportedValues` stays empty — compile-time
+/// evaluation may not read another file's constants — while operator and argument-binding evidence
+/// comes from the module's already-requested `checked` result (ADR-0196, ADR-0234).
 ///
 /// ADR-0069 §1's claim that supplying routines "adds no dependency that was not already there" was
 /// therefore *wrong about `file_mir`* and right about the principle: `imported_procs` and `checked` are
@@ -699,11 +698,12 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> Con
             // comment was true when it was written and became false without anyone re-reading it, which
             // is the shape this project keeps meeting: a claim about the code with nothing enforcing it.
             //
-            // What it cost: an operator overload and a default argument were unusable in a `#run`, both
-            // recorded as owed. And a **variadic** call was worse than refused — `print` in a `#run` gave
+            // What it cost: operator overloads and variadics were unusable in procedures reached by a
+            // `#run`. A **variadic** call was worse than refused — `print` in a `#run` gave
             // `internal compiler error: called a procedure taking 3 arguments with 2`, because with no
-            // packing the trailing arguments went raw. ADR-0053 §2's claim that `scan` refuses such a body
-            // held for a default argument and never for a variadic.
+            // packing the trailing arguments went raw. Defaults inside those procedure bodies came along
+            // with the same map; a default or name on the standalone thunk's own call remained absent
+            // until ADR-0234 preserved the signature phase's map and handed it to `lower_const`.
             checked_file.operator_calls.as_ref(),
             checked_file.filled_args.as_ref(),
             interner,
@@ -723,6 +723,7 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> Con
                 types.as_ref(),
                 signatures.signatures.as_ref(),
                 imports.as_ref(),
+                checked_file.filled_args.as_ref(),
                 &values,
                 &modules,
                 interner,
@@ -1119,6 +1120,7 @@ fn evaluate(
     types: &jr_sema::TypeMap,
     signatures: &jr_sema::FileSignatures,
     imports: &ImportedProcs,
+    filled: &jr_mir::FilledArgs,
     values: &ConstValues,
     modules: &[ModuleFrontend],
     interner: &jr_base::Interner,
@@ -1146,6 +1148,7 @@ fn evaluate(
         resolve,
         types,
         values,
+        filled,
         imports,
         pool,
     )

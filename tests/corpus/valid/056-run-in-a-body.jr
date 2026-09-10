@@ -20,8 +20,9 @@
 //     MIR for them to disagree about.
 //
 // What a body `#run` may *not* do is exactly what a file-scope one may not do (ADR-0069 §3): a
-// `#foreign` call is refused by ADR-0006, and a call that omits a defaulted argument is refused because
-// const-eval runs before the check phase that fills it. The position changed; the rules did not.
+// `#foreign` call is refused by ADR-0006, and reading another file's constant remains outside this
+// query. ADR-0234 later made named and defaulted calls use the same checked positional list here and
+// at file scope.
 #import "Basic";
 
 /// Plain arithmetic, for the simplest body `#run`.

@@ -20,7 +20,8 @@
 use jr_base::{FileId, Interner};
 use jr_diag::Diagnostics;
 use jr_mir::{
-    Callee, ConstValues, ImportedProcs, MirBody, MirSpan, Operand, Poisoned, ProcRef, Terminator,
+    Callee, ConstValues, FilledArgs, ImportedProcs, MirBody, MirSpan, Operand, Poisoned, ProcRef,
+    Terminator,
 };
 use jr_pool::{Pool, PoolId, TargetLayout};
 use jr_vm::{
@@ -997,6 +998,7 @@ fn a_globals_initialiser_cannot_read_another_global() {
         &resolve,
         &types,
         &values,
+        &FilledArgs::new(),
         &ImportedProcs::new(),
         &mut pool,
     );

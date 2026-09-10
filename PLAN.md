@@ -385,6 +385,16 @@ Status of each slice component, so this is answerable without reading the tree.
 > | `jr-fmt` / `tree-sitter-jairs` | The structural constraint is preserved, highlighted and generated into the tracked parser artefact. |
 > | `tests/corpus` | One executable program covers reordered fields, extras, direct and pointer parameters, value and pointer `using`, mutation and nested generic specialisation; five refusal files and one import fixture cover the boundaries. |
 
+> **ADR-0234 component delta.**
+>
+> | Component | Current delta |
+> |---|---|
+> | `jr-sema` | `SignatureOutput` now preserves the positional argument lists resolved while typing named file-level initialisers, rather than discarding them after checking. |
+> | `jr-db` | Signature- and body-phase `FilledArgs` are translated once and merged into one scope-keyed map; `file_consts` passes that same evidence to standalone thunk lowering. |
+> | `jr-mir` | `lower_const` consumes `FilledArgs`, emitting given expressions or already-interned defaults in parameter order before its arity guard. |
+> | `tests/corpus` | `valid/165` executes local file/body defaults and named reordering; `imports/valid/020` now compile-time-asserts both behaviours through an imported procedure. |
+> | Documentation | The stale claims that imported and `#run` named/default arguments were absent are removed; inferred and non-literal defaults remain explicit gaps. |
+
 | Component | Status | Notes |
 |---|---|---|
 | `modules/Game` | **Foundation done** | **ADR-0210 decides ADR-0208's six forks and lands the first slice.** A caller owns `App`; `open(width, height, title)` starts SDL, creates the window, selects top-left/y-down Simp coordinates and unwinds every completed step if GL setup fails. `begin_frame` drains once, latches close, and records an unclamped non-negative delta; `end_frame` presents; `close` is idempotent and destroys Simp before the window and SDL. A private guard refuses a second simultaneous App because Simp has one process-global renderer; the lifecycle stays on one thread. Two native integration tests cover a real synthetic-quit/reopen lifecycle and the dummy driver's no-GL unwind. **Not game-ready v1:** held input, primitive helpers, generation-tagged resources, PNG, text and audio are later slices. |
@@ -719,32 +729,38 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0233 delivers the supplied structural data-interface form.**
-> `$T/interface Shape` is a compile-time constraint over the existing concrete specialisation path:
-> fields match by visible name and exact resolved type, order is irrelevant, extras are allowed,
-> unique nearest `using` promotion satisfies a requirement, and ambiguity rejects the call. Pointer
-> parameters compose as `*$T/interface Shape`. One pool-owned projection path now keeps sema and MIR
-> on the same concrete field indices.
+> **ADR-0234 closes named/default argument parity for `#run`.**
+> Sema remains the only argument binder. The signature phase now preserves file-level binding
+> evidence, `jr-db` merges it with body-call evidence, and the standalone MIR thunk consumes the
+> same positional list ordinary procedure lowering does. Local and imported calls may omit literal
+> defaults or reorder names at file scope and inside a body.
 
-**1397 workspace tests (1410 under gate 7), 311 corpus files outside fixture modules, 233 ADRs and
-26 modules.** Thirteen focused Rust tests cover contextual syntax, lossless recovery, HIR copying,
-formatter preservation and visible-field paths. Seven new ordinary corpus programs cover the
-executable and refusal matrix; the imported positive probe has one fixture module of its own.
+**1397 workspace tests (1410 under gate 7), 312 corpus files outside fixture modules, 234 ADRs and
+26 modules.** The Rust test count holds because the new executable file is covered by the existing
+parser, MIR snapshot and differential harnesses. `valid/165` makes omitted and same-arity reordered
+arguments observable in both scopes; `imports/valid/020` compile-time-asserts the same two behaviours
+through another module.
 
-The executable probe covers reordered direct fields, value embedding, pointer-valued embedding,
-pointer parameters and mutation through the concrete projection. Refusal probes pin missing,
-wrongly typed and ambiguous fields, a non-struct shape, and the rule that a template body sees the
-declared interface rather than caller-specific extras. An imported constrained template proves the
-resolved shape travels in `ProcSig` and specialises in its owner file.
+The old query-order rationale was stale: `file_consts` already requested `checked`. The remaining
+defect was that `SignatureOutput` computed file-level `filled_calls` and discarded them, while
+`lower_const` had no input slot for the map. ADR-0196's claim that a `#run` could already use a
+default was true only inside a reached procedure body and is corrected by ADR-0234.
 **E0300** is the first free global diagnostic code; **E0136** is the first free parser code.
 
-### Next wave: behavioural structural interfaces
+### Next wave: inferred default parameter syntax
 
-Data fields now have a compile-time requirement representation and concrete projection evidence.
-The next structural-interface fork is whether Jai-shaped interfaces may also require procedures or
-operators, and if so whether a successful match records a direct compile-time callee or relies on
-ordinary overload lookup inside each clone. Probe the public Jai spelling and behaviour first; do
-not infer method requirements from the data-interface syntax or introduce a runtime vtable.
+The pinned guide demonstrates `amount := 9` in a parameter list. The recommended first slice infers
+the parameter type from the same literal default forms Jairs already interns, preserves the existing
+`name: Type = literal` form, and refuses a default whose type cannot be inferred honestly (notably
+`null` without a declared pointer type). Do not use this syntax change to smuggle in arbitrary
+default expressions: constants, calls, aggregate defaults, `context` values and caller-location
+defaults need a separate decision about declaration scope, call-site scope, evaluation timing and
+side effects.
+
+After that default-argument slice, the parity-module queue is `Pool`/`Flat_Pool` first if the new
+`New` + `[..]T` + `Table(K,V)` composition should be exercised immediately; `Text_File_Handler` is
+the low-compiler-risk fallback. A pool wave must decide allocator ownership first because `New` and
+`Hash_Table` use the context allocator while `List` growth still uses `malloc`/`free`.
 
 Commit each substrate wave before starting the next; merge remains a separate decider action.
 

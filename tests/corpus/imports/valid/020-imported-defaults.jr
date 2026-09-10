@@ -31,6 +31,14 @@
 // unnoticed, which is the whole failure this file exists for.
 D :: #import "Defaults";
 
+// The importing file owns the call's resolved positional list. These assertions make both results
+// observable during compilation: a source-order thunk would make the reordered one 305, and a thunk
+// without default insertion would refuse the first call before reaching either assertion.
+RUN_DEFAULT :: #run D.add(4);
+RUN_REORDERED :: #run D.add(b = 30, a = 5);
+#run assert(RUN_DEFAULT == 7, "an imported default was not applied in #run");
+#run assert(RUN_REORDERED == 35, "imported named arguments were not reordered in #run");
+
 main :: () {
   // The default applies: 4 + 3.
   with_default := D.add(4);

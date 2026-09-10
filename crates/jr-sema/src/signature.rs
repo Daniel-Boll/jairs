@@ -3,7 +3,8 @@
 use jr_base::{FileId, Interner, Span};
 use jr_diag::{Diagnostic, Diagnostics};
 use jr_hir::{
-    ConstValue, Expr, ExprScope, FileHir, ItemId, ItemKind, Literal, ProcId, ResolveMap, TypeRef,
+    ConstValue, Expr, ExprId, ExprScope, FileHir, ItemId, ItemKind, Literal, ProcId, ResolveMap,
+    TypeRef,
 };
 use jr_pool::{ContextKind, Item, Pool, PoolId};
 
@@ -73,6 +74,12 @@ pub struct SignatureOutput {
     /// Exactly [`crate::CheckOutput::folded_call_spans`]' role, and carried for the same reason: a span
     /// survives `#insert` expansion where an `ExprId` does not.
     pub folded_call_spans: rustc_hash::FxHashMap<jr_base::Span, PoolId>,
+    /// Positional argument lists for file-level calls using a name or a default (ADR-0234).
+    ///
+    /// The signature phase owns named declarations' initialisers, so the check phase never revisits
+    /// these calls. Carrying the map is the argument-binding counterpart of `folded_calls`: without it,
+    /// a `#run` thunk sees source order or an omitted operand even though sema already resolved both.
+    pub filled_calls: rustc_hash::FxHashMap<(ExprScope, ExprId), Vec<crate::ArgSlot>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +192,7 @@ pub fn file_signatures(
         diagnostics: ctx.diags,
         folded_calls: ctx.folded_calls,
         folded_call_spans: ctx.folded_call_spans,
+        filled_calls: ctx.filled_calls,
     }
 }
 
