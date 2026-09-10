@@ -1,0 +1,97 @@
+// ADR-0231 — `List` operations are generic over a native `[..]T`.
+//
+// This is the requested composition: a recursive `Node` owns `[..]*Node` children, a separate
+// `[..]*Node` acts as a stack, and both use the same imported generic operations. `Table` remains a
+// local layout placeholder in this wave; the following `Hash_Table` wave replaces it with the
+// standard module while preserving this exact field spelling.
+
+#import "Basic";
+#import "List";
+
+Table :: struct($K, $V) {
+  implementation: *u8;
+}
+
+Node :: struct {
+  name: string;
+  children: [..]*Node;
+  properties: Table(string, string);
+}
+
+main :: () {
+  root := New(Node);
+  child := New(Node);
+  if root == null || child == null {
+    exit(1);
+  }
+  root.name = "root";
+  child.name = "child";
+
+  // Empty fallible reads return `found == false`; their zero-valued pointer is not a sentinel for a
+  // stored element, because null remains a legitimate `*Node` value.
+  empty_last, has_last := last(*root.children);
+  empty_pop, has_pop := pop(*root.children);
+  empty_get, has_get := get(*root.children, 0);
+  if has_last || has_pop || has_get || empty_last != null || empty_pop != null || empty_get != null {
+    exit(2);
+  }
+
+  if !push(*root.children, child) {
+    exit(3);
+  }
+  child_at_top, child_found := last(*root.children);
+  if !child_found || child_at_top != child || root.children.count != 1 {
+    exit(4);
+  }
+
+  // A distinct dynamic array is the caller-owned stack. Five pushes cross the first capacity and
+  // prove that growth copies generic pointer elements rather than only the old `s64` case.
+  stack: [..]*Node;
+  if !push(*stack, root) || !push(*stack, child) || !push(*stack, root) || !push(*stack, child) || !push(
+    *stack,
+    root,
+  ) {
+    exit(5);
+  }
+  if stack.count != 5 || stack.capacity <= FIRST_CAPACITY {
+    exit(6);
+  }
+
+  top, top_found := last(*stack);
+  middle, middle_found := get(*stack, 2);
+  if !top_found || top != root || !middle_found || middle != root {
+    exit(7);
+  }
+  if !set(*stack, 2, child) {
+    exit(8);
+  }
+  changed, changed_found := get(*stack, 2);
+  if !changed_found || changed != child {
+    exit(9);
+  }
+
+  used := elements(*stack);
+  if used.count != 5 || used[0] != root {
+    exit(10);
+  }
+
+  popped, popped_found := pop(*stack);
+  if !popped_found || popped != root || stack.count != 4 {
+    exit(11);
+  }
+  clear(*stack);
+  if !is_empty(*stack) || stack.capacity == 0 {
+    exit(12);
+  }
+
+  free_data(*stack);
+  free_data(*stack);
+  free_data(*root.children);
+  if stack.data != null || stack.count != 0 || stack.capacity != 0 {
+    exit(13);
+  }
+
+  context.allocator_free(untyped(child));
+  context.allocator_free(untyped(root));
+  exit(42);
+}

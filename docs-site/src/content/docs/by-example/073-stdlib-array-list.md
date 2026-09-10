@@ -13,18 +13,14 @@ storage is inline, so a caller can forget about it; `List` owns heap memory, and
 `List` is not what it used to be. There is no `List($T)` struct any more: ADR-0136 gave `[..]T` — a
 **compiler-known** dynamic array, three words, `{data: *T, count: s64, capacity: s64}` — native syntax
 with all three fields as places, and ADR-0140 converted every `List` routine to operate on the native
-`*[..]s64` directly, deleting the hand-rolled struct entirely. A caller declares `xs: [..]s64;`
-(zero-initialised: `data` is `null`, `count` and `capacity` are `0`) and grows it through `List`'s
-procedures.
+`*[..]T` directly, deleting the hand-rolled struct entirely. ADR-0230 then made imported pure `$T`
+procedures specialise in their declaration file, and ADR-0231 generalised every `List` operation to
+`*[..]$T` and added `last`.
 
-Both `Array` and `List`'s routines are provided only for the concrete `s64` element type —
-`push :: (a: *Array(s64), v: s64)`, `push :: (a: *[..]s64, v: s64)` — and the reason is not that a
-parameterised struct is unusable across a module boundary: it is not (ADR-0117); `Array`'s own struct
-still declares `struct($T)`, and a `struct($T)` genuinely does cross a module boundary today. What stays
-concrete is the *procedures*: an **imported** polymorphic procedure is refused with `E0268`, so a generic
-`push :: (a: *Array($T), v: T)` or `push :: (a: *[..]$T, v: T)` would be uncallable by every importer.
-Callers therefore write `Array(s64)` for one and a plain `[..]s64` for the other, and both become
-`$T`-generic to their callers once cross-file instantiation lands.
+`Array`'s operations remain concrete `s64` declarations. `List`'s do not: the same imported source
+serves `[..]s64`, `[..]string`, `[..]*Node`, and every other storable `T`. The long examples below
+intentionally keep `s64` because they also demonstrate `Sort`; they are examples of one specialisation,
+not a limit on the module.
 
 ## Array — fixed capacity, no cleanup
 
@@ -129,30 +125,29 @@ caller wanting another size declares their own struct with the same shape.
 ## List — heap-backed, genuinely growable
 
 `List` is what `Array` could not be: a growable array on the heap, doubling from a first capacity of 4 —
-except the growable array itself is the language's own `[..]s64`, and `List` is the library code built
+except the growable array itself is the language's own `[..]T`, and `List` is the library code built
 directly on top of it rather than a wrapper type of its own.
 
 ```jr
-// A `[..]s64` is three places the compiler lays out for you: {data: *s64, count: s64, capacity: s64}.
-xs: [..]s64;   // zero-initialised: data is null, count and capacity are 0
+// A `[..]T` is three places the compiler lays out for you: {data: *T, count: s64, capacity: s64}.
 
 FIRST_CAPACITY :: 4;
 
-push :: (a: *[..]s64, v: s64) -> bool   // false only on out-of-memory
-pop :: (a: *[..]s64) -> (s64, bool)
-get :: (a: *[..]s64, index: s64) -> (s64, bool)
-set :: (a: *[..]s64, index: s64, v: s64) -> bool
-clear :: (a: *[..]s64)                   // forgets elements, keeps the allocation
-free_data :: (a: *[..]s64)               // releases storage — MUST be called
-is_empty :: (a: *[..]s64) -> bool
-elements :: (a: *[..]s64) -> []s64       // a view over the USED prefix
+push :: (a: *[..]$T, v: T) -> bool       // false only on out-of-memory
+pop :: (a: *[..]$T) -> (T, bool)
+last :: (a: *[..]$T) -> (T, bool)        // reads the top without removing it
+get :: (a: *[..]$T, index: s64) -> (T, bool)
+set :: (a: *[..]$T, index: s64, v: T) -> bool
+clear :: (a: *[..]$T)                    // forgets elements, keeps the allocation
+free_data :: (a: *[..]$T)                // releases storage — MUST be called
+is_empty :: (a: *[..]$T) -> bool
+elements :: (a: *[..]$T) -> []T          // a view over the USED prefix
 ```
 
-A `[..]s64` cannot be **indexed** directly — `xs[0]` is `E0234`, "only a fixed-size array `[N]T` and a
+A `[..]T` cannot be **indexed** directly — `xs[0]` is `E0234`, "only a fixed-size array `[N]T` and a
 view `[]T` can be indexed" — so `get`/`set` exist for single elements and `elements` hands the whole used
-prefix out as a `[]s64` for anything that wants to iterate it, sort it, or search it. `context.allocator`
-is required: `List` calls `malloc` and `free` through it (via `Basic`), and needing them is not the same
-as having them installed.
+prefix out as a `[]T` for anything that wants to iterate it, sort it, or search it. `List` imports
+`Basic` and allocates its backing storage with `malloc`/`free`; the caller releases it with `free_data`.
 
 ```jr
 #import "Basic";
@@ -196,9 +191,11 @@ main :: () {
         n = n + 4;
     }
 
-    // `pop` shortens the list; `set` refuses an index past `count`.
-    last, last_ok := pop(*xs);
-    if last_ok && last == 14 && xs.count == 7 && set(*xs, 0, 99) && !set(*xs, 7, 1) {
+    // `last` inspects the top; `pop` returns the same value and shortens the list.
+    top_before, top_ok := last(*xs);
+    popped, popped_ok := pop(*xs);
+    if top_ok && popped_ok && top_before == 14 && popped == 14
+        && xs.count == 7 && set(*xs, 0, 99) && !set(*xs, 7, 1) {
         n = n + 8;
     }
 
@@ -224,6 +221,33 @@ not a *program* error and aborting would take away the caller's chance to recove
 allocator returned — genuinely undefined, not merely zeroed. `clear` and `free_data` are deliberately
 different: reusing a buffer a caller has paid for is a real thing to want. `free_data` is safe twice and
 safe on a list that never grew. The exit code is **31**.
+
+### A pointer stack over recursive nodes
+
+The exact recursive shape and stack are ordinary generic use:
+
+```jr
+#import "Basic";
+#import "List";
+
+Node :: struct {
+    name: string;
+    children: [..]*Node;
+}
+
+node := New(Node);
+stack: [..]*Node;
+
+push(*stack, node);
+top, found := last(*stack);
+popped, popped_ok := pop(*stack);
+free_data(*stack);
+context.allocator_free(untyped(node));
+```
+
+Here `T` is `*Node`. `last` preserves `count`, `pop` decrements it, and the value accompanying
+`false` is a zero-initialised placeholder. The stack owns only its backing array; freeing it does
+not free any `Node` pointers stored inside.
 
 ### The divergence writing List caught
 
@@ -303,8 +327,8 @@ main :: () {
     push(*l, 3);
     sort_ints(elements(*l));
     first, _ := get(*l, 0);
-    last, _ := get(*l, 4);
-    if first == 1 && last == 5 && ints_sorted(elements(*l)) {
+    tail, _ := get(*l, 4);
+    if first == 1 && tail == 5 && ints_sorted(elements(*l)) {
         n = n + 32;
     }
     free_data(*l);

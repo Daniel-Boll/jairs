@@ -8081,7 +8081,7 @@ proc main -> void {
   bb0(v0: *Context):
     zero s0
     v1: *[..]s64 = addr s0
-    v2: bool = call extern proc6(v0, v1)
+    v2: bool = call extern proc7(v0, v1)
     branch v2 ? bb1() : bb2()
   bb1():
     v4: s64 = load s0.dyn_capacity
@@ -8163,7 +8163,7 @@ proc main -> void {
     branch v39 ? bb30() : bb31()
   bb30():
     v40: *[..]s64 = addr s0
-    v41: (s64, bool) = call extern proc2(v0, v40, v38)
+    v41: (s64, bool) = call extern proc3(v0, v40, v38)
     store s1 <- v41
     v42: s64 = load s1.0
     v43: bool = load s1.1
@@ -8231,14 +8231,14 @@ proc main -> void {
     goto bb53(v77)
   bb53(v92: s64):
     v79: *[..]s64 = addr s0
-    v80: (s64, bool) = call extern proc2(v0, v79, 9_s64)
+    v80: (s64, bool) = call extern proc3(v0, v79, 9_s64)
     store s3 <- v80
     v81: bool = load s3.1
     v82: bool = !v81
     branch v82 ? bb54() : bb55()
   bb54():
     v84: *[..]s64 = addr s0
-    v85: bool = call extern proc3(v0, v84, 9_s64, 1_s64)
+    v85: bool = call extern proc4(v0, v84, 9_s64, 1_s64)
     v86: bool = !v85
     goto bb56(v86)
   bb55():
@@ -8247,7 +8247,7 @@ proc main -> void {
     branch v83 ? bb57() : bb58()
   bb57():
     v88: *[..]s64 = addr s0
-    v89: bool = call extern proc3(v0, v88, 0_s64, 99_s64)
+    v89: bool = call extern proc4(v0, v88, 0_s64, 99_s64)
     goto bb59(v89)
   bb58():
     goto bb59(false)
@@ -8260,7 +8260,7 @@ proc main -> void {
     goto bb62(v92)
   bb62(v98: s64):
     v94: *[..]s64 = addr s0
-    v95: (s64, bool) = call extern proc2(v0, v94, 0_s64)
+    v95: (s64, bool) = call extern proc3(v0, v94, 0_s64)
     store s4 <- v95
     v96: s64 = load s4.0
     v97: bool = v96 == 99_s64
@@ -8273,9 +8273,9 @@ proc main -> void {
   bb65(v121: s64):
     v100: s64 = load s0.dyn_capacity
     v101: *[..]s64 = addr s0
-    discard call extern proc4(v0, v101)
+    discard call extern proc5(v0, v101)
     v102: *[..]s64 = addr s0
-    v103: bool = call extern proc6(v0, v102)
+    v103: bool = call extern proc7(v0, v102)
     branch v103 ? bb66() : bb67()
   bb66():
     v105: s64 = load s0.dyn_capacity
@@ -8295,12 +8295,12 @@ proc main -> void {
     branch v107 ? bb72() : bb73()
   bb72():
     v110: *[..]s64 = addr s0
-    discard call extern proc5(v0, v110)
+    discard call extern proc6(v0, v110)
     v111: *[..]s64 = addr s0
-    discard call extern proc5(v0, v111)
+    discard call extern proc6(v0, v111)
     zero s5
     v112: *[..]s64 = addr s5
-    discard call extern proc5(v0, v112)
+    discard call extern proc6(v0, v112)
     v113: *s64 = load s0.dyn_data
     v114: bool = v113 == 0_*s64
     branch v114 ? bb75() : bb76()
@@ -8486,7 +8486,7 @@ proc main -> void {
     discard call extern proc3(v65)
     zero s15
     v66: *[..]s64 = addr s15
-    v67: []s64 = call extern proc7(v0, v66)
+    v67: []s64 = call extern proc8(v0, v66)
     store s16 <- v67
     v68: s64 = load s16.view_count
     v69: bool = v68 == 0_s64
@@ -8508,14 +8508,14 @@ proc main -> void {
     v76: *[..]s64 = addr s15
     discard call extern proc0(v0, v76, 3_s64)
     v77: *[..]s64 = addr s15
-    v78: []s64 = call extern proc7(v0, v77)
+    v78: []s64 = call extern proc8(v0, v77)
     discard call extern proc1(v0, v78)
     v79: *[..]s64 = addr s15
-    v80: (s64, bool) = call extern proc2(v0, v79, 0_s64)
+    v80: (s64, bool) = call extern proc3(v0, v79, 0_s64)
     store s17 <- v80
     v81: s64 = load s17.0
     v82: *[..]s64 = addr s15
-    v83: (s64, bool) = call extern proc2(v0, v82, 4_s64)
+    v83: (s64, bool) = call extern proc3(v0, v82, 4_s64)
     store s18 <- v83
     v84: s64 = load s18.0
     v85: bool = v81 == 1_s64
@@ -8529,7 +8529,7 @@ proc main -> void {
     branch v86 ? bb31() : bb32()
   bb31():
     v89: *[..]s64 = addr s15
-    v90: []s64 = call extern proc7(v0, v89)
+    v90: []s64 = call extern proc8(v0, v89)
     v91: bool = call extern proc6(v0, v90)
     goto bb33(v91)
   bb32():
@@ -8543,7 +8543,7 @@ proc main -> void {
     goto bb36(v94)
   bb36(v97: s64):
     v96: *[..]s64 = addr s15
-    discard call extern proc5(v0, v96)
+    discard call extern proc6(v0, v96)
     discard call extern proc1(v97)
     return
 }
@@ -12382,7 +12382,7 @@ proc main -> void {
   bb0(v0: *Context):
     zero s0
     v1: *[..]s64 = addr s0
-    v2: bool = call extern proc6(v0, v1)
+    v2: bool = call extern proc7(v0, v1)
     branch v2 ? bb1() : bb2()
   bb1():
     v4: s64 = load s0.dyn_count
@@ -12471,7 +12471,7 @@ proc main -> void {
     branch v43 ? bb33() : bb34()
   bb33():
     v44: *[..]s64 = addr s0
-    v45: (s64, bool) = call extern proc2(v0, v44, v42)
+    v45: (s64, bool) = call extern proc3(v0, v44, v42)
     store s1 <- v45
     v46: s64 = load s1.0
     v47: bool = load s1.1
@@ -12525,7 +12525,7 @@ proc main -> void {
     branch v69 ? bb51() : bb52()
   bb51():
     v73: *[..]s64 = addr s0
-    v74: bool = call extern proc3(v0, v73, 0_s64, 99_s64)
+    v74: bool = call extern proc4(v0, v73, 0_s64, 99_s64)
     goto bb53(v74)
   bb52():
     goto bb53(false)
@@ -12533,7 +12533,7 @@ proc main -> void {
     branch v72 ? bb54() : bb55()
   bb54():
     v76: *[..]s64 = addr s0
-    v77: bool = call extern proc3(v0, v76, 7_s64, 1_s64)
+    v77: bool = call extern proc4(v0, v76, 7_s64, 1_s64)
     v78: bool = !v77
     goto bb56(v78)
   bb55():
@@ -12547,14 +12547,14 @@ proc main -> void {
     goto bb59(v83)
   bb59(v102: s64):
     v85: *[..]s64 = addr s0
-    v86: []s64 = call extern proc7(v0, v85)
+    v86: []s64 = call extern proc8(v0, v85)
     discard call extern proc1(v0, v86)
     v87: *[..]s64 = addr s0
-    v88: (s64, bool) = call extern proc2(v0, v87, 0_s64)
+    v88: (s64, bool) = call extern proc3(v0, v87, 0_s64)
     store s3 <- v88
     v89: s64 = load s3.0
     v90: *[..]s64 = addr s0
-    v91: (s64, bool) = call extern proc2(v0, v90, 6_s64)
+    v91: (s64, bool) = call extern proc3(v0, v90, 6_s64)
     store s4 <- v91
     v92: s64 = load s4.0
     v93: bool = v89 == 2_s64
@@ -12568,7 +12568,7 @@ proc main -> void {
     branch v94 ? bb63() : bb64()
   bb63():
     v97: *[..]s64 = addr s0
-    v98: []s64 = call extern proc7(v0, v97)
+    v98: []s64 = call extern proc8(v0, v97)
     v99: bool = call extern proc6(v0, v98)
     goto bb65(v99)
   bb64():
@@ -12621,7 +12621,7 @@ proc main -> void {
     goto bb77(v121)
   bb77(v124: s64):
     v123: *[..]s64 = addr s0
-    discard call extern proc5(v0, v123)
+    discard call extern proc6(v0, v123)
     discard call extern proc1(v124)
     return
 }
@@ -12632,7 +12632,7 @@ proc $inst0 -> enum {
     s1: struct  // temporary
   bb0(v0: *Context, v1: [..]s64):
     store s0 <- v1
-    store s1 <- {659_s64, 13_enum, "[..]s64", 24_s64, 8_s64, 0_s64, 2_s64, static[0], false, static[0], 8_s64}
+    store s1 <- {663_s64, 13_enum, "[..]s64", 24_s64, 8_s64, 0_s64, 2_s64, static[0], false, static[0], 8_s64}
     v2: enum = load s1.1
     return v2
 }
@@ -12701,7 +12701,7 @@ proc sum_any -> s64 {
     bounds_check v2 < v19
     v21: *struct = load s0.view_data[v2].0
     v22: s64 = load (v21).*.0
-    store s3 <- {867_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false, static[0], 0_s64}
+    store s3 <- {864_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false, static[0], 0_s64}
     v23: s64 = load s3.0
     v24: bool = v22 == v23
     branch v24 ? bb10() : bb11()
@@ -12710,7 +12710,7 @@ proc sum_any -> s64 {
     bounds_check v2 < v25
     v26: *struct = load s0.view_data[v2].0
     v27: s64 = load (v26).*.0
-    v28: bool = v27 == 867_s64
+    v28: bool = v27 == 864_s64
     branch v28 ? bb13() : bb14()
   bb13():
     v29: *Point = load s0.view_data[v2].1
@@ -12909,7 +12909,7 @@ proc main -> void {
     v35: Point = load s20
     store s24 <- v35
     v36: *Point = addr s24
-    store s25 <- {867_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false, static[0], 0_s64}
+    store s25 <- {864_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false, static[0], 0_s64}
     v37: *struct = addr s25
     zero s26
     store s26.0 <- v37
@@ -13548,7 +13548,7 @@ proc main -> void {
     s3: struct  // local 4
     s4: struct  // local 5
   bb0(v0: *Context):
-    store s0 <- {901_s64, 8_enum, "Point", 24_s64, 8_s64, 3_s64, 0_s64, static[3], false, static[0], 0_s64}
+    store s0 <- {898_s64, 8_enum, "Point", 24_s64, 8_s64, 3_s64, 0_s64, static[3], false, static[0], 0_s64}
     v1: s64 = load s0.7.view_count
     v2: s64 = 0_s64 + v1
     goto bb1(0_s64, v2)
@@ -13590,7 +13590,7 @@ proc main -> void {
     store s3 <- {2_s64, 2_enum, "s64", 8_s64, 8_s64, 0_s64, 0_s64, static[0], true, static[0], 0_s64}
     v23: s64 = load s3.7.view_count
     v24: s64 = v22 + v23
-    store s4 <- {901_s64, 8_enum, "Point", 24_s64, 8_s64, 3_s64, 0_s64, static[3], false, static[0], 0_s64}
+    store s4 <- {898_s64, 8_enum, "Point", 24_s64, 8_s64, 3_s64, 0_s64, static[3], false, static[0], 0_s64}
     v25: s64 = load s4.7.view_count
     bounds_check 2_s64 < v25
     v26: s64 = load s4.7.view_data[2_s64].2
@@ -16233,7 +16233,7 @@ proc main -> void {
     v63: Point = load s51
     store s52 <- v63
     v64: *Point = addr s52
-    store s53 <- {1186_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false, static[0], 0_s64}
+    store s53 <- {1183_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false, static[0], 0_s64}
     v65: *struct = addr s53
     zero s54
     store s54.0 <- v65
@@ -16303,7 +16303,7 @@ proc main -> void {
     discard call extern proc23(v0, "long\n", v83)
     store s72 <- 2_Colour
     v84: *Colour = addr s72
-    store s73 <- {1187_s64, 11_enum, "Colour", 8_s64, 8_s64, 0_s64, 0_s64, static[0], false, static[3], 0_s64}
+    store s73 <- {1184_s64, 11_enum, "Colour", 8_s64, 8_s64, 0_s64, 0_s64, static[0], false, static[3], 0_s64}
     v85: *struct = addr s73
     zero s74
     store s74.0 <- v85
@@ -16431,7 +16431,7 @@ proc sum_through_pointer -> s64 {
     store s0 <- v1
     v2: *struct = load s0.0
     v3: s64 = load (v2).*.0
-    v4: bool = v3 == 1217_s64
+    v4: bool = v3 == 1214_s64
     branch v4 ? bb1() : bb2()
   bb1():
     v5: **Point = load s0.1
@@ -16455,7 +16455,7 @@ proc sum_through_value -> s64 {
     store s0 <- v1
     v2: *struct = load s0.0
     v3: s64 = load (v2).*.0
-    v4: bool = v3 == 1216_s64
+    v4: bool = v3 == 1213_s64
     branch v4 ? bb1() : bb2()
   bb1():
     v5: *Point = load s0.1
@@ -16489,7 +16489,7 @@ proc main -> void {
     v1: *Point = addr s0
     store s1 <- v1
     v2: **Point = addr s1
-    store s2 <- {1217_s64, 5_enum, "*Point", 8_s64, 8_s64, 0_s64, 1216_s64, static[0], false, static[0], 0_s64}
+    store s2 <- {1214_s64, 5_enum, "*Point", 8_s64, 8_s64, 0_s64, 1213_s64, static[0], false, static[0], 0_s64}
     v3: *struct = addr s2
     zero s3
     store s3.0 <- v3
@@ -16498,7 +16498,7 @@ proc main -> void {
     v5: s64 = call proc0(v0, v4)
     v6: s64 = 0_s64 + v5
     v7: *Point = addr s0
-    store s4 <- {1216_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false, static[0], 0_s64}
+    store s4 <- {1213_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false, static[0], 0_s64}
     v8: *struct = addr s4
     zero s5
     store s5.0 <- v8
@@ -16522,7 +16522,7 @@ proc main -> void {
   bb5():
     goto bb6(v15)
   bb6(v19: s64):
-    store s6 <- {1217_s64, 5_enum, "*Point", 8_s64, 8_s64, 0_s64, 1216_s64, static[0], false, static[0], 0_s64}
+    store s6 <- {1214_s64, 5_enum, "*Point", 8_s64, 8_s64, 0_s64, 1213_s64, static[0], false, static[0], 0_s64}
     v17: enum = load s6.1
     v18: bool = v17 == 5_enum
     branch v18 ? bb7() : bb8()
@@ -16532,9 +16532,9 @@ proc main -> void {
   bb8():
     goto bb9(v19)
   bb9(v24: s64):
-    store s7 <- {1217_s64, 5_enum, "*Point", 8_s64, 8_s64, 0_s64, 1216_s64, static[0], false, static[0], 0_s64}
+    store s7 <- {1214_s64, 5_enum, "*Point", 8_s64, 8_s64, 0_s64, 1213_s64, static[0], false, static[0], 0_s64}
     v21: s64 = load s7.0
-    store s8 <- {1216_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false, static[0], 0_s64}
+    store s8 <- {1213_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false, static[0], 0_s64}
     v22: s64 = load s8.0
     v23: bool = v21 != v22
     branch v23 ? bb10() : bb11()
@@ -16586,9 +16586,9 @@ proc main -> void {
   bb2():
     goto bb3(v5)
   bb3(v13: s64):
-    store s5 <- {1224_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false, static[0], 0_s64}
+    store s5 <- {1221_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false, static[0], 0_s64}
     v10: s64 = load s5.0
-    store s6 <- {1224_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false, static[0], 0_s64}
+    store s6 <- {1221_s64, 8_enum, "Point", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false, static[0], 0_s64}
     v11: s64 = load s6.0
     v12: bool = v10 == v11
     branch v12 ? bb4() : bb5()
@@ -16694,7 +16694,7 @@ proc main -> void {
     s42: [1]Any  // temporary
     s43: []Any  // temporary
   bb0(v0: *Context):
-    store s0 <- {1239_s64, 11_enum, "Colour", 8_s64, 8_s64, 0_s64, 0_s64, static[0], false, static[3], 0_s64}
+    store s0 <- {1236_s64, 11_enum, "Colour", 8_s64, 8_s64, 0_s64, 0_s64, static[0], false, static[3], 0_s64}
     v1: s64 = load s0.9.view_count
     v2: s64 = 0_s64 + v1
     v3: s64 = load s0.9.view_count
@@ -16745,7 +16745,7 @@ proc main -> void {
   bb8():
     goto bb9(v16)
   bb9(v20: s64):
-    store s5 <- {1241_s64, 5_enum, "*Point", 8_s64, 8_s64, 0_s64, 1235_s64, static[0], false, static[0], 0_s64}
+    store s5 <- {1238_s64, 5_enum, "*Point", 8_s64, 8_s64, 0_s64, 1232_s64, static[0], false, static[0], 0_s64}
     v18: s64 = load s5.10
     v19: bool = v18 == 0_s64
     branch v19 ? bb10() : bb11()
@@ -16797,7 +16797,7 @@ proc main -> void {
   bb23():
     goto bb24(v37)
   bb24(v41: s64):
-    store s11 <- {1241_s64, 5_enum, "*Point", 8_s64, 8_s64, 0_s64, 1235_s64, static[0], false, static[0], 0_s64}
+    store s11 <- {1238_s64, 5_enum, "*Point", 8_s64, 8_s64, 0_s64, 1232_s64, static[0], false, static[0], 0_s64}
     v39: s64 = load s11.2.count
     v40: bool = v39 == 6_s64
     branch v40 ? bb25() : bb26()
@@ -16807,7 +16807,7 @@ proc main -> void {
   bb26():
     goto bb27(v41)
   bb27(v45: s64):
-    store s12 <- {1242_s64, 5_enum, "**Node", 8_s64, 8_s64, 0_s64, 1240_s64, static[0], false, static[0], 0_s64}
+    store s12 <- {1239_s64, 5_enum, "**Node", 8_s64, 8_s64, 0_s64, 1237_s64, static[0], false, static[0], 0_s64}
     v43: s64 = load s12.2.count
     v44: bool = v43 == 6_s64
     branch v44 ? bb28() : bb29()
@@ -16819,7 +16819,7 @@ proc main -> void {
   bb30(v80: s64):
     store s13 <- 2_Colour
     v47: *Colour = addr s13
-    store s14 <- {1239_s64, 11_enum, "Colour", 8_s64, 8_s64, 0_s64, 0_s64, static[0], false, static[3], 0_s64}
+    store s14 <- {1236_s64, 11_enum, "Colour", 8_s64, 8_s64, 0_s64, 0_s64, static[0], false, static[3], 0_s64}
     v48: *struct = addr s14
     zero s15
     store s15.0 <- v48
@@ -16873,7 +16873,7 @@ proc main -> void {
     store s31.0 <- v66
     store s31.1 <- v65
     v67: Any = load s31
-    store s32 <- {1242_s64, 5_enum, "**Node", 8_s64, 8_s64, 0_s64, 1240_s64, static[0], false, static[0], 0_s64}
+    store s32 <- {1239_s64, 5_enum, "**Node", 8_s64, 8_s64, 0_s64, 1237_s64, static[0], false, static[0], 0_s64}
     v68: string = load s32.2
     store s33 <- v68
     v69: *string = addr s33
@@ -16899,7 +16899,7 @@ proc main -> void {
     v74: Outer = load s38
     store s39 <- v74
     v75: *Outer = addr s39
-    store s40 <- {1237_s64, 8_enum, "Outer", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false, static[0], 0_s64}
+    store s40 <- {1234_s64, 8_enum, "Outer", 16_s64, 8_s64, 2_s64, 0_s64, static[2], false, static[0], 0_s64}
     v76: *struct = addr s40
     zero s41
     store s41.0 <- v76
@@ -19970,5 +19970,425 @@ proc main -> void {
     v1: s64 = call extern proc0(v0, 42_s64)
     v2: bool = v1 == 42_s64
     assert v2
+    return
+}
+
+========================================
+162-generic-dynamic-array-operations.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: *Node  // local 0
+    s1: *Node  // temporary
+    s2: *Node  // temporary
+    s3: (*Node, bool)  // temporary
+    s4: (*Node, bool)  // temporary
+    s5: (*Node, bool)  // temporary
+    s6: (*Node, bool)  // temporary
+    s7: [..]*Node  // local 10
+    s8: (*Node, bool)  // temporary
+    s9: (*Node, bool)  // temporary
+    s10: (*Node, bool)  // temporary
+    s11: []*Node  // local 17
+    s12: (*Node, bool)  // temporary
+    s13: *u8  // temporary
+    s14: *u8  // temporary
+  bb0(v0: *Context):
+    v1: (s64) -> *u8 = load (v0).*.0
+    v2: *u8 = call (v1)(v0, 48_s64)
+    store s1 <- v2
+    v3: *Node = load s1
+    v4: bool = v3 != 0_*Node
+    branch v4 ? bb1() : bb2()
+  bb1():
+    zero (v3).*
+    goto bb3()
+  bb2():
+    goto bb3()
+  bb3():
+    store s0 <- v3
+    v5: (s64) -> *u8 = load (v0).*.0
+    v6: *u8 = call (v5)(v0, 48_s64)
+    store s2 <- v6
+    v7: *Node = load s2
+    v8: bool = v7 != 0_*Node
+    branch v8 ? bb4() : bb5()
+  bb4():
+    zero (v7).*
+    goto bb6()
+  bb5():
+    goto bb6()
+  bb6():
+    v9: *Node = load s0
+    v10: bool = v9 == 0_*Node
+    branch v10 ? bb8() : bb7()
+  bb8():
+    goto bb9(true)
+  bb7():
+    v12: bool = v7 == 0_*Node
+    goto bb9(v12)
+  bb9(v11: bool):
+    branch v11 ? bb10() : bb11()
+  bb10():
+    discard call extern proc1(1_s64)
+    goto bb12()
+  bb11():
+    goto bb12()
+  bb12():
+    v13: *Node = load s0
+    store (v13).*.0 <- "root"
+    store (v7).*.0 <- "child"
+    v16: *Node = load s0
+    v17: *[..]*Node = addr (v16).*.1
+    v18: (*Node, bool) = call extern proc2(v0, v17)
+    store s3 <- v18
+    v19: *Node = load s3.0
+    v20: bool = load s3.1
+    v21: *Node = load s0
+    v22: *[..]*Node = addr (v21).*.1
+    v23: (*Node, bool) = call extern proc1(v0, v22)
+    store s4 <- v23
+    v24: *Node = load s4.0
+    v25: bool = load s4.1
+    v26: *Node = load s0
+    v27: *[..]*Node = addr (v26).*.1
+    v28: (*Node, bool) = call extern proc3(v0, v27, 0_s64)
+    store s5 <- v28
+    v29: *Node = load s5.0
+    v30: bool = load s5.1
+    branch v20 ? bb14() : bb13()
+  bb14():
+    goto bb15(true)
+  bb13():
+    goto bb15(v25)
+  bb15(v31: bool):
+    branch v31 ? bb17() : bb16()
+  bb17():
+    goto bb18(true)
+  bb16():
+    goto bb18(v30)
+  bb18(v32: bool):
+    branch v32 ? bb20() : bb19()
+  bb20():
+    goto bb21(true)
+  bb19():
+    v37: bool = v19 != 0_*Node
+    goto bb21(v37)
+  bb21(v34: bool):
+    branch v34 ? bb23() : bb22()
+  bb23():
+    goto bb24(true)
+  bb22():
+    v42: bool = v24 != 0_*Node
+    goto bb24(v42)
+  bb24(v38: bool):
+    branch v38 ? bb26() : bb25()
+  bb26():
+    goto bb27(true)
+  bb25():
+    v48: bool = v29 != 0_*Node
+    goto bb27(v48)
+  bb27(v43: bool):
+    branch v43 ? bb28() : bb29()
+  bb28():
+    discard call extern proc1(2_s64)
+    goto bb30()
+  bb29():
+    goto bb30()
+  bb30():
+    v49: *Node = load s0
+    v50: *[..]*Node = addr (v49).*.1
+    v57: bool = call extern proc0(v0, v50, v7)
+    v58: bool = !v57
+    branch v58 ? bb31() : bb32()
+  bb31():
+    discard call extern proc1(3_s64)
+    goto bb33()
+  bb32():
+    goto bb33()
+  bb33():
+    v59: *Node = load s0
+    v60: *[..]*Node = addr (v59).*.1
+    v61: (*Node, bool) = call extern proc2(v0, v60)
+    store s6 <- v61
+    v62: *Node = load s6.0
+    v63: bool = load s6.1
+    v64: bool = !v63
+    branch v64 ? bb35() : bb34()
+  bb35():
+    goto bb36(true)
+  bb34():
+    v67: bool = v62 != v7
+    goto bb36(v67)
+  bb36(v65: bool):
+    branch v65 ? bb38() : bb37()
+  bb38():
+    goto bb39(true)
+  bb37():
+    v69: *Node = load s0
+    v70: s64 = load (v69).*.1.dyn_count
+    v71: bool = v70 != 1_s64
+    goto bb39(v71)
+  bb39(v68: bool):
+    branch v68 ? bb40() : bb41()
+  bb40():
+    discard call extern proc1(4_s64)
+    goto bb42()
+  bb41():
+    goto bb42()
+  bb42():
+    zero s7
+    v72: *[..]*Node = addr s7
+    v73: *Node = load s0
+    v74: bool = call extern proc0(v0, v72, v73)
+    v75: bool = !v74
+    branch v75 ? bb44() : bb43()
+  bb44():
+    goto bb45(true)
+  bb43():
+    v77: *[..]*Node = addr s7
+    v81: bool = call extern proc0(v0, v77, v7)
+    v82: bool = !v81
+    goto bb45(v82)
+  bb45(v76: bool):
+    branch v76 ? bb47() : bb46()
+  bb47():
+    goto bb48(true)
+  bb46():
+    v84: *[..]*Node = addr s7
+    v85: *Node = load s0
+    v86: bool = call extern proc0(v0, v84, v85)
+    v87: bool = !v86
+    goto bb48(v87)
+  bb48(v83: bool):
+    branch v83 ? bb50() : bb49()
+  bb50():
+    goto bb51(true)
+  bb49():
+    v89: *[..]*Node = addr s7
+    v92: bool = call extern proc0(v0, v89, v7)
+    v93: bool = !v92
+    goto bb51(v93)
+  bb51(v88: bool):
+    branch v88 ? bb53() : bb52()
+  bb53():
+    goto bb54(true)
+  bb52():
+    v95: *[..]*Node = addr s7
+    v96: *Node = load s0
+    v97: bool = call extern proc0(v0, v95, v96)
+    v98: bool = !v97
+    goto bb54(v98)
+  bb54(v94: bool):
+    branch v94 ? bb55() : bb56()
+  bb55():
+    discard call extern proc1(5_s64)
+    goto bb57()
+  bb56():
+    goto bb57()
+  bb57():
+    v99: s64 = load s7.dyn_count
+    v100: bool = v99 != 5_s64
+    branch v100 ? bb59() : bb58()
+  bb59():
+    goto bb60(true)
+  bb58():
+    v102: s64 = load s7.dyn_capacity
+    v103: bool = v102 <= 4_s64
+    goto bb60(v103)
+  bb60(v101: bool):
+    branch v101 ? bb61() : bb62()
+  bb61():
+    discard call extern proc1(6_s64)
+    goto bb63()
+  bb62():
+    goto bb63()
+  bb63():
+    v104: *[..]*Node = addr s7
+    v105: (*Node, bool) = call extern proc2(v0, v104)
+    store s8 <- v105
+    v106: *Node = load s8.0
+    v107: bool = load s8.1
+    v108: *[..]*Node = addr s7
+    v109: (*Node, bool) = call extern proc3(v0, v108, 2_s64)
+    store s9 <- v109
+    v110: *Node = load s9.0
+    v111: bool = load s9.1
+    v112: bool = !v107
+    branch v112 ? bb65() : bb64()
+  bb65():
+    goto bb66(true)
+  bb64():
+    v114: *Node = load s0
+    v115: bool = v106 != v114
+    goto bb66(v115)
+  bb66(v113: bool):
+    branch v113 ? bb68() : bb67()
+  bb68():
+    goto bb69(true)
+  bb67():
+    v118: bool = !v111
+    goto bb69(v118)
+  bb69(v116: bool):
+    branch v116 ? bb71() : bb70()
+  bb71():
+    goto bb72(true)
+  bb70():
+    v122: *Node = load s0
+    v123: bool = v110 != v122
+    goto bb72(v123)
+  bb72(v119: bool):
+    branch v119 ? bb73() : bb74()
+  bb73():
+    discard call extern proc1(7_s64)
+    goto bb75()
+  bb74():
+    goto bb75()
+  bb75():
+    v124: *[..]*Node = addr s7
+    v134: bool = call extern proc4(v0, v124, 2_s64, v7)
+    v135: bool = !v134
+    branch v135 ? bb76() : bb77()
+  bb76():
+    discard call extern proc1(8_s64)
+    goto bb78()
+  bb77():
+    goto bb78()
+  bb78():
+    v136: *[..]*Node = addr s7
+    v137: (*Node, bool) = call extern proc3(v0, v136, 2_s64)
+    store s10 <- v137
+    v138: *Node = load s10.0
+    v139: bool = load s10.1
+    v140: bool = !v139
+    branch v140 ? bb80() : bb79()
+  bb80():
+    goto bb81(true)
+  bb79():
+    v143: bool = v138 != v7
+    goto bb81(v143)
+  bb81(v141: bool):
+    branch v141 ? bb82() : bb83()
+  bb82():
+    discard call extern proc1(9_s64)
+    goto bb84()
+  bb83():
+    goto bb84()
+  bb84():
+    v144: *[..]*Node = addr s7
+    v145: []*Node = call extern proc8(v0, v144)
+    store s11 <- v145
+    v146: s64 = load s11.view_count
+    v147: bool = v146 != 5_s64
+    branch v147 ? bb86() : bb85()
+  bb86():
+    goto bb87(true)
+  bb85():
+    v149: s64 = load s11.view_count
+    bounds_check 0_s64 < v149
+    v150: *Node = load s11.view_data[0_s64]
+    v151: *Node = load s0
+    v152: bool = v150 != v151
+    goto bb87(v152)
+  bb87(v148: bool):
+    branch v148 ? bb88() : bb89()
+  bb88():
+    discard call extern proc1(10_s64)
+    goto bb90()
+  bb89():
+    goto bb90()
+  bb90():
+    v153: *[..]*Node = addr s7
+    v154: (*Node, bool) = call extern proc1(v0, v153)
+    store s12 <- v154
+    v155: *Node = load s12.0
+    v156: bool = load s12.1
+    v157: bool = !v156
+    branch v157 ? bb92() : bb91()
+  bb92():
+    goto bb93(true)
+  bb91():
+    v159: *Node = load s0
+    v160: bool = v155 != v159
+    goto bb93(v160)
+  bb93(v158: bool):
+    branch v158 ? bb95() : bb94()
+  bb95():
+    goto bb96(true)
+  bb94():
+    v162: s64 = load s7.dyn_count
+    v163: bool = v162 != 4_s64
+    goto bb96(v163)
+  bb96(v161: bool):
+    branch v161 ? bb97() : bb98()
+  bb97():
+    discard call extern proc1(11_s64)
+    goto bb99()
+  bb98():
+    goto bb99()
+  bb99():
+    v164: *[..]*Node = addr s7
+    discard call extern proc5(v0, v164)
+    v165: *[..]*Node = addr s7
+    v166: bool = call extern proc7(v0, v165)
+    v167: bool = !v166
+    branch v167 ? bb101() : bb100()
+  bb101():
+    goto bb102(true)
+  bb100():
+    v169: s64 = load s7.dyn_capacity
+    v170: bool = v169 == 0_s64
+    goto bb102(v170)
+  bb102(v168: bool):
+    branch v168 ? bb103() : bb104()
+  bb103():
+    discard call extern proc1(12_s64)
+    goto bb105()
+  bb104():
+    goto bb105()
+  bb105():
+    v171: *[..]*Node = addr s7
+    discard call extern proc6(v0, v171)
+    v172: *[..]*Node = addr s7
+    discard call extern proc6(v0, v172)
+    v173: *Node = load s0
+    v174: *[..]*Node = addr (v173).*.1
+    discard call extern proc6(v0, v174)
+    v175: **Node = load s7.dyn_data
+    v176: bool = v175 != 0_**Node
+    branch v176 ? bb107() : bb106()
+  bb107():
+    goto bb108(true)
+  bb106():
+    v178: s64 = load s7.dyn_count
+    v179: bool = v178 != 0_s64
+    goto bb108(v179)
+  bb108(v177: bool):
+    branch v177 ? bb110() : bb109()
+  bb110():
+    goto bb111(true)
+  bb109():
+    v181: s64 = load s7.dyn_capacity
+    v182: bool = v181 != 0_s64
+    goto bb111(v182)
+  bb111(v180: bool):
+    branch v180 ? bb112() : bb113()
+  bb112():
+    discard call extern proc1(13_s64)
+    goto bb114()
+  bb113():
+    goto bb114()
+  bb114():
+    v183: (*u8) -> void = load (v0).*.1
+    store s13 <- v7
+    v196: *u8 = load s13
+    discard call (v183)(v0, v196)
+    v197: (*u8) -> void = load (v0).*.1
+    v198: *Node = load s0
+    store s14 <- v198
+    v199: *u8 = load s14
+    discard call (v197)(v0, v199)
+    discard call extern proc1(42_s64)
     return
 }

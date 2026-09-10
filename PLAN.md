@@ -708,44 +708,58 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0230 closes the owner-file compiler blocker for generic containers.**
-> Imported pure `$T` operations now infer in their declaration environment, materialise in their
-> owner file and run through one root-program clone plan in the VM, Cranelift and LLVM. A nested
-> owner-to-owner demand reaches the same bounded fixed point, and concrete-clone diagnostics point
-> back to the importing call.
+> **ADR-0231 delivers the requested generic pointer stack.**
+> `modules/List` now specialises one operation set over native `[..]T`: append, non-removing
+> `last`, pop, indexed read/write, clear, used-prefix view and explicit cleanup all work for
+> `[..]*Node` as well as the existing `[..]s64` callers. The feature probe also repaired two
+> substrate defects: `(T, bool)` no longer raises E0251 in an unbound template, and a
+> default-initialised pointer is the typed null value rather than an undefined read.
 
-**1382 workspace tests (1395 under gate 7), 302 corpus files, 230 ADRs and 25 modules.** ADR-0230
-adds three sema/import tests, two database/root-planning tests, one executable differential program,
-two imports programs and two module fixtures. The fixtures deliberately give templates in different
-owners the same local `ProcId`; the database test also proves two same-type callers deduplicate to
-one clone per owner. The broad nextest lane is green with the six macOS/SDL GUI tests excluded from
-that sandboxed feedback run; all six authoritative gates and the LLVM gate are green, including
-those GUI tests when run with application-services access.
+**1384 workspace tests (1397 under gate 7), 303 corpus files, 231 ADRs and 25 modules.** ADR-0231
+adds one sema regression, one MIR regression and one executable corpus program using the exact
+recursive `Node` and independent `[..]*Node` stack shape. The pre-commit nextest lane runs 1366
+tests; in the sandbox, its six macOS/SDL GUI tests remain environment failures and are verified
+separately with application-services access. The MIR snapshot changes because `last` adds one
+public List procedure and the new corpus program is part of the snapshot.
 **E0299** is the first free global diagnostic code; **E0135** is the first free parser code.
 
-### Next wave: generic dynamic-array operations
+### Next wave: `Hash_Table`
 
-Generalise `modules/List` from its concrete `[..]s64` surface to pure `$T` operations over native
-`[..]T`. The requested proof shape is `stack: [..]*Node`: append pointers, inspect the last pointer,
-pop, clear and free without introducing a per-type module or hiding ownership.
+Ship a new `Hash_Table` module with a zero-ready opaque `Table(K, V)`. The common path is:
 
-The design forks to put to the decider before code are:
+```text
+table: Table(string, *Node);
+add(*table, "root", node);
+value, found := find(*table, "root");
+```
 
-1. whether the public module remains `List` with generic procedures or gains a new compatibility
-   namespace while the existing concrete spellings delegate;
-2. whether `pop` returns `(value, found)` or requires non-empty input and returns `T`; and
-3. whether growth captures the active allocator in an owning wrapper now or keeps the native
-   dynamic array caller-owned until `Hash_Table` establishes the shared container ownership shape.
+The selected interface combines the three designs and the source audit in
+`docs/research/jai-table-and-interfaces.md`:
 
-The recommendation is to keep `List`, preserve concrete compatibility wrappers, make `pop`
-explicitly fallible as `(T, bool)`, and keep the native array caller-owned in this wave.
+1. lazy defaults for string, integer, enum, bool and pointer keys, plus a pre-insertion
+   `set_key_policy` escape hatch for arbitrary `K`;
+2. `add` as upsert, `(value, found)` lookup to preserve Jairs' existing convention, mutable pointer
+   lookup, contains/remove/reserve/clear/count, explicit cursor iteration and idempotent `deinit`;
+3. shallow key/value ownership, captured allocator ownership for state and slots, cached hashes,
+   open addressing, tombstones, unspecified order and mutation-invalidated pointers/cursors; and
+4. keep `Map` unchanged as the legacy concrete module. Jairs has no parameterised type alias, so a
+   nominal compatibility adapter would be dishonest.
 
-### Following wave required by the requested container surface
+Jai's observed contemporary surface uses type-level hash/equality arguments and currently orders
+`table_find` as `(found, value)`. Jairs cannot yet specialise imported value-polymorphic arguments,
+so runtime callbacks are the honest first policy seam; the result order remains the established
+Jairs `(value, found)` shape rather than silently changing every container caller.
 
-1. **`Hash_Table`.** Ship `Table(K, V)` with add/update, find, remove, contains, reserve, clear,
-   pointer lookup/mutation, explicit iteration and cleanup; string and integer hash/equality helpers;
-   captured allocator ownership; unspecified iteration order. Keep `Map` compatible. Exact
-   `for table` expansion remains a separate metaprogramming feature rather than a fake special case.
+Exact `for table` expansion remains a separate metaprogramming feature. The module exposes an
+explicit cursor until user-defined iteration can own that syntax.
+
+### Planned language wave: structural data interfaces
+
+The supplied `$T/interface Shape` feature is queued independently from `Hash_Table`. It is a
+compile-time structural constraint over the existing `$T` specialisation path, not a runtime
+vtable: required fields match by resolved name and type, extra fields are allowed, and concrete
+offsets remain the concrete struct's. The wave must probe reordered fields and `using` promotion
+before deciding them, plus missing/wrong/ambiguous fields and value versus pointer parameters.
 
 Commit each substrate wave before starting the next; merge remains a separate decider action.
 

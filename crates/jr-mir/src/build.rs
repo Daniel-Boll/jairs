@@ -1602,11 +1602,9 @@ impl Lower<'_> {
 
     /// The zero value of a type, for a default-initialised local.
     ///
-    /// `None` for a type whose zero this crate cannot name: a pointer's zero is
-    /// null and the pool interns no null, and an aggregate's zero needs a layout
-    /// (ADR-0017 §5). A *promotable* local is always an integer, a `bool` or a
-    /// pointer, so only the pointer case is reachable, and it degrades to being
-    /// treated as uninitialised rather than to a wrong value.
+    /// `None` for a type whose zero needs a layout rather than one scalar constant
+    /// (ADR-0017 §5). A pointer's null is represented by an integer value at the
+    /// pointer type, exactly as a typed `null` literal is lowered below.
     fn zero_value(&mut self, ty: PoolId) -> Option<PoolId> {
         if ty.index() >= self.pool.len() {
             return None;
@@ -1622,12 +1620,12 @@ impl Lower<'_> {
             // inventing a "first member" default would differ from the backing type's zero.
             Item::EnumType { .. } => Some(self.pool.int_value(ty, 0)),
             Item::BoolType => Some(PoolId::FALSE),
+            Item::PointerType(_) => Some(self.pool.int_value(ty, 0)),
             Item::VoidType
             | Item::StringType
             | Item::TypeType
             | Item::ErrorType
             | Item::ForeignLibraryType
-            | Item::PointerType(_)
             // An array has no *scalar* zero: it is zeroed by clearing its slot, not by
             // assigning a constant, which is what `Statement::Zero` is for. A view is two
             // words, so the same applies — and a zeroed view is `{null, 0}`, which indexes

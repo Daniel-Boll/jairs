@@ -1100,6 +1100,23 @@ impl<'a> Ctx<'a> {
     fn check_return_tuple(&mut self, scope: ExprScope, exprs: &[ExprId], span: Span) {
         let ret = self.body.as_ref().map_or(PoolId::ERROR, |body| body.ret);
         let Some(elems) = self.pool.results_elems(ret).map(<[PoolId]>::to_vec) else {
+            // An uninstantiated polymorphic body resolves a results aggregate containing `T` to
+            // `ERROR`: there is no concrete `T` to intern yet. Its instantiation clone is checked
+            // again with real bindings, so type-check the expressions now but withhold the scalar
+            // arity diagnostic until that clone has a concrete result type. Without this exception,
+            // every generic `pop :: (*[..]$T) -> (T, bool)` was rejected before it could specialize.
+            let in_unbound_template = ret == PoolId::ERROR
+                && self
+                    .poly_var_names
+                    .iter()
+                    .any(|v| !self.type_bindings.contains_key(v));
+            if in_unbound_template {
+                for expr in exprs {
+                    self.check_expr(scope, *expr, None);
+                }
+                return;
+            }
+
             // The procedure declares one result (or none) and this `return` gives several. Checked
             // here rather than left to `expect`, because a results aggregate has no type to unify
             // with a scalar and the generic mismatch would name an internal type.
