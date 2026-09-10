@@ -57,7 +57,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0228.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0229.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -106,6 +106,12 @@ unparenthesized/defaulted named-return forms remain explicit compatibility gaps.
 supports representation-indirect recursive shapes such as a `Node` containing `[..]*Node`.
 Release remains explicit through the matching context allocator. The allocator protocol carries
 only a byte count, so `New` refuses types requiring alignment above its 16-byte guarantee.
+
+Polymorphic calls now infer variables through parameterised nominal types:
+`*Table($K, $V)` matched with `*Table(string, s64)` binds both variables from the struct instance's
+type arguments. Matching uses the constructor's declaration identity, not its name or field layout,
+and the constructor may itself be imported. Instantiating a procedure declared in another module
+remains the next separate, program-scoped specialization wave.
 
 Every fresh Jairs context now has a working allocator/free pair in the VM, Cranelift and LLVM;
 assigning a custom pair and copying one through `push_context` remain unchanged. Whole-file
@@ -196,9 +202,9 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1375** workspace tests (**1388** under gate 7), with all six ordinary gates and gate 7 green
-  for ADR-0228.
-- **297** `.jr` corpus files, **228** accepted ADRs, **25** standard library
+- **1377** workspace tests (**1390** under gate 7), with all six ordinary gates and gate 7 green
+  for ADR-0229.
+- **299** `.jr` corpus files, **229** accepted ADRs, **25** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative

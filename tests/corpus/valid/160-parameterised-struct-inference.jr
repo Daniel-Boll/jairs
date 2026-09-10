@@ -1,0 +1,25 @@
+// ADR-0229 — polymorphic procedure inference descends through a parameterised nominal type.
+//
+// `measure` has no direct `$K` or `$V` parameter. Both variables are learned only by matching
+// `*Table($K, $V)` against the actual `*Table(s64, u8)`. The declaration identity is checked before
+// its arguments are paired, so a same-shaped struct cannot bind them accidentally.
+
+#import "Basic";
+
+Table :: struct($K, $V) {
+  key: K;
+  value: V;
+}
+
+measure :: (table: *Table($K, $V)) -> s64 {
+  return size_of(K) * 10 + size_of(V);
+}
+
+main :: () {
+  table: Table(s64, u8);
+  table.key = 7;
+  table.value = 3;
+
+  // 8-byte K and 1-byte V, proving both bindings and their source order.
+  exit(measure(*table));
+}

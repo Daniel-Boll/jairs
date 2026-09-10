@@ -98,6 +98,40 @@ fn new_refuses_alignment_the_allocator_protocol_cannot_request() {
 }
 
 #[test]
+fn polymorphic_calls_infer_through_parameterised_nominal_types() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "Table :: struct($K, $V) {\n\
+             key: K;\n\
+             value: V;\n\
+         }\n\
+         measure :: (table: *Table($K, $V)) -> s64 {\n\
+             return size_of(K) * 10 + size_of(V);\n\
+         }\n\
+         main :: () -> s64 {\n\
+             table: Table(s64, u8);\n\
+             return measure(*table);\n\
+         }\n",
+    );
+    analysis.assert_silent();
+}
+
+#[test]
+fn parameterised_inference_requires_the_same_nominal_declaration() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "Left :: struct($T) { value: T; }\n\
+         Right :: struct($T) { value: T; }\n\
+         read :: (value: *Left($T)) -> T { return value.value; }\n\
+         main :: () {\n\
+             right: Right(s64);\n\
+             n := read(*right);\n\
+         }\n",
+    );
+    assert_eq!(analysis.codes(), vec!["E0268"]);
+}
+
+#[test]
 fn an_integer_literal_takes_its_type_from_its_context() {
     // The rule that makes `valid/005-decl-typed.jr` legal in a subset with no
     // `cast`. If this regresses, that corpus file stops checking.

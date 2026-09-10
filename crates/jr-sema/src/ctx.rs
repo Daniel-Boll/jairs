@@ -822,7 +822,7 @@ impl<'a> Ctx<'a> {
     ///
     /// This file is searched **first**, which is ADR-0014 §3's resolution order unchanged: a local declaration
     /// shadows an imported one of the same name, and this must not be the one place that differs.
-    fn parameterised_struct_anywhere(
+    pub(crate) fn parameterised_struct_anywhere(
         &self,
         name: Symbol,
     ) -> Option<(FileId, &'a FileHir, StructId, Vec<Symbol>)> {
@@ -899,11 +899,11 @@ impl<'a> Ctx<'a> {
     /// the **importer** has bound, resolved to the importer's type; `set_instance_fields` then cached it for
     /// every later user of that instance. Silent wrong type and wrong layout, with no diagnostic.
     ///
-    /// The audit at `354d900` found this **latent rather than live** (`docs/assessment-2026-08-07.md` §4): the
-    /// only way to make an instance resolve while a foreign binding is in scope is to give it a type argument
-    /// that depends on one, and `Box(T)` for a bound `T` is E0212 — inference through a parameterised struct is
-    /// deferred (ADR-0085 §5). So the invariant held by accident of an unrelated refusal, and would have broken
-    /// the day that refusal lifted. It is cheaper to make it structural now than to rediscover it then.
+    /// The audit at `354d900` found this **latent rather than live** (`docs/assessment-2026-08-07.md` §4):
+    /// at the time, inference through a parameterised struct was still refused. ADR-0229 has now lifted that
+    /// refusal, so this narrowing is exercised by ordinary `Box(T)`/`Table(K, V)` inference rather than merely
+    /// guarding a future feature. Making the invariant structural before that lift is what kept it from
+    /// becoming a silent wrong type and layout now.
     fn resolve_instance_fields_in(
         &mut self,
         hir: &'a FileHir,

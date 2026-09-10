@@ -596,19 +596,23 @@ impl Ctx<'_> {
             | TypeRef::DynamicArray { elem } => {
                 self.collect_poly_in_type(scope, elem, vars);
             }
+            // `Table($K, $V)` contributes both variables, in argument order (ADR-0229).
+            // The application is still one nominal type; this walk only discovers the variables
+            // its call-time inference must bind.
+            TypeRef::Apply { args, .. } => {
+                for arg in args {
+                    self.collect_poly_in_type(scope, arg, vars);
+                }
+            }
             // A `$T` inside a proc-pointer or results type is not part of this sub-wave's one-`$T` slice;
             // it is left for the sub-wave that generalises, and reaching one resolves to `ERROR` rather
             // than binding — which refuses the signature rather than half-supporting it (ADR-0081 §4).
-            // A `$T` inside a parameterised type reference — `f :: (b: Box($T))` — is nested inference
-            // through a nominal type, deferred with the rest of that step (ADR-0085 §5). So `Apply` does
-            // not bind here this sub-wave; a `Box(s64)` parameter is an ordinary concrete type.
             // A qualified name carries no `$T` for the same reason a bare one does not: it names an
             // existing type rather than introducing a variable (ADR-0179 §5).
             TypeRef::Proc { .. }
             | TypeRef::Results(_)
             | TypeRef::Name(_)
             | TypeRef::Qualified { .. }
-            | TypeRef::Apply { .. }
             | TypeRef::Struct(_)
             | TypeRef::Union(_)
             | TypeRef::Variant(_)

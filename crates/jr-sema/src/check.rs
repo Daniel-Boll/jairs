@@ -6007,9 +6007,9 @@ impl Ctx<'_> {
             return PoolId::ERROR;
         }
 
-        // Infer **each** variable from the first parameter whose declared type *is* `$Var` directly (a bare
-        // poly variable), typing every argument on the way (ADR-0083 §3). A nested `*$T`/`[]$T` position is
-        // not an inference site — that needs a unifier this wave still does not build (ADR-0083 §4).
+        // Infer **each** variable from the parameter shapes that expose it, typing every argument on the
+        // way. ADR-0084 added pointer/view peeling; ADR-0229 adds parameterised nominal arguments while
+        // preserving declaration identity.
         let hir_params = self.hir.proc(proc).params.clone();
         let mut bindings: Vec<(Symbol, PoolId)> = Vec::new();
         for (index, param) in hir_params.iter().enumerate() {
@@ -6019,9 +6019,10 @@ impl Ctx<'_> {
                 continue;
             }
             // Match the parameter's `TypeRef` structure against the argument's resolved type, binding a
-            // `$T` wherever a `TypeRef::Poly` meets a concrete type — directly (`$T` ↔ `U`) or one layer
-            // deep (`*$T` ↔ `*U`, `[]$T` ↔ `[]U`), ADR-0084 §1. First binding for a variable wins; a later
-            // occurrence is a *use*, checked against it below. A shape mismatch binds nothing (§2).
+            // `$T` wherever a `TypeRef::Poly` meets a concrete type — directly (`$T` ↔ `U`), through
+            // pointer/view/vector structure (ADR-0084, ADR-0148), or through the arguments of the same
+            // parameterised nominal declaration (ADR-0229). First binding for a variable wins; a later
+            // occurrence is a *use*, checked against it below. A shape mismatch binds nothing.
             if let Some(t) = param.ty {
                 self.infer_var_in(t, arg_ty, &mut bindings);
             }
@@ -6055,7 +6056,7 @@ impl Ctx<'_> {
                     Diagnostic::error(span, "cannot infer every `$T` from the arguments of this call")
                         .with_code(E0268)
                         .with_note(
-                            "each type variable is inferred from an argument that pins it — directly, or through a pointer or view (ADR-0084)",
+                            "each type variable is inferred from an argument that pins it — directly, through structural wrappers, or through an instance of the same parameterised nominal type (ADR-0084, ADR-0229)",
                         ),
                 );
             }
@@ -6137,12 +6138,13 @@ impl Ctx<'_> {
     }
 
     /// Binds a type variable by matching a parameter's `TypeRef` structure against an argument's resolved
-    /// type, one structural layer deep (ADR-0084 §1).
+    /// type (ADR-0084 §1, ADR-0148 §1, ADR-0229).
     ///
     /// `$T` against `U` binds `T = U`; `*$T` against `*U` peels both pointers and binds `T = U`; `[]$T`
-    /// against `[]U` peels both views. A shape that does not align — `*$T` against a non-pointer — binds
-    /// nothing (ADR-0084 §2), leaving the variable for another position to pin or the argument check to
-    /// reject. The first binding for a variable wins; a later occurrence is a *use*, checked against it.
+    /// against `[]U` peels both views; `Box($T)` against `Box(U)` peels matching nominal arguments. A shape
+    /// that does not align — `*$T` against a non-pointer, or `Box($T)` against another declaration — binds
+    /// nothing, leaving the variable for another position to pin or the argument check to reject. The first
+    /// binding for a variable wins; a later occurrence is a *use*, checked against it.
     ///
     /// One-directional and not a unifier (ADR-0084 §3): it reads a binding *out of* the argument type,
     /// with no substitution back and no occurs-check.
@@ -6182,13 +6184,31 @@ impl Ctx<'_> {
                     self.infer_var_in(elem, arg_elem, bindings);
                 }
             }
+            // A parameterised nominal type binds only against an instance of the **same declaration**
+            // (ADR-0229). Equal names or equal fields do not make two structs the same type.
+            TypeRef::Apply { name, args } => {
+                let Some((decl_file, _, sid, _)) = self.parameterised_struct_anywhere(name) else {
+                    return;
+                };
+                let Item::StructType {
+                    decl: arg_decl,
+                    args: arg_args,
+                } = self.pool.item(arg_ty)
+                else {
+                    return;
+                };
+                let want_decl = jr_pool::DeclId::new(decl_file, sid.as_u32());
+                if *arg_decl != want_decl || args.len() != arg_args.len() {
+                    return;
+                }
+                for (param_arg, &arg_arg) in args.iter().zip(arg_args) {
+                    self.infer_var_in(*param_arg, arg_arg, bindings);
+                }
+            }
             // Any other shape (a name, an array — whose length is part of its identity and not matched
             // here — a struct, a proc type) contains no directly-bindable variable in this sub-wave's
             // model, so it contributes no binding. A later sub-wave that wants `[$N]$T` inference adds
             // arms here.
-            // Inferring `$T` through a parameterised struct — `(b: Box($T))` binding `T` from a
-            // `Box(s64)` argument — is nested inference through a nominal type, deferred with the rest
-            // of that step (ADR-0085 §5). So `Apply` binds nothing here this sub-wave.
             // A qualified name is a *name*: it binds nothing, exactly as a bare one does, and for
             // the same reason (ADR-0179 §5).
             TypeRef::Name(_)
@@ -6196,7 +6216,6 @@ impl Ctx<'_> {
             | TypeRef::Array { .. }
             | TypeRef::Results(_)
             | TypeRef::Proc { .. }
-            | TypeRef::Apply { .. }
             | TypeRef::Struct(_)
             | TypeRef::Union(_)
             | TypeRef::Variant(_)

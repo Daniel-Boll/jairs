@@ -9,11 +9,11 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1375** workspace tests (**1388** under gate 7), with all six ordinary gates and gate 7 green
-  for ADR-0228.
-- **297** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
-  (**308** counting those).
-- **228** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **1377** workspace tests (**1390** under gate 7), with all six ordinary gates and gate 7 green
+  for ADR-0229.
+- **299** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
+  (**310** counting those).
+- **229** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **25** standard library modules under `modules/`.
 - Diagnostic codes run **E0001–E0298**; **E0299** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership
@@ -112,8 +112,8 @@ The authoritative version of this list is
 | `#insert "…"` of a **string literal**, lowered where it is written (ADR-0072). **Also at file scope**, where it generates *declarations* (ADR-0184): the generated items go straight into the file's arena, so a generated constant, struct or procedure is an ordinary one | a first-class `Code` value and inspectable code tree |
 | `#insert <expr>;` of a **computed** operand — a constant or a `#run` whose text is evaluated at compile time and spliced (ADR-0073) | **At file scope a computed operand may generate only a library declaration** (E0294, ADR-0184 §4) — a phase-order refusal, not a policy one |
 | **`#code { … }`** — unquoted source spliced into the enclosing scope, sugar over `#insert` (ADR-0080) | a `Code` **value** — declined, not deferred |
-| **`$T` polymorphic procedures** — inferred from the argument, instantiated once per distinct tuple of bound types, checked per instantiation, run as ordinary procedures in both engines (ADR-0081–0084). A template may call another template (ADR-0120) | two-way unification and explicit type arguments; a **cross-file** instantiation (E0268) |
-| **polymorphic structs** — `Box :: struct($T) { value: T; }` used as `Box(s64)`, keyed on `(decl, args)` (ADR-0085). Crosses a module boundary (ADR-0117) | inferring a struct's argument through a `$T` parameter; `using` on a parameterised struct; recursive `List($T)` |
+| **`$T` polymorphic procedures** — inferred from arguments directly, through pointers/views/vectors/dynamic arrays, and through parameterised nominal instances such as `*Table($K, $V)` (ADR-0081–0084, ADR-0229); instantiated once per bound-type tuple and checked/run as ordinary procedures. A template may call another template (ADR-0120) | two-way unification and explicit type arguments; a **cross-file** instantiation (E0268) |
+| **polymorphic structs** — `Box :: struct($T) { value: T; }` used as `Box(s64)`, keyed on `(decl, args)` (ADR-0085). Crosses a module boundary (ADR-0117), and its concrete arguments may drive a local procedure's `$T` inference (ADR-0229) | `using` on a parameterised struct; recursive `List($T)` |
 | `talloc(n)` / `reset_temporary_storage()` — a per-context bump arena, valid until reset, no per-piece free (ADR-0065) | aligned `talloc` and a configurable region size |
 | **`[N]T` sized by a `$N` comptime parameter** (ADR-0089) | a length needing *arithmetic over `N`*, or one naming a constant from another file |
 | **`$N` comptime-value parameter and instantiation** (ADR-0087, ADR-0088) | a non-constant argument (E0271); a mixed `$T`+`$N` template |
