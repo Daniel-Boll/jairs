@@ -58,7 +58,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0243.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0244.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -287,13 +287,14 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1436** workspace tests (**1449** under gate 7), with all six ordinary gates green for ADR-0243.
-- **327** `.jr` corpus files outside the fixture-module directory, **243** accepted ADRs, **28** standard library
+- **1436** workspace tests (**1449** under gate 7). ADR-0244 changes test orchestration without
+  changing coverage; an eight-shard experiment was measured and rejected.
+- **327** `.jr` corpus files outside the fixture-module directory, **244** accepted ADRs, **28** standard library
   modules.
-- **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
-  and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative
-  `scripts/check full` still runs ordinary Cargo with doctests; sharding its two exhaustive sweeps
-  reduced the measured warm gate from 222.59 to 122.54 seconds (ADR-0209).
+- **Fast test feedback without weakening the gate.** `scripts/check fast` and
+  `scripts/check pre-commit` use an isolated nextest cache; `scripts/check measure` writes JUnit
+  timings. The authoritative `scripts/check full` still uses Cargo/libtest and rustdoc, overlapping
+  their independent phases. ADR-0244's pre-change warm baseline was 183.07 seconds.
 - **Both platforms are verified green.** macOS arm64 locally, gate by gate, and
   **x86-64 Linux in CI** — all seven jobs passing, which had never happened
   before. Getting there took eight fixes read out of eight consecutive CI runs
@@ -373,17 +374,18 @@ pipeline diagram and the full crate-by-crate breakdown.
 ```sh
 # Requires Rust stable (pinned via rust-toolchain.toml).
 scripts/check fast        # broad inner-loop feedback
-scripts/check pre-commit  # all but the two exhaustive corpus-wide sweeps
-scripts/check full        # authoritative cargo test --workspace
+scripts/check pre-commit  # all but the three exhaustive corpus-wide sweeps
+scripts/check measure     # complete non-doctest timing report
+scripts/check full        # authoritative Cargo/libtest plus doctests
 
 # Check formatting and lints before pushing:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The first two lanes require `cargo-nextest`; `scripts/check full` does not.
+The first three lanes require `cargo-nextest`; `scripts/check full` does not.
 Fast lanes are feedback, not release evidence: wave completion still requires
-the unchanged `cargo test --workspace` gate. `AGENTS.md`'s "The six gates"
+the Cargo/libtest plus doctest gate. `AGENTS.md`'s "The six gates"
 section has the rest — the corpus format check, the tree-sitter drift check,
 and the LLVM-gated seventh gate — plus the process traps that have bitten
 before: two gates run at once and race a shared binary.

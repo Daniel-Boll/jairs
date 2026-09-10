@@ -17,8 +17,21 @@ and not test(/every_prefix_of_every_corpus_file_round_trips_shard_/)
 default-filter = """
 not test(/every_corpus_program_behaves_identically_in_both_engines_shard_/)
 and not test(/every_corpus_program_behaves_identically_in_all_three_engines_shard_/)
+and not test(every_corpus_program_computes_the_same_answer_at_both_levels)
 and not test(/every_prefix_of_every_corpus_file_round_trips_shard_/)
 """
+
+[profile.measure]
+# Run the complete non-doctest suite while keeping terminal output focused on
+# failures and tests that are long enough to influence iteration time.
+fail-fast = false
+status-level = "slow"
+final-status-level = "fail"
+
+[profile.measure.junit]
+# JUnit paths are relative to <CARGO_TARGET_DIR>/nextest/<profile>, so this
+# normalizes to <CARGO_TARGET_DIR>/reports/measure.xml.
+path = "../../reports/measure.xml"
 
 [test-groups.differential]
 max-threads = 4

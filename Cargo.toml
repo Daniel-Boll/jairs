@@ -121,6 +121,15 @@ debug = true
 [profile.dev.package."*"]
 opt-level = 2
 
+[profile.test]
+# Preserve the measured O1 test execution profile while retaining only the
+# source locations needed for readable backtraces.
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.test.package."*"]
+opt-level = 2
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
