@@ -44,7 +44,7 @@ use jr_hir::{
 use jr_pool::{Pool, PoolId};
 use jr_sema::TypeMap;
 
-use crate::inputs::{ConstValues, ImportedProcs};
+use crate::inputs::{ConstValues, FilledArgs, ImportedProcs};
 use crate::mir::{
     BinOp, Callee, MirBody, MirSpan, Operand, Place, Poisoned, ProcRef, Rvalue, Statement,
     Terminator, UnOp,
@@ -75,6 +75,7 @@ pub fn lower_const(
     resolve: &ResolveMap,
     types: &TypeMap,
     consts: &ConstValues,
+    filled: &FilledArgs,
     imports: &ImportedProcs,
     pool: &mut Pool,
 ) -> Result<MirBody, Poisoned> {
@@ -97,6 +98,7 @@ pub fn lower_const(
         resolve,
         types,
         consts,
+        filled,
         imports,
         pool,
         mir: MirBody::new(proc, ret),
@@ -306,6 +308,8 @@ struct Thunk<'a> {
     resolve: &'a ResolveMap,
     types: &'a TypeMap,
     consts: &'a ConstValues,
+    /// Sema's resolved positional arguments for calls using names or defaults (ADR-0234).
+    filled: &'a FilledArgs,
     imports: &'a ImportedProcs,
     pool: &'a mut Pool,
     mir: MirBody,
@@ -471,24 +475,39 @@ impl Thunk<'_> {
                     let address = self.define(ptr_ty, Rvalue::Address(Place::slot(slot)), id);
                     operands.push(address);
                 }
-                // **The written arguments must be all of them.** Const-eval runs before the check phase
-                // that fills defaults and reorders named arguments (`consts.rs` argues why, ADR-0018
-                // §3), so a call that omits a defaulted argument arrives here one operand short. Left
-                // unchecked it built a short call and the *interpreter* reported
-                // "internal compiler error: called a procedure taking 3 arguments with 2" — compiler
-                // internals shown for a program whose only fault is a construct const-eval does not
-                // support yet (ADR-0069 §3). Refused here, where the reason can be said plainly.
+                // **Sema's positional list wins here too** (ADR-0234), exactly as it does in
+                // `build.rs`. A default was never written and a named argument may be written in a
+                // different order from its parameter, so lowering the source list would either emit a
+                // short call or silently pass values to the wrong parameters. `file_consts` is already
+                // downstream of `checked`; the old comment claiming this evidence did not exist had
+                // expired.
+                //
+                // Copy before recursively lowering expression slots: `self.expr` needs a mutable
+                // borrow, while `FilledArgs::get` lends the map immutably.
+                let filled = self.filled.get(self.scope, id).map(<[_]>::to_vec);
+                let resolved = match filled {
+                    Some(slots) => slots
+                        .into_iter()
+                        .map(|slot| match slot {
+                            crate::inputs::FilledArg::Expr(expr) => self.expr(expr),
+                            crate::inputs::FilledArg::Default(value) => {
+                                Ok(Operand::Constant(value))
+                            }
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                    None => args
+                        .iter()
+                        .map(|arg| self.expr(*arg))
+                        .collect::<Result<Vec<_>, _>>()?,
+                };
                 if let Some(declared) = self.declared_param_count(target)
-                    && declared != args.len()
+                    && declared != resolved.len()
                 {
                     return Err(Poisoned::Here(
-                        "a `#run` call must pass every argument: a default or named argument needs the \
-                         check phase, which has not run yet",
+                        "a `#run` call did not receive a complete positional argument list",
                     ));
                 }
-                for arg in &args {
-                    operands.push(self.expr(*arg)?);
-                }
+                operands.extend(resolved);
                 Ok(self.define(
                     ty,
                     Rvalue::Call {

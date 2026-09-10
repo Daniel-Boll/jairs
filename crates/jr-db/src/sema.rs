@@ -76,6 +76,11 @@ pub struct SignatureResult {
     /// `jr-mir` consults. Without it the call reached the thunk unfolded and E0230 said *"a name failed
     /// to resolve at file scope"*.
     pub folded_calls: Arc<jr_sema::FoldedCalls>,
+    /// Positional argument lists for file-level calls using names or defaults (ADR-0234).
+    ///
+    /// Kept in MIR vocabulary so [`checked`] can merge it with body-call evidence without a second
+    /// translation path.
+    pub filled_args: Arc<jr_mir::FilledArgs>,
 }
 
 /// Each polymorphic call and the instantiation it needs: the template procedure and the tuple of types
@@ -374,11 +379,13 @@ pub fn file_signatures(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) ->
         interner,
     );
 
+    let filled_args = translate_filled_calls(&output.filled_calls);
     SignatureResult {
         signatures: Arc::new(output.signatures),
         types: Arc::new(output.types),
         diagnostics: Arc::new(output.diagnostics),
         folded_calls: Arc::new(output.folded_calls),
+        filled_args: Arc::new(filled_args),
     }
 }
 
@@ -445,7 +452,7 @@ pub fn checked(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> CheckRe
     );
     drop(pool);
 
-    translate_check_output(output, own.types.as_ref())
+    translate_check_output(output, own.types.as_ref(), own.filled_args.as_ref())
 }
 
 /// Resolves and checks an **already-expanded** HIR, for `file_mir`'s computed-`#insert` branch
@@ -584,7 +591,8 @@ pub(crate) fn checked_expanded(
     let mut diags = resolve_diags;
     // The **expanded** tree's signature types, not the unexpanded file's: a generated declaration's type
     // exists only in the recomputed table (ADR-0184 §3).
-    let result = translate_check_output(output, &sig_output.types);
+    let declaration_filled = translate_filled_calls(&sig_output.filled_calls);
+    let result = translate_check_output(output, &sig_output.types, &declaration_filled);
     diags.extend(result.diagnostics.iter().cloned());
 
     // The **recomputed** signatures travel with the rest, because a file-scope `#insert` adds items and
@@ -1254,7 +1262,8 @@ pub(crate) fn expand_round(
 
     let mut diagnostics = resolve_diags;
     diagnostics.extend(sig_output.diagnostics.iter().cloned());
-    let check = translate_check_output(output, &sig_output.types);
+    let declaration_filled = translate_filled_calls(&sig_output.filled_calls);
+    let check = translate_check_output(output, &sig_output.types, &declaration_filled);
     diagnostics.extend(check.diagnostics.iter().cloned());
 
     Expansion {
@@ -1302,6 +1311,7 @@ fn scope_ord(scope: jr_hir::ExprScope) -> (u8, u32) {
 fn translate_check_output(
     output: jr_sema::CheckOutput,
     declaration_types: &jr_sema::TypeMap,
+    declaration_filled: &jr_mir::FilledArgs,
 ) -> CheckResult {
     // One map for the whole file: the signature phase typed the declarations,
     // this phase typed the bodies, and neither typed the other's expressions.
@@ -1318,16 +1328,9 @@ fn translate_check_output(
 
     // Translated for the same reason `operator_calls` is: the `ArgSlot`/`FilledArg` pair keeps
     // `jr-sema` and `jr-mir` independent of each other, and this is the one place the mapping lives.
-    let mut filled_args = jr_mir::FilledArgs::new();
+    let mut filled_args = declaration_filled.clone();
     for ((scope, expr), slots) in &output.filled_calls {
-        let translated: Vec<jr_mir::FilledArg> = slots
-            .iter()
-            .map(|slot| match slot {
-                jr_sema::ArgSlot::Given(expr) => jr_mir::FilledArg::Expr(*expr),
-                jr_sema::ArgSlot::Default(value) => jr_mir::FilledArg::Default(*value),
-            })
-            .collect();
-        filled_args.set(*scope, *expr, translated);
+        filled_args.set(*scope, *expr, translate_arg_slots(slots));
     }
 
     CheckResult {
@@ -1349,6 +1352,30 @@ fn translate_check_output(
         variadic_calls: Arc::new(output.variadic_calls),
         soa_fields: Arc::new(output.soa_fields),
     }
+}
+
+/// Translates sema's argument-binding evidence into MIR vocabulary.
+///
+/// Shared by the signature and check phases so a file-level call and a body call cannot acquire
+/// subtly different translations.
+fn translate_filled_calls(
+    calls: &rustc_hash::FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), Vec<jr_sema::ArgSlot>>,
+) -> jr_mir::FilledArgs {
+    let mut filled = jr_mir::FilledArgs::new();
+    for ((scope, expr), slots) in calls {
+        filled.set(*scope, *expr, translate_arg_slots(slots));
+    }
+    filled
+}
+
+fn translate_arg_slots(slots: &[jr_sema::ArgSlot]) -> Vec<jr_mir::FilledArg> {
+    slots
+        .iter()
+        .map(|slot| match slot {
+            jr_sema::ArgSlot::Given(expr) => jr_mir::FilledArg::Expr(*expr),
+            jr_sema::ArgSlot::Default(value) => jr_mir::FilledArg::Default(*value),
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
