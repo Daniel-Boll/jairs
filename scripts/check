@@ -8,14 +8,154 @@ Usage: scripts/check <lane> [runner arguments...]
 
 Lanes:
   fast        Broad inner-loop coverage; skips the differential target and exhaustive prefix shards.
-  pre-commit  All ordinary tests except the two exhaustive corpus-wide sweeps.
-  full        The authoritative Cargo test gate, including doctests.
+  pre-commit  All ordinary tests except the three exhaustive corpus-wide sweeps.
+  measure     Full non-doctest nextest coverage with JUnit timing output.
+  full        Authoritative Cargo/libtest coverage plus every doctest.
+  cache-info  Show the isolated nextest cache path, size, and measurement report.
+  clean-cache Remove only the repository's isolated nextest cache.
 
 Examples:
   scripts/check fast
   scripts/check pre-commit
+  scripts/check measure
   scripts/check full
+  scripts/check cache-info
+  scripts/check clean-cache
+
+fast, pre-commit, and measure default CARGO_TARGET_DIR to target/nextest.
+An existing CARGO_TARGET_DIR is respected. The measurement report is written
+to target/nextest/reports/measure.xml.
 EOF
+}
+
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+nextest_target="$repo_root/target/nextest"
+
+measure_report_for() {
+    local target_dir="$1"
+    echo "$target_dir/reports/measure.xml"
+}
+
+run_nextest() {
+    local lane="$1"
+    shift
+
+    if ! cargo nextest --version >/dev/null 2>&1; then
+        echo "error: cargo-nextest is required for the '$lane' lane" >&2
+        echo "install it with: cargo install cargo-nextest --locked" >&2
+        exit 2
+    fi
+
+    export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$nextest_target}"
+    exec cargo nextest run --workspace --locked --profile "$lane" "$@"
+}
+
+run_full() {
+    local non_doc_pid=""
+    local doc_pid=""
+
+    terminate_children() {
+        local signal="$1"
+        local exit_status="$2"
+
+        trap - HUP INT TERM EXIT
+        if [[ -n "$non_doc_pid" ]]; then
+            kill "-$signal" "$non_doc_pid" 2>/dev/null || true
+        fi
+        if [[ -n "$doc_pid" ]]; then
+            kill "-$signal" "$doc_pid" 2>/dev/null || true
+        fi
+        if [[ -n "$non_doc_pid" ]]; then
+            wait "$non_doc_pid" 2>/dev/null || true
+        fi
+        if [[ -n "$doc_pid" ]]; then
+            wait "$doc_pid" 2>/dev/null || true
+        fi
+        exit "$exit_status"
+    }
+
+    cleanup_children() {
+        if [[ -n "$non_doc_pid" ]]; then
+            kill -TERM "$non_doc_pid" 2>/dev/null || true
+        fi
+        if [[ -n "$doc_pid" ]]; then
+            kill -TERM "$doc_pid" 2>/dev/null || true
+        fi
+        if [[ -n "$non_doc_pid" ]]; then
+            wait "$non_doc_pid" 2>/dev/null || true
+        fi
+        if [[ -n "$doc_pid" ]]; then
+            wait "$doc_pid" 2>/dev/null || true
+        fi
+    }
+
+    trap 'terminate_children HUP 129' HUP
+    trap 'terminate_children INT 130' INT
+    trap 'terminate_children TERM 143' TERM
+    trap cleanup_children EXIT
+
+    # Build the ordinary test binaries once before both runners start. This
+    # avoids two Cargo processes competing for the package-cache/build locks.
+    cargo test --workspace --locked --lib --bins --tests --examples --no-run "$@"
+
+    cargo test --workspace --locked --lib --bins --tests --examples "$@" &
+    non_doc_pid=$!
+    cargo test --workspace --locked --doc "$@" &
+    doc_pid=$!
+
+    local non_doc_status=0
+    local doc_status=0
+    wait "$non_doc_pid" || non_doc_status=$?
+    non_doc_pid=""
+    wait "$doc_pid" || doc_status=$?
+    doc_pid=""
+    trap - HUP INT TERM EXIT
+
+    if ((non_doc_status != 0)); then
+        return "$non_doc_status"
+    fi
+    return "$doc_status"
+}
+
+show_cache_info() {
+    local active_target="${CARGO_TARGET_DIR:-$nextest_target}"
+    local measure_report
+    measure_report="$(measure_report_for "$active_target")"
+    local source="repository default"
+    if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+        source="CARGO_TARGET_DIR"
+    fi
+
+    echo "nextest target: $active_target ($source)"
+    if [[ -e "$active_target" ]]; then
+        du -sh -- "$active_target"
+    else
+        echo "cache size:      absent"
+    fi
+
+    echo "measure report: $measure_report"
+    if [[ -f "$measure_report" ]]; then
+        ls -lh -- "$measure_report"
+    else
+        echo "report status:  absent"
+    fi
+
+    if [[ "$active_target" != "$nextest_target" ]]; then
+        echo "clean-cache:    removes $nextest_target only"
+    fi
+}
+
+clean_nextest_cache() {
+    if [[ ! -e "$nextest_target" ]]; then
+        echo "nextest cache is already absent: $nextest_target"
+        return
+    fi
+
+    # This exact, repository-owned path is intentionally independent of an
+    # overridden CARGO_TARGET_DIR. Never broaden this to target/ or an
+    # arbitrary environment-provided path.
+    rm -rf -- "$nextest_target"
+    echo "removed nextest cache: $nextest_target"
 }
 
 lane="${1:-}"
@@ -27,15 +167,27 @@ shift
 
 case "$lane" in
     fast | pre-commit)
-        if ! cargo nextest --version >/dev/null 2>&1; then
-            echo "error: cargo-nextest is required for the '$lane' lane" >&2
-            echo "install it with: cargo install cargo-nextest --locked" >&2
-            exit 2
-        fi
-        exec cargo nextest run --workspace --profile "$lane" "$@"
+        run_nextest "$lane" "$@"
+        ;;
+    measure)
+        run_nextest "$lane" "$@"
         ;;
     full)
-        exec cargo test --workspace "$@"
+        run_full "$@"
+        ;;
+    cache-info)
+        if (($# != 0)); then
+            echo "error: cache-info does not accept runner arguments" >&2
+            exit 2
+        fi
+        show_cache_info
+        ;;
+    clean-cache)
+        if (($# != 0)); then
+            echo "error: clean-cache does not accept runner arguments" >&2
+            exit 2
+        fi
+        clean_nextest_cache
         ;;
     -h | --help | help)
         usage

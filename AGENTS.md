@@ -54,7 +54,7 @@ no LLVM can make green, which is why they stayed six (ADR-0143 §1).
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+scripts/check full
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo run -q -p jr-cli -- fmt --check tests/corpus/valid tests/corpus/imports/valid \
     tests/corpus/type-errors tests/corpus/cfg-errors tests/corpus/modules modules tests/fixtures
@@ -93,10 +93,11 @@ compile, and neither would have been visible any other way.
 
 ### Fast local lanes
 
-ADR-0209 adds `scripts/check fast` and `scripts/check pre-commit` for iteration. They use
-repository-owned nextest profiles and intentionally omit the exhaustive differential/prefix sweeps.
-`scripts/check full` is exactly the ordinary `cargo test --workspace` gate, including doctests.
-The first two commands are feedback only: **never report gate 3 green from a nextest lane.**
+ADR-0209 adds `scripts/check fast` and `scripts/check pre-commit` for iteration; ADR-0244 isolates
+their nextest cache, adds a JUnit-producing `measure` lane, and corrects `pre-commit` to omit all
+three exhaustive corpus-wide sweeps. `scripts/check full` remains the authoritative Cargo/libtest
+gate: it compiles once, then overlaps the ordinary workspace targets with the complete doctest run.
+The nextest commands are feedback only: **never report gate 3 green from a nextest lane.**
 
 ### Gate 7 — the LLVM back end
 

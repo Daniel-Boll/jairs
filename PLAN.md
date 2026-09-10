@@ -240,11 +240,12 @@ Status of each slice component, so this is answerable without reading the tree.
 > is claimed signature-identical. Public Focus, Hitboxer and Voronoi snapshots disagree on several
 > declarations.
 >
-> **Current test ergonomics (ADR-0209).** The exhaustive VM/Cranelift and VM/Cranelift/LLVM corpus
-> comparisons are four deterministic tests each, and the every-prefix parser proof is eight. Their
-> unions are exactly the old inputs; the change exposes parallel work rather than sampling coverage
-> away. `scripts/check fast` and `pre-commit` are local feedback lanes, while `scripts/check full`
-> remains the ordinary Cargo gate including doctests.
+> **Current test ergonomics (ADR-0209, amended by ADR-0244).** The exhaustive VM/Cranelift and
+> VM/Cranelift/LLVM corpus comparisons remain four deterministic tests each, and the every-prefix
+> parser proof is eight. An eight-shard ordinary experiment made its target 90% slower and was
+> rejected. Nextest feedback uses an isolated target and optional JUnit timing output.
+> `scripts/check full` remains Cargo/libtest plus every doctest, with the independent phases
+> overlapped after one ordinary-test build.
 >
 > **Current Game foundation (ADR-0210).** `modules/Game` now owns one caller-sized `App` lifecycle:
 > SDL/window/Simp startup, one event drain per frame, close latching, non-negative monotonic delta,
@@ -811,11 +812,12 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0243 adds context-installable `Pool` and `Flat_Pool` arenas.**
-> Both capture the allocator triple they replace, preserve pointer stability according to their
-> shape, and release backing storage only in bulk.
+> **ADR-0244 makes test iteration measurable and keeps its cache bounded.**
+> Nextest feedback uses an isolated target and the authoritative Cargo gate overlaps normal tests
+> with doctests without changing their union. An eight-shard parity experiment was rejected after
+> making the differential target 90% slower.
 
-**1436 workspace tests (1449 under gate 7), 327 corpus files outside fixture modules, 243 ADRs and
+**1436 workspace tests (1449 under gate 7), 327 corpus files outside fixture modules, 244 ADRs and
 28 modules.** `valid/173` installs a stable multi-block `Pool`, allocates `New(Node)`, a generic
 `Table(string, string)`, and backing storage for `[..]*Node`, then exercises reset/reuse, a request
 above 64 KiB, captured-owner release, and idempotent cleanup. `valid/174` exercises `Flat_Pool`'s
@@ -830,9 +832,11 @@ Both arenas align requests to 16 bytes and bridge their owning pointer through
 owns one contiguous slab and may grow only while empty. Their individual free callbacks are no-ops,
 because reset/release or reset/fini owns reclamation. `List` remains explicitly `malloc/free`-owned.
 
-All six ordinary gates are green. Gate 7 was not rerun for ADR-0243 because this wave adds only
-library source, corpus programs, and snapshots; it changes no MIR, layout, code generator, or back
-end. The preceding ADR-0242 wave ran all seven gates, including the three-way LLVM differential.
+ADR-0244 changes only test orchestration, test-profile debug information, and CI. It changes no
+language behavior, MIR, layout, code generator, or back end,
+so gate 7 is not required. Its measured pre-change baseline was 183.07 seconds warm, with only
+0.59 seconds spent compiling; the differential binary accounted for 76.47 seconds. The next
+performance decision must use `scripts/check measure` rather than another unmeasured cache.
 
 ### Next wave: pure-template calls inside `#run`
 
@@ -870,22 +874,24 @@ deferred, not revoked.
 ### Previous handoff: ADR-0209
 
 > [!IMPORTANT]
-> **ADR-0209 made routine feedback seconds-scale without weakening gate 3.** A controlled warm
+> **ADR-0209 made routine feedback seconds-scale without weakening gate 3; ADR-0244 retunes it
+> after the corpus and target cache grew.** A controlled warm
 > before/after measured the authoritative default Cargo test gate at **222.59 → 122.54 seconds**, including
 > doctests. The differential target fell **140.74 → 62.99 seconds** and parser robustness
-> **24.41 → 5.96 seconds**. The two exhaustive properties are unchanged: four sorted-modulo shards
-> in each engine sweep cover every executable corpus program, and eight cover every
+> **24.41 → 5.96 seconds**. The later warm baseline regressed to **183.07 seconds** while
+> compilation remained only **0.59 seconds**. Four sorted-modulo shards in each engine sweep cover
+> every executable corpus program, and eight cover every
 > character-boundary prefix of every valid and invalid parser corpus file.
 >
-> **Use the lane that answers the question being asked.** `scripts/check fast` runs 1143 tests in
-> **12.95 seconds** and omits the differential target plus exhaustive prefix shards.
-> `scripts/check pre-commit` runs 1209 tests in **35.81 seconds** and omits only the twelve
-> exhaustive shards. `scripts/check full` is the mandatory ordinary `cargo test --workspace` gate.
+> **Use the lane that answers the question being asked.** `scripts/check fast` omits the
+> differential target plus exhaustive prefix shards. `scripts/check pre-commit` omits all three
+> exhaustive corpus-wide sweeps. `scripts/check measure` runs complete non-doctest nextest coverage
+> and writes JUnit timings. `scripts/check full` is the mandatory Cargo/libtest plus doctest gate.
 > Nextest never proves gate 3 green because it omits doctests and gives each test its own process.
 >
-> **The speedup came from test shape, not build caching.** Warm compilation was under half a second.
-> `sccache`, another profile and a faster linker are deferred; `target/` was already 30 GiB and the
-> measured cost was execution.
+> **The speedup came from test shape and cache hygiene, not another compiler cache.** The shared
+> target reached 45 GiB and 494,084 files in `debug/deps`; nextest now defaults to
+> `target/nextest`, while `scripts/check cache-info|clean-cache` makes that state explicit.
 
 **At ADR-0209:** 1226 workspace tests (1235 under gate 7), 283 corpus files and 209 ADRs.
 It replaced two default tests with twelve and one LLVM-only test with four; it moved no corpus file.
