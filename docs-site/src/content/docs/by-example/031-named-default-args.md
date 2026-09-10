@@ -1,6 +1,6 @@
 ---
 title: Named & default arguments
-description: Arguments may be passed by parameter name and in any order, and parameters may declare literal defaults.
+description: Arguments may be passed by name and parameters may declare explicit or inferred literal defaults.
 sidebar:
   order: 31
 ---
@@ -53,8 +53,8 @@ plausible one. Testing with all-equal arguments would prove nothing.
 
 ## Defaults
 
-A default is written `name: T = literal`. A call may omit a defaulted argument, and the declared
-value is filled in at the call site:
+A typed default is written `name: T = literal`. A call may omit a defaulted argument, and the
+declared value is filled in at the call site:
 
 ```jr
 if draw(1, 2) == 1271 {          // colour 7, scale 1 both defaulted
@@ -79,6 +79,28 @@ Requiring defaults to come last would be a simpler rule that forbids this signat
 Defaults may be of any literal kind — `bool`, `float64`, `u8` — and even negative, because the
 range check is against the type's full range: `s8`'s minimum `-128` is representable, where a
 magnitude-based check would wrongly refuse it.
+
+## Inferred literal defaults
+
+`name := literal` infers a fixed natural parameter type from the declared default:
+
+```jr
+inferred :: (count := 9, marker := #char "x", ratio := 0.5,
+             enabled := true, label := "box") -> s64 {
+    return count;
+}
+```
+
+Integer and `#char` literals infer `s64`, floats infer `float64`, booleans infer `bool`, and
+strings infer `string`. Supplying an argument does not re-infer the parameter: it must match that
+fixed type. `null` requires an explicit pointer type, for example `next: *Node = null`; writing
+`next := null` reports E0257.
+
+Explicit and inferred literal defaults work on ordinary local and imported procedures and in
+`#run` calls. Non-literal defaults remain refused. Inferred defaults on `$T`, `$N`, or `$$T`
+template/comptime procedures report E0252 because template calls currently bypass the ordinary
+filled-argument/default binder. Procedure-pointer types do not retain parameter-name or default
+metadata.
 
 ## Named arguments
 

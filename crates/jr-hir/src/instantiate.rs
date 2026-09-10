@@ -138,6 +138,7 @@ fn append_one(
             using: param.using,
             comptime: false,
             variadic: param.variadic,
+            inferred: param.inferred,
             default: param.default,
         })
         .collect();

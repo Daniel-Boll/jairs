@@ -261,6 +261,22 @@ stdout = ""
 codes = ["E0200"]
 
 [[probe]]
+id = "17-inferred-default-arguments"
+chapter = "17"
+upstream_path = "examples/17/17.4_default_args.jai"
+jairs_path = "probes/17/inferred-default-arguments.jr"
+status = "ported"
+classification = "syntactic"
+reason = "Jairs now accepts Jai's inferred literal-default spelling and shares its named/default argument binder across ordinary, imported and compile-time calls."
+mode = "run"
+formatted = true
+
+[probe.expect]
+exit = 0
+stdout = ""
+stderr = ""
+
+[[probe]]
 id = "17-named-result-labels"
 chapter = "17"
 upstream_path = "examples/17/17.5_multiple_return.jai"

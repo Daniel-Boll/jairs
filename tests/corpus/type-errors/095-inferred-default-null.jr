@@ -1,0 +1,7 @@
+// EXPECT: E0257 — `null` cannot infer a parameter's pointer type (ADR-0235)
+//
+// `null` deliberately has no fallback pointer type. The typed spelling
+// `pointer: *u8 = null` works; the inferred spelling must ask the declaration
+// for that missing information rather than silently guessing `*u8`.
+take :: (pointer := null) {
+}

@@ -6210,10 +6210,18 @@ impl<'a> Ctx<'a> {
             let concrete = self.with_imported_template_context(owner, |ctx| {
                 let params: Vec<PoolId> = hir_params
                     .iter()
-                    .map(|param| {
-                        param.ty.map_or(PoolId::ERROR, |ty| {
-                            ctx.resolve_type(ExprScope::TopLevel, ty, span)
-                        })
+                    .enumerate()
+                    .map(|(index, param)| {
+                        param.ty.map_or_else(
+                            || {
+                                param
+                                    .inferred
+                                    .then(|| sig.params.get(index).copied())
+                                    .flatten()
+                                    .unwrap_or(PoolId::ERROR)
+                            },
+                            |ty| ctx.resolve_type(ExprScope::TopLevel, ty, span),
+                        )
                     })
                     .collect();
                 let ret = owner
@@ -6237,10 +6245,18 @@ impl<'a> Ctx<'a> {
             }
             let params: Vec<PoolId> = hir_params
                 .iter()
-                .map(|param| {
-                    param.ty.map_or(PoolId::ERROR, |ty| {
-                        self.resolve_type(ExprScope::TopLevel, ty, span)
-                    })
+                .enumerate()
+                .map(|(index, param)| {
+                    param.ty.map_or_else(
+                        || {
+                            param
+                                .inferred
+                                .then(|| sig.params.get(index).copied())
+                                .flatten()
+                                .unwrap_or(PoolId::ERROR)
+                        },
+                        |ty| self.resolve_type(ExprScope::TopLevel, ty, span),
+                    )
                 })
                 .collect();
             let ret = self.hir.proc(template.proc).ret.map_or(PoolId::VOID, |ty| {
@@ -6255,7 +6271,7 @@ impl<'a> Ctx<'a> {
             (params, ret)
         };
         for ((arg, want), param) in args.iter().zip(concrete_params).zip(hir_params.iter()) {
-            if param.ty.is_some() && want != PoolId::ERROR {
+            if (param.ty.is_some() || param.inferred) && want != PoolId::ERROR {
                 self.check_expr(scope, *arg, Some(want));
             };
         }

@@ -36,8 +36,10 @@ D :: #import "Defaults";
 // without default insertion would refuse the first call before reaching either assertion.
 RUN_DEFAULT :: #run D.add(4);
 RUN_REORDERED :: #run D.add(b = 30, a = 5);
+RUN_INFERRED :: #run D.inferred();
 #run assert(RUN_DEFAULT == 7, "an imported default was not applied in #run");
 #run assert(RUN_REORDERED == 35, "imported named arguments were not reordered in #run");
+#run assert(RUN_INFERRED == 46, "an imported inferred default was not applied in #run");
 
 main :: () {
   // The default applies: 4 + 3.
@@ -55,8 +57,12 @@ main :: () {
   // Two defaults, only the second omitted: 1 + 2 + 100.
   two_defaults := D.three(1, 2);
 
-  // 7 + 14 + 24 + 35 + 103 = 183. Read into one local so nothing above is dead.
-  total := with_default + explicit + named + reordered + two_defaults;
-  checked := total == 183;
+  // Inferred defaults, omitted and then fully named/reordered.
+  inferred_default := D.inferred();
+  inferred_reordered := D.inferred(b = 8, a = 7);
+
+  // 7 + 14 + 24 + 35 + 103 + 46 + 78 = 307. Read into one local so nothing above is dead.
+  total := with_default + explicit + named + reordered + two_defaults + inferred_default + inferred_reordered;
+  checked := total == 307;
   _ = checked;
 }

@@ -1,0 +1,19 @@
+hello :: (a := 9, b := 9) -> s64 {
+  return a * 10 + b;
+}
+
+main :: () -> s64 {
+  if hello(1, 2) != 12 {
+    return 1;
+  }
+  if hello(1) != 19 {
+    return 2;
+  }
+  if hello() != 99 {
+    return 3;
+  }
+  if hello(b = 42) != 132 {
+    return 4;
+  }
+  return 0;
+}

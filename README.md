@@ -139,8 +139,13 @@ indices and layout.
 
 Compile-time calls now use the same argument binding as ordinary calls. A local or imported
 procedure called by `#run` may omit literal defaults or reorder named arguments at file scope or
-inside a body; sema decides the positional list once and both MIR paths consume it. Richer default
-expressions and inferred parameter syntax such as `amount := 9` remain separate parity work.
+inside a body; sema decides the positional list once and both MIR paths consume it.
+
+A literal-defaulted parameter may now omit its annotation: `amount := 9`. The declaration fixes its
+type once — integer and `#char` literals become `s64`, floats `float64`, booleans `bool`, and strings
+`string` — and ordinary local/imported calls plus `#run` use the same named/default binder. `null`
+still needs an explicit pointer type, non-literal defaults remain deferred, and inferred defaults on
+template/comptime procedures are refused until their separate call path consumes filled arguments.
 
 Every fresh Jairs context now has a working allocator/free pair in the VM, Cranelift and LLVM;
 assigning a custom pair and copying one through `push_context` remain unchanged. Whole-file
@@ -231,9 +236,9 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1397** workspace tests (**1410** under gate 7), with all six ordinary gates and gate 7 green
-  for ADR-0234.
-- **312** `.jr` corpus files outside the fixture-module directory, **234** accepted ADRs, **26** standard library
+- **1412** workspace tests (**1425** under gate 7), with all six ordinary gates green for ADR-0235.
+  Gate 7 was not required because this wave changed no MIR, layout or back end.
+- **314** `.jr` corpus files outside the fixture-module directory, **235** accepted ADRs, **26** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative

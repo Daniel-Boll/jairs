@@ -408,6 +408,62 @@ if has_parser then
       buf = vim.api.nvim_get_current_buf()
     end
 
+    -- Inferred parameter defaults (ADR-0235). The editor grammar must preserve one `param`
+    -- shape with a `default` field while deliberately omitting the `type` field. Use an
+    -- in-memory fixture so this tooling slice does not depend on the corpus wave landing first.
+    local inferred_buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[inferred_buf].filetype = "jairs"
+    vim.api.nvim_buf_set_lines(
+      inferred_buf,
+      0,
+      -1,
+      false,
+      { 'f :: (amount := 9, label := "ok", typed: u8 = 7) -> s64 { return amount; }' }
+    )
+    local inferred_ok, inferred_parser =
+      pcall(vim.treesitter.get_parser, inferred_buf, "jairs")
+    if inferred_ok and inferred_parser then
+      local inferred_tree = inferred_parser:parse()[1]
+      check(
+        "inferred parameter defaults parse with no ERROR node",
+        not inferred_tree:root():has_error()
+      )
+
+      local inferred_count = 0
+      local inferred_with_default = 0
+      local inferred_without_type = 0
+      local typed_with_default_and_type = 0
+      local function inferred_walk(node)
+        if node:type() == "param" then
+          local default = node:field("default")[1]
+          local ty = node:field("type")[1]
+          if default then
+            if ty then
+              typed_with_default_and_type = typed_with_default_and_type + 1
+            else
+              inferred_with_default = inferred_with_default + 1
+              inferred_without_type = inferred_without_type + 1
+            end
+          end
+          inferred_count = inferred_count + 1
+        end
+        for child in node:iter_children() do
+          inferred_walk(child)
+        end
+      end
+      inferred_walk(inferred_tree:root())
+      check("mixed inferred/typed defaults retain three param nodes", inferred_count == 3)
+      check("both inferred parameters retain a default field", inferred_with_default == 2)
+      check("inferred parameters have no type field", inferred_without_type == 2)
+      check(
+        "the typed default retains both type and default fields",
+        typed_with_default_and_type == 1
+      )
+    else
+      check("inferred parameter defaults obtain a parser", false)
+    end
+    vim.api.nvim_buf_delete(inferred_buf, { force = true })
+
     -- Multiple returns (ADR-0052). Three things the drift gate cannot see: that `-> (s64, bool)`
     -- produces a `result_list` node rather than a parenthesised type, that a destructuring statement
     -- produces a `target_list`, and that a `_` discard is inside one — a grammar admitting the

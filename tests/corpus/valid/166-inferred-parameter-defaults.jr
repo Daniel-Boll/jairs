@@ -1,0 +1,56 @@
+// Inferred parameter defaults (ADR-0235).
+//
+// `name := literal` chooses one fixed parameter type from the declaration:
+// integer -> s64, float -> float64, bool -> bool and string -> string. Calls
+// then use the same named/default binder as the explicit `name: T = literal`
+// form, including at file scope and inside `#run`.
+#import "Basic";
+
+encode :: (
+  whole := 9,
+  ratio := 0.5,
+  flag := true,
+  label := "ok",
+  code := #char "A",
+  negative := -9,
+) -> s64 {
+  result := whole + negative + label.count * 10 + code;
+  if ratio == 0.5 {
+    result = result + 1;
+  }
+  if flag {
+    result = result + 2;
+  }
+  return result;
+}
+
+// The inferred default is intentionally non-trailing. This remains callable
+// by naming the required parameter, exactly like the typed form in valid/043.
+only_named :: (a := 5, b: s64) -> s64 {
+  return a * 10 + b;
+}
+
+FILE_DEFAULTS :: #run encode();
+FILE_REORDERED :: #run encode(
+  negative = -8,
+  code = #char "B",
+  label = "x",
+  flag = false,
+  ratio = 1.0,
+  whole = 10,
+);
+
+main :: () {
+  ordinary := encode();
+  named := encode(whole = 10, negative = -8);
+  body_run := #run encode(flag = false);
+  non_trailing := only_named(b = 3);
+
+  // defaults: 9 - 9 + 20 + 65 + 1 + 2 = 88
+  // reordered: 10 - 8 + 10 + 66 = 78
+  // named: 10 - 8 + 20 + 65 + 1 + 2 = 90
+  // body_run: 9 - 9 + 20 + 65 + 1 = 86
+  if FILE_DEFAULTS != 88 || FILE_REORDERED != 78 || ordinary != 88 || named != 90 || body_run != 86 || non_trailing != 53 {
+    exit(1);
+  }
+}

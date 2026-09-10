@@ -64,9 +64,12 @@ module.exports = grammar({
     // `-> (s64)` — a one-element results list (ADR-0052 §1) or a void-returning procedure pointer
     // (ADR-0062 §1)? Both are now valid readings of the same tokens, and *nothing* after them
     // distinguishes the two, so this is a genuine ambiguity rather than a look-ahead question. A
-    // declared conflict lets GLR carry both and settle it; a `prec` would silently pick one, which
-    // is the trap `loop_label` and `scope_decl` each walked into. The compiler's parser resolves it
-    // the same way it always did — `ret_type` looks for the arrow after the `)`.
+    // declared conflict lets GLR carry both. A *static* `prec` would discard one reading too early,
+    // which is the trap `loop_label` and `scope_decl` each walked into. `result_list` instead has a
+    // dynamic preference at the completed parse: a following `->` still forces `proc_type`, while
+    // an otherwise complete `-> (s64)` declaration agrees with the compiler and stays a result.
+    // The compiler's parser resolves it the same way it always did — `ret_type` looks for the arrow
+    // after the `)`.
     // ADR-0227 wrapped each result position in `result`, so the conflict belongs at that new
     // boundary: after the first type, a comma can continue either a results list or proc parameters.
     [$.result, $.proc_type_params],
@@ -286,24 +289,33 @@ module.exports = grammar({
         ")",
       ),
 
-    // param: name ':' type — no field() on name to keep S-expr clean
+    // A typed parameter or ADR-0235's `name := default`. Modifiers remain outside the choice so
+    // compiler and editor parsers accept the same surface; sema decides whether a modifier may
+    // compose with inference. The inferred alternative has no `type` field by construction.
     param: ($) =>
       seq(
-        // `using p: Point` promotes the type's fields (ADR-0050 §1). Only the typed form takes it.
+        // `using p: Point` promotes the type's fields (ADR-0050 §1).
         optional("using"),
         // `$N: s64` — a comptime-value parameter, polymorphic over a compile-time-known value
-        // (ADR-0087 §1). The `$` precedes the *name*, distinguishing it from a `$T` in type position
-        // (a `poly_type`): this marks the parameter, its type annotation is ordinary.
+        // (ADR-0087 §1). Sema currently refuses `$N := value` under ADR-0235's P0 boundary.
         optional("$"),
         $.identifier,
-        ":",
-        // `args: ..T` — a variadic parameter (ADR-0138 §1). The `..` precedes the type;
-        // the callee sees the parameter as `[]T`.
-        optional(".."),
-        field("type", $._type),
-        // `= 10` — a literal default (ADR-0053 §2). Any expression parses; sema refuses a
-        // non-literal, with a message saying why.
-        optional(seq("=", field("default", $._expr))),
+        choice(
+          seq(
+            ":",
+            // `args: ..T` — a variadic parameter (ADR-0138 §1). The `..` precedes the type;
+            // the callee sees the parameter as `[]T`.
+            optional(".."),
+            field("type", $._type),
+            // `= 10` — a literal default (ADR-0053 §2). Any expression parses; sema refuses a
+            // non-literal, with a message saying why.
+            optional(seq("=", field("default", $._expr))),
+          ),
+          seq(
+            ":=",
+            field("default", $._expr),
+          ),
+        ),
       ),
 
     // `-> T`, `-> (T, U)` (a results list, ADR-0052 §1), or `-> (T) -> U` (a proc-pointer return,
@@ -315,8 +327,12 @@ module.exports = grammar({
     // `(T, name: U, …)` after `->` (ADR-0052 §1, ADR-0227). A one-element list interns to the
     // element itself, so `-> (T)` and `-> T` are the same type — labels stay declaration metadata
     // rather than entering that identity.
+    // Adding the inferred-parameter alternative changed GLR's otherwise-equal reduction order and
+    // made every ordinary result list choose the optional-arrow `proc_type` reading. Keep both
+    // parses alive through the declared conflict, then prefer the result list only if no following
+    // token (notably `->`) has already made the procedure-pointer reading unambiguous.
     result_list: ($) =>
-      seq("(", $.result, repeat(seq(",", $.result)), ")"),
+      prec.dynamic(1, seq("(", $.result, repeat(seq(",", $.result)), ")")),
 
     result: ($) =>
       seq(

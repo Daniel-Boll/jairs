@@ -763,6 +763,12 @@ impl Param {
         child_token(&self.0, DOT_DOT).is_some()
     }
 
+    /// Whether this parameter is `name := literal`, with its type inferred from the default
+    /// (ADR-0235).
+    pub fn is_inferred(&self) -> bool {
+        child_token(&self.0, COLON_EQ).is_some()
+    }
+
     /// The default value, if the parameter has one (ADR-0053 §2).
     pub fn default_value(&self) -> Option<Expr> {
         child_node(&self.0)
@@ -1814,6 +1820,26 @@ mod tests {
         let proc = cd.proc().expect("proc");
         let params: Vec<_> = proc.param_list().expect("param list").params().collect();
         assert_eq!(params.len(), 2);
+    }
+
+    #[test]
+    fn inferred_parameter_has_a_default_but_no_type_node() {
+        let p = parse("hello :: (amount := 9) {}", file());
+        let sf = SourceFile::cast(p.syntax()).unwrap();
+        let Item::Const(decl) = sf.items().next().unwrap() else {
+            panic!("expected const decl");
+        };
+        let param = decl
+            .proc()
+            .expect("proc")
+            .param_list()
+            .expect("param list")
+            .params()
+            .next()
+            .expect("parameter");
+        assert!(param.is_inferred());
+        assert!(param.ty().is_none());
+        assert!(param.default_value().is_some());
     }
 
     #[test]
