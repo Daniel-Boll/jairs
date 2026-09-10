@@ -708,58 +708,33 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0231 delivers the requested generic pointer stack.**
-> `modules/List` now specialises one operation set over native `[..]T`: append, non-removing
-> `last`, pop, indexed read/write, clear, used-prefix view and explicit cleanup all work for
-> `[..]*Node` as well as the existing `[..]s64` callers. The feature probe also repaired two
-> substrate defects: `(T, bool)` no longer raises E0251 in an unbound template, and a
-> default-initialised pointer is the typed null value rather than an undefined read.
+> **ADR-0232 completes the requested generic containers.**
+> `modules/List` provides one operation set for native `[..]T`, including the independent
+> `[..]*Node` stack. `modules/Hash_Table` now provides a real zero-ready `Table(K, V)`, including
+> `properties: Table(string, string)` inside `node := New(Node)`. Common scalar, pointer and string
+> keys have built-in policy; arbitrary keys install callbacks; storage is captured-allocator-owned
+> and transactional; lookup, removal, reserve, mutable pointers and mutation-checked cursors are
+> generic over both `K` and `V`.
 
-**1384 workspace tests (1397 under gate 7), 303 corpus files, 231 ADRs and 25 modules.** ADR-0231
-adds one sema regression, one MIR regression and one executable corpus program using the exact
-recursive `Node` and independent `[..]*Node` stack shape. The pre-commit nextest lane runs 1366
-tests; in the sandbox, its six macOS/SDL GUI tests remain environment failures and are verified
-separately with application-services access. The MIR snapshot changes because `last` adds one
-public List procedure and the new corpus program is part of the snapshot.
+**1384 workspace tests (1397 under gate 7), 304 corpus files, 232 ADRs and 26 modules.** ADR-0232
+adds one executable corpus program covering the exact recursive node, generic pointer stack,
+content-keyed strings, integer growth and rehash, enum/bool/pointer defaults, custom struct policy,
+cursor traversal, allocator capture, partial-allocation rollback and idempotent cleanup. The MIR
+snapshot grows because every valid corpus file is part of the snapshot. The no-module sema harness
+tolerates only this probe's derived E0266 for its unresolved imported table field; the ordinary
+with-modules corpus gates compute and execute the real layout.
 **E0299** is the first free global diagnostic code; **E0135** is the first free parser code.
 
-### Next wave: `Hash_Table`
-
-Ship a new `Hash_Table` module with a zero-ready opaque `Table(K, V)`. The common path is:
-
-```text
-table: Table(string, *Node);
-add(*table, "root", node);
-value, found := find(*table, "root");
-```
-
-The selected interface combines the three designs and the source audit in
-`docs/research/jai-table-and-interfaces.md`:
-
-1. lazy defaults for string, integer, enum, bool and pointer keys, plus a pre-insertion
-   `set_key_policy` escape hatch for arbitrary `K`;
-2. `add` as upsert, `(value, found)` lookup to preserve Jairs' existing convention, mutable pointer
-   lookup, contains/remove/reserve/clear/count, explicit cursor iteration and idempotent `deinit`;
-3. shallow key/value ownership, captured allocator ownership for state and slots, cached hashes,
-   open addressing, tombstones, unspecified order and mutation-invalidated pointers/cursors; and
-4. keep `Map` unchanged as the legacy concrete module. Jairs has no parameterised type alias, so a
-   nominal compatibility adapter would be dishonest.
-
-Jai's observed contemporary surface uses type-level hash/equality arguments and currently orders
-`table_find` as `(found, value)`. Jairs cannot yet specialise imported value-polymorphic arguments,
-so runtime callbacks are the honest first policy seam; the result order remains the established
-Jairs `(value, found)` shape rather than silently changing every container caller.
-
-Exact `for table` expansion remains a separate metaprogramming feature. The module exposes an
-explicit cursor until user-defined iteration can own that syntax.
-
-### Planned language wave: structural data interfaces
+### Next wave: structural data interfaces
 
 The supplied `$T/interface Shape` feature is queued independently from `Hash_Table`. It is a
 compile-time structural constraint over the existing `$T` specialisation path, not a runtime
 vtable: required fields match by resolved name and type, extra fields are allowed, and concrete
 offsets remain the concrete struct's. The wave must probe reordered fields and `using` promotion
 before deciding them, plus missing/wrong/ambiguous fields and value versus pointer parameters.
+Design forks still requiring the decider are whether reordered direct fields match, whether
+promoted `using` fields satisfy a requirement, and whether ambiguity is diagnosed at constraint
+checking or ordinary field lookup.
 
 Commit each substrate wave before starting the next; merge remains a separate decider action.
 

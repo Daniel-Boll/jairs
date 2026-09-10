@@ -1,0 +1,562 @@
+//! A generic, open-addressed hash table.
+//!
+//! `Table(K, V)` is zero-ready: declare one, leave it zeroed, and call
+//! [`table_add`]. String, integer, enum, bool and pointer keys have a default
+//! policy. Other key types install hash and equality callbacks with
+//! [`table_set_key_policy`] before their first insertion.
+//!
+//! The table owns its four backing arrays, but keys and values are shallow
+//! copies. A stored string still borrows its bytes; a stored pointer still
+//! points at memory owned elsewhere. Call [`deinit`] to release the table's
+//! arrays.
+
+#import "Basic";
+
+/// A generic hash table.
+///
+/// The fields are visible because Jairs does not yet have field privacy, but
+/// they are implementation-owned. Mutate a table only through this module.
+Table :: struct($K, $V) {
+  keys: *K;
+  values: *V;
+  hashes: *u64;
+  states: *u8;
+  count: s64;
+  tombstones: s64;
+  capacity: s64;
+  hash: (*K, *u8) -> u64;
+  equal: (*K, *K, *u8) -> bool;
+  policy_data: *u8;
+  has_policy: bool;
+  allocator: (s64) -> *u8;
+  allocator_free: (*u8);
+  allocator_data: s64;
+  initialized: bool;
+  generation: u64;
+}
+
+/// A mutation-checked cursor over a table.
+///
+/// Iteration order is unspecified. Any structural mutation invalidates the
+/// cursor; replacing an existing value does not.
+Table_Iterator :: struct($K, $V) {
+  table: *Table(K, V);
+  next_slot: s64;
+  generation: u64;
+}
+
+/// Inserts or replaces one entry.
+///
+/// Returns `false` if the table cannot represent or allocate a required
+/// capacity. Replacing an existing value never grows the table.
+table_add :: (table: *Table($K, $V), key: K, value: V) -> bool {
+  return table_set(table, key, value) != null;
+}
+
+/// Inserts or replaces one entry and returns its stored value pointer.
+///
+/// Returns null if the table cannot represent or allocate a required
+/// capacity. The pointer follows the same invalidation rules as
+/// [`table_find_pointer`].
+table_set :: (table: *Table($K, $V), key: K, value: V) -> *V {
+  hash := key_hash(table, *key);
+
+  if table.capacity > 0 {
+    slot, found := find_slot(table, *key, hash);
+    if found {
+      (table.values + slot).* = value;
+      return table.values + slot;
+    }
+  }
+
+  if !ensure_insert_capacity(table) {
+    return null;
+  }
+
+  slot, _ := find_slot(table, *key, hash);
+  state := (table.states + slot).*;
+  if state == SLOT_TOMBSTONE {
+    table.tombstones = table.tombstones - 1;
+  }
+  (table.keys + slot).* = key;
+  (table.values + slot).* = value;
+  (table.hashes + slot).* = hash;
+  (table.states + slot).* = SLOT_LIVE;
+  table.count = table.count + 1;
+  table.generation = table.generation +% 1;
+  return table.values + slot;
+}
+
+/// Returns the value for `key` and whether it was present.
+table_find :: (table: *Table($K, $V), key: K) -> (V, bool) {
+  if table.count == 0 {
+    empty: $V;
+    return empty, false;
+  }
+  pointer := table_find_pointer(table, key);
+  if pointer == null {
+    empty: $V;
+    return empty, false;
+  }
+  return pointer.*, true;
+}
+
+/// Returns a pointer to the stored value, or null when absent.
+///
+/// The pointer permits in-place value mutation. Reserve, insertion of a new
+/// key, removal, clear and deinit may invalidate it.
+table_find_pointer :: (table: *Table($K, $V), key: K) -> *V {
+  if table.count == 0 {
+    return null;
+  }
+  hash := key_hash(table, *key);
+  slot, found := find_slot(table, *key, hash);
+  if !found {
+    return null;
+  }
+  return table.values + slot;
+}
+
+/// Whether `key` is present.
+table_contains :: (table: *Table($K, $V), key: K) -> bool {
+  return table_find_pointer(table, key) != null;
+}
+
+/// Removes `key`, returning whether it was present.
+table_remove :: (table: *Table($K, $V), key: K) -> bool {
+  if table.count == 0 {
+    return false;
+  }
+  hash := key_hash(table, *key);
+  slot, found := find_slot(table, *key, hash);
+  if !found {
+    return false;
+  }
+
+  (table.states + slot).* = SLOT_TOMBSTONE;
+  table.count = table.count - 1;
+  table.tombstones = table.tombstones + 1;
+  table.generation = table.generation +% 1;
+
+  // No probe path needs tombstones when no entries remain.
+  if table.count == 0 {
+    clear_states(table.states, table.capacity);
+    table.tombstones = 0;
+  }
+  return true;
+}
+
+/// Ensures room for at least `minimum_count` live entries.
+///
+/// Existing entries and callbacks are retained. Returns `false` for a
+/// negative count, allocation failure or an unrepresentable capacity.
+table_reserve :: (table: *Table($K, $V), minimum_count: s64) -> bool {
+  if minimum_count < 0 {
+    return false;
+  }
+  if minimum_count == 0 {
+    return true;
+  }
+
+  wanted := FIRST_CAPACITY;
+  while load_limit(wanted) < minimum_count {
+    if wanted > MAX_S64 / 2 {
+      return false;
+    }
+    wanted = wanted * 2;
+  }
+  if table.capacity >= wanted {
+    return true;
+  }
+  return rehash(table, wanted);
+}
+
+/// The number of live entries.
+table_count :: (table: *Table($K, $V)) -> s64 {
+  return table.count;
+}
+
+/// The current number of slots.
+table_capacity :: (table: *Table($K, $V)) -> s64 {
+  return table.capacity;
+}
+
+/// Removes every entry while retaining storage, callbacks and allocator.
+table_clear :: (table: *Table($K, $V)) {
+  if table.count == 0 && table.tombstones == 0 {
+    return;
+  }
+  clear_states(table.states, table.capacity);
+  table.count = 0;
+  table.tombstones = 0;
+  table.generation = table.generation +% 1;
+}
+
+/// Starts an unspecified-order traversal.
+table_iterator :: (table: *Table($K, $V)) -> Table_Iterator(K, V) {
+  iterator: Table_Iterator($K, $V);
+  iterator.table = table;
+  iterator.next_slot = 0;
+  iterator.generation = table.generation;
+  return iterator;
+}
+
+/// Returns the next key, a pointer to its value, and whether one existed.
+///
+/// Mutating through the returned value pointer is allowed. Structural table
+/// mutation while a cursor is live triggers an assertion on the next call.
+table_next :: (iterator: *Table_Iterator($K, $V)) -> (K, *V, bool) {
+  table := iterator.table;
+  assert(table != null, "Hash_Table iterator has no table");
+  assert(
+    iterator.generation == table.generation,
+    "Hash_Table iterator was invalidated by mutation",
+  );
+
+  i := iterator.next_slot;
+  while i < table.capacity {
+    if (table.states + i).* == SLOT_LIVE {
+      iterator.next_slot = i + 1;
+      return (table.keys + i).*, table.values + i, true;
+    }
+    i = i + 1;
+  }
+  iterator.next_slot = table.capacity;
+  empty: $K;
+  none: *$V = null;
+  return empty, none, false;
+}
+
+/// Installs custom key hash and equality callbacks.
+///
+/// This is accepted only while the table is empty. `data` is borrowed and
+/// must outlive every operation that can hash or compare a key.
+table_set_key_policy :: (
+  table: *Table($K, $V),
+  hash: (*K, *u8) -> u64,
+  equal: (*K, *K, *u8) -> bool,
+  data: *u8,
+) -> bool {
+  if table.count != 0 {
+    return false;
+  }
+  table.hash = hash;
+  table.equal = equal;
+  table.policy_data = data;
+  table.has_policy = true;
+  return true;
+}
+
+/// Releases all backing arrays and empties the table.
+///
+/// Safe before first insertion and safe to call repeatedly. Keys and values
+/// are not recursively released.
+deinit :: (table: *Table($K, $V)) {
+  next_generation := table.generation +% 1;
+  if table.initialized {
+    table_release(table, untyped(table.keys));
+    table_release(table, untyped(table.values));
+    table_release(table, untyped(table.hashes));
+    table_release(table, table.states);
+  }
+
+  table.keys = null;
+  table.values = null;
+  table.hashes = null;
+  table.states = null;
+  table.count = 0;
+  table.tombstones = 0;
+  table.capacity = 0;
+  table.policy_data = null;
+  table.has_policy = false;
+  table.allocator_data = 0;
+  table.initialized = false;
+  table.generation = next_generation;
+}
+
+/// FNV-1a over `count` bytes.
+hash_bytes :: (data: *u8, count: s64) -> u64 {
+  assert(count >= 0, "hash_bytes count must not be negative");
+  hash: u64 = 14695981039346656037;
+  i := 0;
+  while i < count {
+    hash = hash ^ cast(u64, (data + i).*);
+    hash = hash *% 1099511628211;
+    i = i + 1;
+  }
+  return hash;
+}
+
+/// Hashes a string by byte content.
+hash_string :: (value: string) -> u64 {
+  return hash_bytes(value.data, value.count);
+}
+
+/// Hashes one signed 64-bit integer by value bytes.
+hash_s64 :: (value: s64) -> u64 {
+  return hash_bytes(untyped(*value), size_of(s64));
+}
+
+/// Mixes another hash into an existing seed.
+hash_combine :: (seed: u64, value: u64) -> u64 {
+  mixed := value +% 11400714819323198485;
+  mixed = mixed +% (seed << 6);
+  mixed = mixed +% (seed >> 2);
+  return seed ^ mixed;
+}
+
+#scope_module
+
+FIRST_CAPACITY :: 8;
+MAX_S64 :: 9223372036854775807;
+SLOT_EMPTY :: cast(u8, 0);
+SLOT_LIVE :: cast(u8, 1);
+SLOT_TOMBSTONE :: cast(u8, 2);
+
+load_limit :: (capacity: s64) -> s64 {
+  // Capacities begin at eight and stay powers of two, so divide first to
+  // avoid overflowing while computing the 3/4 threshold.
+  return capacity / 4 * 3;
+}
+
+clear_states :: (states: *u8, capacity: s64) {
+  i := 0;
+  while i < capacity {
+    (states + i).* = SLOT_EMPTY;
+    i = i + 1;
+  }
+}
+
+bytes_equal :: (a: *u8, b: *u8, count: s64) -> bool {
+  i := 0;
+  while i < count {
+    if (a + i).* != (b + i).* {
+      return false;
+    }
+    i = i + 1;
+  }
+  return true;
+}
+
+default_key_supported :: (kind: Type_Info_Kind) -> bool {
+  return kind == Type_Info_Kind.STRING || kind == Type_Info_Kind.INTEGER || kind == Type_Info_Kind.ENUM || kind == Type_Info_Kind.BOOL || kind == Type_Info_Kind.POINTER;
+}
+
+key_hash :: (table: *Table($K, $V), key: *K) -> u64 {
+  if table.has_policy {
+    return table.hash(key, table.policy_data);
+  }
+
+  kind := type_info(K).kind;
+  assert(default_key_supported(kind), "Hash_Table key type needs table_set_key_policy");
+  if kind == Type_Info_Kind.STRING {
+    value := typed(string, untyped(key));
+    return hash_string(value.*);
+  }
+  return hash_bytes(untyped(key), size_of(K));
+}
+
+keys_equal :: (table: *Table($K, $V), a: *K, b: *K) -> bool {
+  if table.has_policy {
+    return table.equal(a, b, table.policy_data);
+  }
+
+  kind := type_info(K).kind;
+  assert(default_key_supported(kind), "Hash_Table key type needs table_set_key_policy");
+  if kind == Type_Info_Kind.STRING {
+    left := typed(string, untyped(a));
+    right := typed(string, untyped(b));
+    if left.count != right.count {
+      return false;
+    }
+    return bytes_equal(left.data, right.data, left.count);
+  }
+  return bytes_equal(untyped(a), untyped(b), size_of(K));
+}
+
+find_slot :: (table: *Table($K, $V), key: *K, hash: u64) -> (s64, bool) {
+  start := cast(s64, hash % cast(u64, table.capacity));
+  first_tombstone := -1;
+  i := 0;
+  while i < table.capacity {
+    slot := (start + i) % table.capacity;
+    state := (table.states + slot).*;
+    if state == SLOT_LIVE {
+      if (table.hashes + slot).* == hash && keys_equal(table, table.keys + slot, key) {
+        return slot, true;
+      }
+    } else {
+      if state == SLOT_TOMBSTONE {
+        if first_tombstone < 0 {
+          first_tombstone = slot;
+        }
+      } else {
+        if first_tombstone >= 0 {
+          return first_tombstone, false;
+        }
+        return slot, false;
+      }
+    }
+    i = i + 1;
+  }
+  return first_tombstone, false;
+}
+
+ensure_insert_capacity :: (table: *Table($K, $V)) -> bool {
+  if table.capacity == 0 {
+    return rehash(table, FIRST_CAPACITY);
+  }
+
+  probe_load := table.count + table.tombstones + 1;
+  if probe_load <= load_limit(table.capacity) {
+    return true;
+  }
+
+  // Rebuild at the same size when tombstones, rather than live entries, are
+  // the reason probes crossed the threshold.
+  if table.count + 1 <= load_limit(table.capacity) {
+    return rehash(table, table.capacity);
+  }
+  if table.capacity > MAX_S64 / 2 {
+    return false;
+  }
+  return rehash(table, table.capacity * 2);
+}
+
+allocation_size_fits :: (count: s64, element_size: s64) -> bool {
+  if count < 0 || element_size < 0 {
+    return false;
+  }
+  return element_size == 0 || count <= MAX_S64 / element_size;
+}
+
+table_ensure_initialized :: (table: *Table($K, $V)) {
+  if table.initialized {
+    return;
+  }
+  table.allocator = context.allocator;
+  table.allocator_free = context.allocator_free;
+  table.allocator_data = context.allocator_data;
+  table.initialized = true;
+}
+
+table_allocate :: (table: *Table($K, $V), size: s64) -> *u8 {
+  table_ensure_initialized(table);
+  result: *u8 = null;
+  updated_data := table.allocator_data;
+  push_context {
+    context.allocator = table.allocator;
+    context.allocator_free = table.allocator_free;
+    context.allocator_data = table.allocator_data;
+    result = context.allocator(size);
+    updated_data = context.allocator_data;
+  }
+  table.allocator_data = updated_data;
+  return result;
+}
+
+table_release :: (table: *Table($K, $V), allocation: *u8) {
+  if allocation == null {
+    return;
+  }
+  updated_data := table.allocator_data;
+  push_context {
+    context.allocator = table.allocator;
+    context.allocator_free = table.allocator_free;
+    context.allocator_data = table.allocator_data;
+    context.allocator_free(allocation);
+    updated_data = context.allocator_data;
+  }
+  table.allocator_data = updated_data;
+}
+
+rehash :: (table: *Table($K, $V), wanted: s64) -> bool {
+  key_size := size_of(K);
+  value_size := size_of(V);
+  key_alignment := type_info(K).alignment;
+  value_alignment := type_info(V).alignment;
+  assert(key_alignment <= 16, "Hash_Table key alignment exceeds allocator guarantee");
+  assert(value_alignment <= 16, "Hash_Table value alignment exceeds allocator guarantee");
+
+  if !allocation_size_fits(wanted, key_size) || !allocation_size_fits(wanted, value_size) || !allocation_size_fits(
+    wanted,
+    size_of(u64),
+  ) {
+    return false;
+  }
+
+  key_bytes := wanted * key_size;
+  if key_bytes == 0 {
+    // Empty structs still need a non-null base pointer so zero-sized generic
+    // keys do not turn a successful allocation into an apparent failure.
+    key_bytes = 1;
+  }
+  value_bytes := wanted * value_size;
+  if value_bytes == 0 {
+    value_bytes = 1;
+  }
+
+  keys_raw := table_allocate(table, key_bytes);
+  if keys_raw == null {
+    return false;
+  }
+  values_raw := table_allocate(table, value_bytes);
+  if values_raw == null {
+    table_release(table, keys_raw);
+    return false;
+  }
+  hashes_raw := table_allocate(table, wanted * size_of(u64));
+  if hashes_raw == null {
+    table_release(table, values_raw);
+    table_release(table, keys_raw);
+    return false;
+  }
+  states_raw := table_allocate(table, wanted);
+  if states_raw == null {
+    table_release(table, hashes_raw);
+    table_release(table, values_raw);
+    table_release(table, keys_raw);
+    return false;
+  }
+
+  fresh_keys := typed(K, keys_raw);
+  fresh_values := typed(V, values_raw);
+  fresh_hashes := typed(u64, hashes_raw);
+  clear_states(states_raw, wanted);
+
+  old_keys := table.keys;
+  old_values := table.values;
+  old_hashes := table.hashes;
+  old_states := table.states;
+  old_capacity := table.capacity;
+
+  i := 0;
+  while i < old_capacity {
+    if (old_states + i).* == SLOT_LIVE {
+      hash := (old_hashes + i).*;
+      slot := cast(s64, hash % cast(u64, wanted));
+      while (states_raw + slot).* == SLOT_LIVE {
+        slot = (slot + 1) % wanted;
+      }
+      (fresh_keys + slot).* = (old_keys + i).*;
+      (fresh_values + slot).* = (old_values + i).*;
+      (fresh_hashes + slot).* = hash;
+      (states_raw + slot).* = SLOT_LIVE;
+    }
+    i = i + 1;
+  }
+
+  table.keys = fresh_keys;
+  table.values = fresh_values;
+  table.hashes = fresh_hashes;
+  table.states = states_raw;
+  table.capacity = wanted;
+  table.tombstones = 0;
+  table.generation = table.generation +% 1;
+
+  table_release(table, untyped(old_states));
+  table_release(table, untyped(old_hashes));
+  table_release(table, untyped(old_values));
+  table_release(table, untyped(old_keys));
+  return true;
+}
