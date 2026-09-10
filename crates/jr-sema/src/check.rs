@@ -32,16 +32,17 @@ use jr_base::{FileId, Interner, Span, Symbol, TextRange};
 use jr_diag::{Diagnostic, Diagnostics};
 use jr_hir::{
     AssignOp, BinOp, BodyId, Expr, ExprId, ExprScope, FileHir, ItemKind, Literal, ProcId, Res,
-    ResolveMap, Stmt, StmtId, TypeRef, TypeRefId, UnOp,
+    ResolveMap, Stmt, StmtId, StructLitEntry, TypeRef, TypeRefId, UnOp,
 };
 use jr_pool::{FieldLookup, Item, Pool, PoolId};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
     E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272, E0277,
     E0278, E0279, E0284, E0285, E0286, E0287, E0288, E0289, E0291, E0293, E0295, E0297, E0299,
+    E0300,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -270,6 +271,20 @@ pub enum ArgSlot {
     Default(PoolId),
 }
 
+/// The destination of one supplied struct-literal entry (ADR-0239 §4).
+///
+/// Kept in sema vocabulary so this crate does not depend on `jr-mir`. `jr-db` translates it once
+/// into the equivalent MIR input, exactly as it translates [`ArgSlot`] and operator callees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructLiteralField {
+    /// A direct nominal-struct field, by declaration position.
+    Field(u32),
+    /// `string.data`.
+    StringData,
+    /// `string.count`.
+    StringCount,
+}
+
 /// What the check phase produces.
 pub struct CheckOutput {
     /// The type of every expression and local the checker reached.
@@ -385,6 +400,11 @@ pub struct CheckOutput {
     /// one pass decides and `jr-mir` reads, so the two cannot disagree — and a disagreement here is
     /// a wrong *address*, sema typing an element while MIR reads a whole array.
     pub soa_fields: FxHashMap<(ExprScope, ExprId), u32>,
+    /// The resolved destination of each supplied struct-literal entry (ADR-0239 §4).
+    ///
+    /// Entries remain in source evaluation order; each parallel destination says where that value
+    /// is stored. MIR consumes this rather than resolving named fields or positional order again.
+    pub struct_literals: FxHashMap<(ExprScope, ExprId), Vec<StructLiteralField>>,
 }
 
 /// The information a variadic call needs so MIR can pack the trailing arguments (ADR-0138 §2).
@@ -630,6 +650,7 @@ pub fn check_file(
         comptime_calls: ctx.comptime_calls,
         variadic_calls: ctx.variadic_calls,
         soa_fields: ctx.soa_fields,
+        struct_literals: ctx.struct_literals,
     }
 }
 
@@ -1769,6 +1790,11 @@ impl<'a> Ctx<'a> {
                 let ty = self.check_array_literal(scope, elem_ty, &elems, span);
                 self.expect(expected, ty, span)
             }
+            Expr::StructLit {
+                explicit_ty,
+                entries,
+                span,
+            } => self.check_struct_literal(scope, id, explicit_ty, &entries, expected, span),
             // Both take `expected` **directly** rather than through `expect`: the context is
             // the input to typing them, not a constraint on the answer, so passing it on to
             // `expect` afterwards would compare the type against itself (ADR-0046 §1).
@@ -4524,6 +4550,216 @@ impl<'a> Ctx<'a> {
             return PoolId::ERROR;
         }
         self.pool.array_of(described, elems.len() as u64)
+    }
+
+    /// Types `T.{...}` and context-inferred `.{...}` record literals (ADR-0239).
+    ///
+    /// Sema owns the only name-to-field-position decision. The parallel destination vector it
+    /// records stays in source order, so MIR can store into declaration-order fields without
+    /// reordering initializer evaluation.
+    fn check_struct_literal(
+        &mut self,
+        scope: ExprScope,
+        id: ExprId,
+        explicit_ty: Option<ExprId>,
+        entries: &[StructLitEntry],
+        expected: Option<PoolId>,
+        span: Span,
+    ) -> PoolId {
+        let target = match explicit_ty {
+            Some(type_expr) => {
+                self.type_position.insert((scope, type_expr));
+                let described = self.described_type(scope, type_expr);
+                self.types.set_expr(scope, type_expr, PoolId::TYPE);
+                match described {
+                    Some(ty) => ty,
+                    None => {
+                        self.diags.push(
+                            Diagnostic::error(
+                                self.expr_of(scope, type_expr).span(),
+                                "the expression before `.{` must name a type",
+                            )
+                            .with_code(E0300),
+                        );
+                        for entry in entries {
+                            self.check_expr(scope, entry.value(), None);
+                        }
+                        return PoolId::ERROR;
+                    }
+                }
+            }
+            None => match expected {
+                Some(ty) => ty,
+                None => {
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            "an inferred struct literal needs a concrete type from its context",
+                        )
+                        .with_code(E0300)
+                        .with_help(
+                            "add a type annotation or write the explicit form, e.g. `Point.{x = 1}`",
+                        ),
+                    );
+                    for entry in entries {
+                        self.check_expr(scope, entry.value(), None);
+                    }
+                    return PoolId::ERROR;
+                }
+            },
+        };
+
+        // A poisoned type is an unfinished template or an earlier error, not a second struct-literal
+        // mistake. Still visit every value so independent diagnostics inside it survive.
+        if target == PoolId::ERROR {
+            for entry in entries {
+                self.check_expr(scope, entry.value(), None);
+            }
+            return PoolId::ERROR;
+        }
+
+        let fields = if target == PoolId::STRING {
+            vec![
+                jr_pool::Field::new(self.interner.intern("data"), PoolId::PTR_U8),
+                jr_pool::Field::new(self.interner.intern("count"), PoolId::S64),
+            ]
+        } else if matches!(self.pool.item(target), Item::StructType { .. }) {
+            match self.pool.fields_of(target) {
+                Some(fields) => fields.to_vec(),
+                None => {
+                    for entry in entries {
+                        self.check_expr(scope, entry.value(), None);
+                    }
+                    return PoolId::ERROR;
+                }
+            }
+        } else {
+            let text = self.describe(target);
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    format!("cannot construct a struct literal of type `{text}`"),
+                )
+                .with_code(E0300)
+                .with_note(
+                    "this literal form constructs nominal structs and the builtin `string` only",
+                ),
+            );
+            for entry in entries {
+                self.check_expr(scope, entry.value(), None);
+            }
+            return PoolId::ERROR;
+        };
+
+        let has_named = entries
+            .iter()
+            .any(|entry| matches!(entry, StructLitEntry::Named { .. }));
+        let has_positional = entries
+            .iter()
+            .any(|entry| matches!(entry, StructLitEntry::Positional(_)));
+        if has_named && has_positional {
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    "a struct literal cannot mix named and positional entries",
+                )
+                .with_code(E0300)
+                .with_note("use field names for every entry, or for none of them"),
+            );
+            for entry in entries {
+                self.check_expr(scope, entry.value(), None);
+            }
+            return PoolId::ERROR;
+        }
+
+        let destination = |position: usize| {
+            if target == PoolId::STRING {
+                match position {
+                    0 => StructLiteralField::StringData,
+                    _ => StructLiteralField::StringCount,
+                }
+            } else {
+                StructLiteralField::Field(u32::try_from(position).unwrap_or(0))
+            }
+        };
+
+        let mut destinations = Vec::with_capacity(entries.len());
+        let mut valid = true;
+        if has_named {
+            let mut seen = FxHashSet::default();
+            for entry in entries {
+                let StructLitEntry::Named {
+                    name,
+                    name_span,
+                    value,
+                } = entry
+                else {
+                    unreachable!("mixed struct-literal entries were rejected above");
+                };
+                let field_name = self.interner.resolve(*name).to_owned();
+                if !seen.insert(*name) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            *name_span,
+                            format!("field `{field_name}` is initialised more than once"),
+                        )
+                        .with_code(E0300),
+                    );
+                    valid = false;
+                }
+                match fields.iter().position(|field| field.name == *name) {
+                    Some(position) => {
+                        self.check_expr(scope, *value, Some(fields[position].ty));
+                        destinations.push(destination(position));
+                    }
+                    None => {
+                        self.no_such_field(target, &field_name, *name_span);
+                        self.check_expr(scope, *value, None);
+                        valid = false;
+                    }
+                }
+            }
+        } else {
+            let mut excess_reported = false;
+            for (position, entry) in entries.iter().enumerate() {
+                let value = entry.value();
+                match fields.get(position) {
+                    Some(field) => {
+                        self.check_expr(scope, value, Some(field.ty));
+                        destinations.push(destination(position));
+                    }
+                    None => {
+                        if !excess_reported {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    self.expr_of(scope, value).span(),
+                                    format!(
+                                        "too many positional entries for `{}`",
+                                        self.describe(target)
+                                    ),
+                                )
+                                .with_code(E0300)
+                                .with_note(format!(
+                                    "the type has {} direct field{}",
+                                    fields.len(),
+                                    if fields.len() == 1 { "" } else { "s" }
+                                )),
+                            );
+                            excess_reported = true;
+                        }
+                        self.check_expr(scope, value, None);
+                        valid = false;
+                    }
+                }
+            }
+        }
+
+        if valid {
+            self.struct_literals.insert((scope, id), destinations);
+            self.expect(expected, target, span)
+        } else {
+            PoolId::ERROR
+        }
     }
 
     fn check_size_of(
@@ -7494,7 +7730,7 @@ impl<'a> Ctx<'a> {
             // name: MIR materialises one to build it, and that slot is an implementation detail, so
             // `s64.[1, 2][0] = 5` must be refused rather than assigning into a temporary nobody can read
             // back.
-            Expr::ArrayLit { .. } => false,
+            Expr::ArrayLit { .. } | Expr::StructLit { .. } => false,
             // **`context` itself is not a place** — it is the pointer value, not storage — but
             // `context.allocator` is, because `Expr::Field` on a pointer receiver is assignable and
             // that arm decides it from the receiver's *type*. So writing the field works and
@@ -7585,7 +7821,7 @@ impl<'a> Ctx<'a> {
             // **Not untyped**, despite the name: an array literal names its element type, so it has one
             // answer regardless of context. That is the whole reason `T.[…]` was buildable where
             // ADR-0039 §6's `[1, 2, 3]` was not (ADR-0194 §1).
-            Expr::ArrayLit { .. } => false,
+            Expr::ArrayLit { .. } | Expr::StructLit { .. } => false,
             Expr::Literal(literal, _) => match literal {
                 // A float literal is untyped for the same reason an integer one is
                 // (ADR-0040 §5): it takes its type from context, so `1.5 + x` where `x` is a

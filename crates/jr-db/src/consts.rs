@@ -570,6 +570,10 @@ pub fn file_consts(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> Con
         && checked_file.allocations.is_empty()
         && checked_file.atomics.is_empty()
         && checked_file.assertions.is_empty()
+        // Struct literals are runtime code, but their named/positional destinations are semantic
+        // evidence MIR cannot reconstruct. A file containing only one still needs `ConstValues`
+        // populated — the fifth feature family to make this early-out list explicit (ADR-0239 §4).
+        && checked_file.struct_literals.is_empty()
     {
         return ConstResult {
             values: Arc::new(ConstValues::new()),
@@ -1027,6 +1031,21 @@ pub(crate) fn record_checked_folds(
     // order, and lowering reads it rather than deciding again.
     for ((scope, expr), position) in checked_file.soa_fields.iter() {
         values.set_soa_field(*scope, *expr, *position);
+    }
+    // Struct-literal destinations are translated once at the sema/MIR boundary. Entry order remains
+    // source evaluation order; only each destination changes vocabulary (ADR-0239 §4).
+    for ((scope, expr), fields) in checked_file.struct_literals.iter() {
+        let fields = fields
+            .iter()
+            .map(|field| match field {
+                jr_sema::StructLiteralField::Field(position) => {
+                    jr_mir::StructLiteralField::Field(*position)
+                }
+                jr_sema::StructLiteralField::StringData => jr_mir::StructLiteralField::StringData,
+                jr_sema::StructLiteralField::StringCount => jr_mir::StructLiteralField::StringCount,
+            })
+            .collect();
+        values.set_struct_literal(*scope, *expr, fields);
     }
     // The atomics ride the same channel for the same reason (ADR-0176 §3): `ConstValues` is what `jr-mir`
     // receives, so a separate one would be another thing to thread through every caller.

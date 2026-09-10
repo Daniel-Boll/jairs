@@ -20,9 +20,9 @@ Point :: struct {
 }
 
 main :: () {
-    p: Point;          // all fields zeroed
-    p.x = 4;
-    p.y = 9;
+    p := Point.{x = 4, y = 9};
+    q: Point = .{9, 4};
+    origin: Point = .{};
     d := p.x + p.y;
 }
 ```
@@ -34,6 +34,27 @@ struct type). Access is `p.x`, and it auto-dereferences through pointers: if `q`
 
 A struct declared without an initialiser is zeroed field by field. This matters: it means a
 freshly declared `Point` reads back `{0, 0}` in both engines, rather than stack garbage.
+
+Struct literals have an explicit `Point.{...}` form and a context-inferred `.{...}` form.
+Entries are either named in any order or positional in declaration order; the two styles cannot
+be mixed. Omitted fields are zeroed, so `Point.{y = 9}` has `x == 0`, and `.{}`
+is the default value. A nested inferred literal receives its field's type:
+
+```jr
+Line :: struct {
+    from: Point;
+    to: Point;
+}
+
+line: Line = .{
+    to = .{x = 8, y = 7},
+    from = .{},
+};
+```
+
+The builtin `string` uses the same named form for its public `data` and `count` fields. Direct
+file-scope literals are not compile-time constants yet; construct one in a procedure called by
+`#run` when a compile-time aggregate is needed.
 
 ## union
 

@@ -1,0 +1,16 @@
+// EXPECT: E0230 — direct file-scope aggregate literals have no compile-time value yet
+// (ADR-0239); a procedure called by `#run` may construct and return the same value.
+//
+// This lives in `imports/invalid/` for the same stage reason as
+// `022-file-scope-array-literal.jr`: E0230 belongs to `jr-db` const evaluation, while
+// `type-errors/` is an exact sema-only corpus and therefore cannot observe this diagnostic.
+
+Point :: struct {
+  x: s64;
+  y: s64;
+}
+
+VALUE :: Point.{x = 1, y = 2};
+
+main :: () {
+}

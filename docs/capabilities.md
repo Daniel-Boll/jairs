@@ -9,13 +9,13 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1397** workspace tests (**1410** under gate 7), with all six ordinary gates and gate 7 green
-  for ADR-0234.
-- **312** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
-  (**326** counting those).
-- **234** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **1431** workspace tests (**1444** under gate 7), with all six ordinary gates and gate 7 green
+  for ADR-0239.
+- **323** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
+  (**337** counting those).
+- **239** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **26** standard library modules under `modules/`.
-- Diagnostic codes run **E0001–E0299**; **E0300** is the first free one
+- Diagnostic codes run **E0001–E0300**; **E0301** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership
   table, and `crates/jr-cli/tests/codes.rs` is what makes the "first free"
   claim fail a test when it rots).
@@ -27,7 +27,7 @@ behind them — that narrative is not duplicated here):
 | **Install the compiler globally** | `cargo install --path crates/jr-cli` | The whole procedure. The standard library is **compiled into the binary**, so `jr` works from any directory with the source tree deleted — verified by installing it, copying the binary away and compiling a program that imports `Basic` (ADR-0202 §1). `cargo install` cannot install data files at all, which is what forced this rather than an executable-relative search. The bundled tier appears in diagnostics as `<bundled>/Name/module.jr`, spelled so no real directory can shadow it or be shadowed by it |
 | **Start a project** | `jr new hello`, or `jr init` in a directory you have | Writes `jairs.toml`, a `src/main.jr` that compiles on the first try, an inert `build.jr` showing the build-script form, and a `.gitignore`. Neither command ever overwrites: `jr new` refuses an existing directory, `jr init` refuses an existing manifest, and any other file it would write is kept and reported |
 | **Run any command with no arguments inside a project** | `jr run`, `jr build`, `jr check`, `jr fmt` | The entry point comes from `jairs.toml`, resolved by walking **up**, so the same command means the same thing from any subdirectory. `[project] name` also names the artefact — as a *fallback*, ranked after `-o` and after a declared `BUILD_OUTPUT`, so neither is overridden. Outside a project a path is still required, and its absence names both ways to supply one |
-| **Configure the formatter** | `[fmt] indent_style`, `indent_width`, `case_block_style`, `max_width` in `jairs.toml` | Spaces or **tabs**, any width, and `next_line` or `same_line` placement for an arm whose sole statement is a block. `same_line` emits `case .TEXT; {` and a comment-free empty block as `{}`. Generated projects, direct formatter callers and manifest-free files all default to two spaces. Every setting is honoured by `jr fmt` *and* over LSP, and an unrecognised key is an **error**, not ignored. `max_width` breaks argument and parameter lists; it never reflows comments or breaks boolean chains or strings (ADR-0204, ADR-0220–ADR-0222) |
+| **Configure the formatter** | `[fmt] indent_style`, `indent_width`, `case_block_style`, `struct_literal_trailing_comma`, `max_width` in `jairs.toml` | Spaces or **tabs**, any width, `next_line` or `same_line` placement for an arm whose sole statement is a block, and an optional final comma for non-empty multiline struct literals. `same_line` emits `case .TEXT; {` and a comment-free empty block as `{}`; struct-literal trailing commas default on. Generated projects, direct formatter callers and manifest-free files all default to two spaces. Every setting is honoured by `jr fmt` *and* over LSP, and an unrecognised key is an **error**, not ignored. `max_width` breaks argument and parameter lists; it never reflows comments or breaks boolean chains or strings (ADR-0204, ADR-0220–ADR-0222, ADR-0239) |
 | Compile and run a program in the comptime VM | `jr run file.jr` | Register bytecode interpreter, no JIT tier |
 | Control a struct's layout | `x: s64 #align 16;`, `y: s64 #place 32;` | Raise a field's alignment, or put it at an exact byte offset (ADR-0144). `#align` is a *minimum*, a power of two up to 4096; `#place` takes any non-negative offset, may be unaligned, and **may overlap another field** — that is the point, and nothing checks for it, exactly as an untagged `union` reinterprets bits. A placed field never moves the ones after it. The operand is a literal or a named constant; arithmetic needs the compile-time evaluator, which runs after a struct is laid out |
 | Choose a code generator | `jr build file.jr --backend llvm` | Cranelift by default and LLVM 21 on request (ADR-0143). The LLVM path needs a compiler built with `--features llvm`; without it the flag is refused with a message naming the feature, rather than reported as unknown. The three engines are held to agreement by the differential harness — all corpus programs and every hand-tried trap matched the VM on the first run |
@@ -98,6 +98,7 @@ The authoritative version of this list is
 | `operator + :: (a: Vec2, b: Vec2) -> Vec2` — arithmetic and comparison, one operand local, and it may return a struct | unary, `[]`, `()` and compound-assignment overloading; an overload in a `#run` |
 | `=` and compound `+= -= *= /= %= +%= -%= *%= &= \|= ^= <<= >>=` | |
 | `a.b.c` field access, auto-deref through pointers | sub-slicing `buf[1..3]`, `==` on views |
+| `Point.{x = 1, y = 2}` and context-inferred `.{x = 1, y = 2}` struct literals — named in any order or positional in declaration order, with omitted fields zeroed; parameterised structs and `string` participate (ADR-0239) | unions, variants, views, dynamic arrays and `Context`; a direct file-scope aggregate literal |
 | `[]T` views: `buf[]`, `xs[i]`, `xs.count`, writes through to the array, **returned from a procedure** | |
 | `[N]T` fixed arrays: `a[i]`, `.count`, zeroed by default, bounds-checked — and `#no_abc` or `--no-bounds-check` to stop checking. `N` may be a literal, a **named constant** (ADR-0070), or a `$N` parameter; typed literals use `T.[1, 2, 3]` (ADR-0194) | a length needing evaluation — arithmetic, `#run`, a chain, or another file's constant; an **inferred** literal `.[1, 2, 3]`; a per-*index* `#no_abc` |
 | `[..]T` dynamic arrays — surface and layout (ADR-0136); `modules/List` provides generic `push`, `pop`, `last`, `get`, `set`, `clear`, `is_empty`, `elements` and `free_data` over `*[..]$T`, including `[..]*Node` stacks (ADR-0231) | direct `xs[i]` indexing; growth operations beyond what `List` provides |
@@ -106,7 +107,7 @@ The authoritative version of this list is
 | float literals: `1.5`, `1e9`, `1.5e-3`, `1_000.5`; float **printing** via `print("%", x)` (ADR-0189); a **typed** float constant `X : float32 : 1.5` (ADR-0190) | a chosen precision or field width — `%` renders shortest-ish and takes no modifiers |
 | nesting block comments; `///` and `//!` doc comments, shown on hover | doc generation (`jr doc`) — nothing consumes docs but the language server |
 | `#run` at file scope or in a body, calling local or **imported** procedures, with loops, nested calls, literal defaults and named reordering; bounded by a **step budget** (ADR-0121), so a non-terminating one reports E0230 rather than hanging the compiler | a `#run` reading **another file's constant**; a `#foreign` call (ADR-0006); an operator overload written directly in the thunk expression |
-| a `#run` returning a **struct or array**, interned as its element values and materialised by both engines (ADR-0074), including one holding a **string** (ADR-0075) | a `#run` returning a **union** — untagged storage makes "which field is valid" unanswerable; a **struct** literal (`P.{1, 2}`), which needs field-order decisions an element count does not supply |
+| a `#run` returning a **struct or array**, interned as its element values and materialised by both engines (ADR-0074), including one holding a **string** (ADR-0075). Its procedure may construct the result with a struct literal (ADR-0239) | a `#run` returning a **union** — untagged storage makes "which field is valid" unanswerable; a direct file-scope struct/array literal |
 | **`type_info(T)`** — a type's kind, name, size, alignment, a stable `id`, and the fixed-size per-kind facts `count` and `element`; `Type_Info` is declared in `Basic` and validated on lookup (ADR-0075, ADR-0077, ADR-0078) | following an `element` id back to a `Type_Info`; `type_info([4]s64)`, blocked on structural type aliases |
 | **`Any`** — `any_of(*x)` erases a value to a `{*Type_Info, *u8}` pair, `any_as(a, T)` reads it back and traps unless the type's `id` matches (ADR-0076) | a bare **value** coercing to `Any` implicitly; an `Any` in a compile-time constant |
 | `#insert "…"` of a **string literal**, lowered where it is written (ADR-0072). **Also at file scope**, where it generates *declarations* (ADR-0184): the generated items go straight into the file's arena, so a generated constant, struct or procedure is an ordinary one | a first-class `Code` value and inspectable code tree |
@@ -260,12 +261,12 @@ missing feature.
   `buf: [20]u8;` zeroes, `buf: [20]u8 = ---;` does not — MIR tracks definedness per *slot*.
 - **An index trap names the line but not the index.** Naming the value would need a formatting
   trap helper touching every trap kind at once.
-- **An array literal is `T.[a, b, c]`, and there is no struct literal.** Naming the element type is
-  what made the array form buildable (ADR-0194): the length is the element count and the type is each
-  element's expectation, so `u8.[1, 2, 3]` holds `u8`s where a bare `[1, 2, 3]` would have needed the
-  context to reach through the literal into each element. `Point.{1, 2}` is still absent — it needs
-  field-order decisions an element count does not supply. An array literal has no **compile-time**
-  value either, so `A :: s64.[1, 2];` is refused with a message saying so.
+- **An array literal is `T.[a, b, c]`; a struct literal is `T.{...}` or context-inferred
+  `.{...}`.** Array entries use element order. Struct entries may be positional in declaration order
+  or named in any order, never mixed; omitted fields are zeroed and initializer expressions retain
+  source order. Nominal structs, parameterised instances and `string` are constructible. Direct
+  file-scope aggregate literals still have no compile-time value, so `A :: s64.[1, 2];` and
+  `P :: Point.{1, 2};` are refused; a `#run` procedure may construct and return either aggregate.
 - **An array length may use a literal-valued name, but not a general expression.** `[20]u8`,
   `[COUNT]u8`, an enum member, and `[N]T` under a `$N` parameter work. Arithmetic such as
   `[WIDTH * HEIGHT]T`, an alias chain, a `#run`, or another file's constant still needs evaluation

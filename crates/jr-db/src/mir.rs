@@ -545,6 +545,9 @@ fn file_mir_impl(
                 for (scope, _) in unexpanded.soa_fields.keys() {
                     note(*scope);
                 }
+                for (scope, _) in unexpanded.struct_literals.keys() {
+                    note(*scope);
+                }
                 for scope in stale {
                     values.clear_body_scope(scope);
                 }
@@ -630,6 +633,23 @@ fn file_mir_impl(
             // sema decided the place order, and lowering reads it rather than deciding again.
             for ((scope, expr), position) in checked_file.soa_fields.iter() {
                 values.set_soa_field(*scope, *expr, *position);
+            }
+            for ((scope, expr), fields) in checked_file.struct_literals.iter() {
+                let fields = fields
+                    .iter()
+                    .map(|field| match field {
+                        jr_sema::StructLiteralField::Field(position) => {
+                            jr_mir::StructLiteralField::Field(*position)
+                        }
+                        jr_sema::StructLiteralField::StringData => {
+                            jr_mir::StructLiteralField::StringData
+                        }
+                        jr_sema::StructLiteralField::StringCount => {
+                            jr_mir::StructLiteralField::StringCount
+                        }
+                    })
+                    .collect();
+                values.set_struct_literal(*scope, *expr, fields);
             }
             Arc::new(values)
         };

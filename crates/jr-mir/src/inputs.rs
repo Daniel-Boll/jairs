@@ -195,6 +195,19 @@ pub struct ConstValues {
     /// would be a second decision, and a disagreement between the two is a wrong *address* — sema
     /// typing an element while lowering reads a whole array.
     soa_fields: FxHashMap<(ExprScope, ExprId), u32>,
+    /// The resolved destination of each supplied struct-literal entry (ADR-0239 §4).
+    struct_literals: FxHashMap<(ExprScope, ExprId), Vec<StructLiteralField>>,
+}
+
+/// The MIR projection destination of one supplied struct-literal entry (ADR-0239 §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructLiteralField {
+    /// A direct nominal-struct field, by declaration position.
+    Field(u32),
+    /// `string.data`.
+    StringData,
+    /// `string.count`.
+    StringCount,
 }
 
 /// How the MIR builder should lower one `any_of`/`any_as` call (ADR-0076).
@@ -360,6 +373,16 @@ impl ConstValues {
         for (expr, message) in assertions {
             self.assertions.entry((to, expr)).or_insert(message);
         }
+
+        let struct_literals: Vec<(ExprId, Vec<StructLiteralField>)> = self
+            .struct_literals
+            .iter()
+            .filter(|((scope, _), _)| *scope == from)
+            .map(|((_, expr), fields)| (*expr, fields.clone()))
+            .collect();
+        for (expr, fields) in struct_literals {
+            self.struct_literals.entry((to, expr)).or_insert(fields);
+        }
     }
 
     /// The value of a file-level item, if one is known.
@@ -511,6 +534,16 @@ impl ConstValues {
         self.soa_fields.insert((scope, expr), position);
     }
 
+    /// Records the checked destinations of a struct literal's supplied entries.
+    pub fn set_struct_literal(
+        &mut self,
+        scope: ExprScope,
+        expr: ExprId,
+        fields: Vec<StructLiteralField>,
+    ) {
+        self.struct_literals.insert((scope, expr), fields);
+    }
+
     /// Forgets every expression-keyed record in one body scope (ADR-0207 §5).
     ///
     /// The load-bearing half of re-recording a body whose statements moved. Every map here is keyed by
@@ -544,12 +577,20 @@ impl ConstValues {
             .retain(|(recorded, _), _| *recorded != scope);
         self.soa_fields
             .retain(|(recorded, _), _| *recorded != scope);
+        self.struct_literals
+            .retain(|(recorded, _), _| *recorded != scope);
     }
 
     /// The `#soa` field position recorded for an index expression, if it is one.
     #[must_use]
     pub fn soa_field(&self, scope: ExprScope, expr: ExprId) -> Option<u32> {
         self.soa_fields.get(&(scope, expr)).copied()
+    }
+
+    /// The checked destinations of a struct literal's supplied entries.
+    #[must_use]
+    pub fn struct_literal(&self, scope: ExprScope, expr: ExprId) -> Option<&[StructLiteralField]> {
+        self.struct_literals.get(&(scope, expr)).map(Vec::as_slice)
     }
 
     /// The variadic-call info for a call, if it is one.
@@ -571,6 +612,7 @@ impl ConstValues {
             && self.runs.is_empty()
             && self.any_ops.is_empty()
             && self.instantiations.is_empty()
+            && self.struct_literals.is_empty()
     }
 }
 

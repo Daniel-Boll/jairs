@@ -22041,3 +22041,302 @@ proc main -> void {
     discard call extern proc1(1_s64)
     return
 }
+
+========================================
+170-struct-literals.jr
+========================================
+proc make_point -> Point {
+  params: v0: *Context, v1: s64, v2: s64
+  slots:
+    s0: Point  // temporary
+  bb0(v0: *Context, v1: s64, v2: s64):
+    zero s0
+    store s0.1 <- v2
+    store s0.0 <- v1
+    v3: Point = load s0
+    return v3
+}
+proc score -> s64 {
+  params: v0: *Context, v1: Point
+  slots:
+    s0: Point  // temporary
+  bb0(v0: *Context, v1: Point):
+    store s0 <- v1
+    v2: s64 = load s0.0
+    v3: s64 = v2 * 10_s64
+    v4: s64 = load s0.1
+    v5: s64 = v3 + v4
+    return v5
+}
+proc tail -> string {
+  params: v0: *Context, v1: string
+  slots:
+    s0: string  // temporary
+    s1: string  // temporary
+    s2: *u8  // temporary
+  bb0(v0: *Context, v1: string):
+    store s0 <- v1
+    zero s1
+    v2: s64 = load s0.count
+    v3: s64 = v2 - 1_s64
+    store s1.count <- v3
+    v4: *u8 = load s0.data
+    store s2 <- v4
+    v5: *u8 = addr s2[1_s64]
+    store s1.data <- v5
+    v6: string = load s1
+    return v6
+}
+proc mark -> s64 {
+  params: v0: *Context, v1: *s64, v2: s64
+  bb0(v0: *Context, v1: *s64, v2: s64):
+    v3: s64 = load (v1).*
+    v4: s64 = v3 * 10_s64
+    v5: s64 = v4 + v2
+    store (v1).* <- v5
+    return v2
+}
+proc comptime_point -> Point {
+  params: v0: *Context
+  slots:
+    s0: Point  // temporary
+  bb0(v0: *Context):
+    zero s0
+    store s0.0 <- 20_s64
+    store s0.1 <- 22_s64
+    v1: Point = load s0
+    return v1
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: Point  // local 0
+    s1: Point  // temporary
+    s2: Point  // local 1
+    s3: Point  // temporary
+    s4: Point  // local 2
+    s5: Point  // temporary
+    s6: Point  // local 3
+    s7: Point  // temporary
+    s8: Point  // local 4
+    s9: Point  // temporary
+    s10: Wrapper  // local 5
+    s11: Wrapper  // temporary
+    s12: Point  // temporary
+    s13: struct  // local 6
+    s14: struct  // temporary
+    s15: Point  // local 7
+    s16: Point  // temporary
+    s17: string  // local 9
+    s18: s64  // local 10
+    s19: Point  // local 11
+    s20: Point  // temporary
+    s21: *u8  // temporary
+  bb0(v0: *Context):
+    zero s1
+    store s1.1 <- 2_s64
+    store s1.0 <- 1_s64
+    v1: Point = load s1
+    store s0 <- v1
+    zero s3
+    store s3.0 <- 3_s64
+    store s3.1 <- 4_s64
+    v2: Point = load s3
+    store s2 <- v2
+    zero s5
+    store s5.0 <- 5_s64
+    store s5.1 <- 6_s64
+    v3: Point = load s5
+    store s4 <- v3
+    zero s7
+    v4: Point = load s7
+    store s6 <- v4
+    zero s9
+    store s9.1 <- 9_s64
+    v5: Point = load s9
+    store s8 <- v5
+    zero s11
+    store s11.1 <- 7_s64
+    zero s12
+    store s12.1 <- 6_s64
+    store s12.0 <- 5_s64
+    v6: Point = load s12
+    store s11.0 <- v6
+    v7: Wrapper = load s11
+    store s10 <- v7
+    zero s14
+    store s14.1 <- true
+    store s14.0 <- 11_s64
+    v8: struct = load s14
+    store s13 <- v8
+    v9: Point = call proc0(v0, 8_s64, 7_s64)
+    store s15 <- v9
+    zero s16
+    store s16.1 <- 3_s64
+    store s16.0 <- 2_s64
+    v10: Point = load s16
+    v11: s64 = call proc1(v0, v10)
+    v12: string = call proc2(v0, "abc")
+    store s17 <- v12
+    store s18 <- 0_s64
+    zero s20
+    v13: *s64 = addr s18
+    v14: s64 = call proc3(v0, v13, 2_s64)
+    store s20.1 <- v14
+    v15: *s64 = addr s18
+    v16: s64 = call proc3(v0, v15, 1_s64)
+    store s20.0 <- v16
+    v17: Point = load s20
+    store s19 <- v17
+    v18: Point = load s0
+    v19: s64 = call proc1(v0, v18)
+    v20: bool = v19 != 12_s64
+    branch v20 ? bb1() : bb2()
+  bb1():
+    discard call extern proc1(1_s64)
+    goto bb3()
+  bb2():
+    goto bb3()
+  bb3():
+    v21: Point = load s2
+    v22: s64 = call proc1(v0, v21)
+    v23: bool = v22 != 34_s64
+    branch v23 ? bb4() : bb5()
+  bb4():
+    discard call extern proc1(2_s64)
+    goto bb6()
+  bb5():
+    goto bb6()
+  bb6():
+    v24: Point = load s4
+    v25: s64 = call proc1(v0, v24)
+    v26: bool = v25 != 56_s64
+    branch v26 ? bb7() : bb8()
+  bb7():
+    discard call extern proc1(3_s64)
+    goto bb9()
+  bb8():
+    goto bb9()
+  bb9():
+    v27: Point = load s6
+    v28: s64 = call proc1(v0, v27)
+    v29: bool = v28 != 0_s64
+    branch v29 ? bb10() : bb11()
+  bb10():
+    discard call extern proc1(4_s64)
+    goto bb12()
+  bb11():
+    goto bb12()
+  bb12():
+    v30: Point = load s8
+    v31: s64 = call proc1(v0, v30)
+    v32: bool = v31 != 9_s64
+    branch v32 ? bb13() : bb14()
+  bb13():
+    discard call extern proc1(5_s64)
+    goto bb15()
+  bb14():
+    goto bb15()
+  bb15():
+    v33: Point = load s10.0
+    v34: s64 = call proc1(v0, v33)
+    v35: bool = v34 != 56_s64
+    branch v35 ? bb17() : bb16()
+  bb17():
+    goto bb18(true)
+  bb16():
+    v37: s64 = load s10.1
+    v38: bool = v37 != 7_s64
+    goto bb18(v38)
+  bb18(v36: bool):
+    branch v36 ? bb19() : bb20()
+  bb19():
+    discard call extern proc1(6_s64)
+    goto bb21()
+  bb20():
+    goto bb21()
+  bb21():
+    v39: s64 = load s13.0
+    v40: bool = v39 != 11_s64
+    branch v40 ? bb23() : bb22()
+  bb23():
+    goto bb24(true)
+  bb22():
+    v42: bool = load s13.1
+    v43: bool = !v42
+    goto bb24(v43)
+  bb24(v41: bool):
+    branch v41 ? bb25() : bb26()
+  bb25():
+    discard call extern proc1(7_s64)
+    goto bb27()
+  bb26():
+    goto bb27()
+  bb27():
+    v44: Point = load s15
+    v45: s64 = call proc1(v0, v44)
+    v46: bool = v45 != 87_s64
+    branch v46 ? bb28() : bb29()
+  bb28():
+    discard call extern proc1(8_s64)
+    goto bb30()
+  bb29():
+    goto bb30()
+  bb30():
+    v57: bool = v11 != 23_s64
+    branch v57 ? bb31() : bb32()
+  bb31():
+    discard call extern proc1(9_s64)
+    goto bb33()
+  bb32():
+    goto bb33()
+  bb33():
+    v58: s64 = load s17.count
+    v59: bool = v58 != 2_s64
+    branch v59 ? bb35() : bb34()
+  bb35():
+    goto bb36(true)
+  bb34():
+    v61: *u8 = load s17.data
+    store s21 <- v61
+    v62: u8 = load s21[0_s64]
+    v63: bool = v62 != 98_u8
+    goto bb36(v63)
+  bb36(v60: bool):
+    branch v60 ? bb37() : bb38()
+  bb37():
+    discard call extern proc1(10_s64)
+    goto bb39()
+  bb38():
+    goto bb39()
+  bb39():
+    v64: s64 = load s18
+    v65: bool = v64 != 21_s64
+    branch v65 ? bb41() : bb40()
+  bb41():
+    goto bb42(true)
+  bb40():
+    v67: Point = load s19
+    v68: s64 = call proc1(v0, v67)
+    v69: bool = v68 != 12_s64
+    goto bb42(v69)
+  bb42(v66: bool):
+    branch v66 ? bb43() : bb44()
+  bb43():
+    discard call extern proc1(11_s64)
+    goto bb45()
+  bb44():
+    goto bb45()
+  bb45():
+    v70: s64 = call proc1(v0, {20_s64, 22_s64})
+    v71: bool = v70 != 222_s64
+    branch v71 ? bb46() : bb47()
+  bb46():
+    discard call extern proc1(12_s64)
+    goto bb48()
+  bb47():
+    goto bb48()
+  bb48():
+    discard call extern proc1(0_s64)
+    return
+}

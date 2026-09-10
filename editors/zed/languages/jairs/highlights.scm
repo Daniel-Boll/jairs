@@ -254,6 +254,13 @@
 ; Field access
 (field_expr field: (identifier) @property)
 
+; ADR-0239 struct literals. The explicit expression denotes a type even though the editor
+; grammar deliberately parses it through `_expr`, matching typed array literals and permitting
+; qualified/parameterised type expressions. A named entry denotes stored record metadata, not a
+; local variable.
+(struct_literal type: (_) @type)
+(struct_literal_entry name: (identifier) @property)
+
 ; ---- Operators ---------------------------------------------------------------
 
 ; Binary operators

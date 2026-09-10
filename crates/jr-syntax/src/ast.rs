@@ -181,6 +181,8 @@ ast_node!(CallExpr, CALL_EXPR);
 ast_node!(ArgList, ARG_LIST);
 ast_node!(FieldExpr, FIELD_EXPR);
 ast_node!(ArrayLiteral, ARRAY_LITERAL);
+ast_node!(StructLiteral, STRUCT_LITERAL);
+ast_node!(StructLiteralEntry, STRUCT_LITERAL_ENTRY);
 ast_node!(IndexExpr, INDEX_EXPR);
 ast_node!(SliceExpr, SLICE_EXPR);
 ast_node!(DerefExpr, DEREF_EXPR);
@@ -462,6 +464,8 @@ pub enum Expr {
     Field(FieldExpr),
     /// `T.[a, b, c]` — a fixed array literal (ADR-0194 §1).
     ArrayLiteral(ArrayLiteral),
+    /// `T.{...}` or `.{...}` — a typed or context-inferred struct literal (ADR-0239 §1).
+    StructLiteral(StructLiteral),
     /// `a[i]`
     Index(IndexExpr),
     /// `a[]` (ADR-0044 §2)
@@ -497,6 +501,8 @@ impl AstNode for Expr {
                 | PAREN_EXPR
                 | CALL_EXPR
                 | FIELD_EXPR
+                | ARRAY_LITERAL
+                | STRUCT_LITERAL
                 | INDEX_EXPR
                 | SLICE_EXPR
                 | CONTEXT_EXPR
@@ -521,6 +527,7 @@ impl AstNode for Expr {
             CALL_EXPR => Some(Self::Call(CallExpr(node))),
             FIELD_EXPR => Some(Self::Field(FieldExpr(node))),
             ARRAY_LITERAL => Some(Self::ArrayLiteral(ArrayLiteral(node))),
+            STRUCT_LITERAL => Some(Self::StructLiteral(StructLiteral(node))),
             INDEX_EXPR => Some(Self::Index(IndexExpr(node))),
             SLICE_EXPR => Some(Self::Slice(SliceExpr(node))),
             CONTEXT_EXPR => Some(Self::Context(ContextExpr(node))),
@@ -546,6 +553,7 @@ impl AstNode for Expr {
             Self::Call(n) => n.syntax(),
             Self::Field(n) => n.syntax(),
             Self::ArrayLiteral(n) => n.syntax(),
+            Self::StructLiteral(n) => n.syntax(),
             Self::Index(n) => n.syntax(),
             Self::Slice(n) => n.syntax(),
             Self::Context(n) => n.syntax(),
@@ -589,6 +597,36 @@ impl ArrayLiteral {
     /// position is what separates them, exactly as a `CALL_EXPR`'s callee is separated from its arguments.
     pub fn elements(&self) -> impl Iterator<Item = Expr> + '_ {
         self.0.children().filter_map(Expr::cast).skip(1)
+    }
+}
+
+impl StructLiteral {
+    /// The expression naming the explicit type in `T.{...}`.
+    ///
+    /// `None` for the context-inferred `.{...}` form. Entry values are nested inside
+    /// [`StructLiteralEntry`] nodes, so the only direct expression child is the explicit type.
+    pub fn explicit_type(&self) -> Option<Expr> {
+        self.0.children().find_map(Expr::cast)
+    }
+
+    /// Initializers in source order.
+    pub fn entries(&self) -> impl Iterator<Item = StructLiteralEntry> + '_ {
+        child_nodes(&self.0)
+    }
+}
+
+impl StructLiteralEntry {
+    /// The field name in a named `field = value` entry.
+    ///
+    /// `None` for a positional entry. The token is direct rather than wrapped in a name expression,
+    /// because an initializer label is not a reference resolved through a lexical scope.
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        child_token(&self.0, IDENT)
+    }
+
+    /// The initializer value.
+    pub fn value(&self) -> Option<Expr> {
+        child_node(&self.0)
     }
 }
 

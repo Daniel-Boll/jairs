@@ -108,6 +108,10 @@ pub struct Fmt {
     pub indent_width: Option<usize>,
     /// Whether a switch arm's sole braced block begins on the next line or the arm's line.
     pub case_block_style: Option<CaseBlockStyle>,
+    /// Whether a non-empty multiline struct literal ends its final entry with a comma.
+    ///
+    /// Compact one-line literals and empty literals are unaffected.
+    pub struct_literal_trailing_comma: Option<bool>,
     /// The column a line should not exceed.
     ///
     /// **Read the scope before setting it.** It breaks a call's argument list and a procedure's
@@ -242,6 +246,9 @@ impl Located {
         if let Some(style) = self.manifest.fmt.case_block_style {
             config.case_block_style = style.into();
         }
+        if let Some(enabled) = self.manifest.fmt.struct_literal_trailing_comma {
+            config.struct_literal_trailing_comma = enabled;
+        }
         if let Some(width) = self.manifest.fmt.max_width {
             config.max_width = width;
         }
@@ -365,6 +372,7 @@ mod tests {
             l.fmt_config().case_block_style,
             jr_fmt::CaseBlockStyle::NextLine
         );
+        assert!(l.fmt_config().struct_literal_trailing_comma);
         assert_eq!(l.fmt_config().max_width, 100);
         assert!(l.module_paths().is_empty());
         assert!(l.exact_dependencies().is_empty());
@@ -443,6 +451,14 @@ mod tests {
             l.fmt_config().case_block_style,
             jr_fmt::CaseBlockStyle::SameLine
         );
+        assert_eq!(l.fmt_config().indent_width, 2);
+    }
+
+    #[test]
+    fn struct_literal_trailing_comma_is_read() {
+        let l = located("[fmt]\nstruct_literal_trailing_comma = false\n");
+        assert!(!l.fmt_config().struct_literal_trailing_comma);
+        // Setting one key must not disturb the other defaults.
         assert_eq!(l.fmt_config().indent_width, 2);
     }
 

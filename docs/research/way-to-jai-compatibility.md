@@ -76,8 +76,8 @@ executable source and gates still outrank every hand-maintained table.
   overloading, multiple returns plus `#must`, compile-time execution, basic
   reflection, macros, FFI, native compilation, threads, files, processes, and a
   graphics subset.
-- The largest source-compatibility multipliers are general procedure
-  overloading, inferred struct/array literals, evaluated type-level constants,
+- The largest remaining source-compatibility multipliers are general procedure
+  overloading, inferred array literals, evaluated type-level constants,
   `#load` and item-level `#if`, richer polymorphic inference, and the missing
   metaprogramming model around first-class `Code`.
 - `String_Builder` is now present in `Basic`: zero-value and explicit
@@ -160,7 +160,7 @@ one representative outcome is pinned.
 | 09 — First-class types and `Any` | [`examples/09/9.1_types.jai`](../../references/The_Way_to_Jai/examples/09/9.1_types.jai) | **Partial** | Type constants, `size_of`, `type_of`, `type_info`, `Any`, `any_of`, and `any_as` exist. `Type` as an annotation/parameter, type-value chains, implicit bare-value-to-`Any`, and full type comparison/reflection do not. |
 | 10 — Pointers | Address, dereference, pointer chains, null, casts | **Partial** | Typed pointers, `null`, address/deref, unchecked element-scaled indexing and compound offsets, same-type signed pointer difference, `typed/untyped`, and FFI pointers exist. Ordering and general pointer casts are absent or deliberately constrained. |
 | 11 — Allocation and `defer` | [`examples/11/11.4_memory.jai`](../../references/The_Way_to_Jai/examples/11/11.4_memory.jai) | **Partial** | Default context allocation, `malloc/free`, `New(T)`, typed allocation helpers, and `defer` exist. `New` uses the active context allocator, zeroes success, preserves null failure, and has no Jai-style named allocator argument; allocator modes and the exact Basic allocation API remain absent. |
-| 12 — Structs | Literals, recursive/anonymous structs, `#as`, alignment, member procs, parameters | **Partial** | Named/nested structs, heap allocation, representation-indirect recursive structs, `using`, polymorphic structs, `#align`, and `#place` exist. Struct literals, inline representation recursion, anonymous structs, `#as`, member procedures as a language feature, struct-level packing, and several parameter forms are absent. |
+| 12 — Structs | Literals, recursive/anonymous structs, `#as`, alignment, member procs, parameters | **Partial** | Named/nested structs, typed and context-inferred named/positional/empty literals, heap allocation, representation-indirect recursive structs, `using`, polymorphic structs, `#align`, and `#place` exist. Inline representation recursion, anonymous structs, `#as`, member procedures as a language feature, struct-level packing, and several parameter forms are absent. |
 | 13 — Unions and enums | [`examples/13/13.3_enum_flags.jai`](../../references/The_Way_to_Jai/examples/13/13.3_enum_flags.jai) | **Partial** | Untagged unions, tagged variants, enums, enum flags, explicit values, bare contextual members, and exhaustive switching exist. Anonymous enums, `#specified`, enum methods through general overloading, richer casts, and some cross-file member use remain absent. |
 | 14 — Branching | `if`, `then`, `ifx`, if-case, `#complete`, `#through`; [`examples/14/14.3_if_case.jai`](../../references/The_Way_to_Jai/examples/14/14.3_if_case.jai) | **Partial** | `if/else`, optional `then` on one braceless statement, `switch`, and exact `if #complete value == { ... }` work. `ifx`, truthiness for arbitrary values, `#through`, guards, ranges, and switch expressions do not. |
 | 15 — Loops and reflection | while/for, reverse, pointer iteration, enum/field iteration, notes | **Partial** | `while`, ranges, arrays/views/strings, `for <`, `it/it_index`, labels, break/continue, and declaration notes exist. `for *item`, user-defined for expansion, enum-value iteration, and general runtime field reflection are absent. |
@@ -168,7 +168,7 @@ one representative outcome is pinned.
 | 17 — Procedures | Defaults/named args, multiple returns, `#must`, overloads, inline, `#this`, reflection, anonymous procs | **Partial** | Local/nested procedures, procedure values, explicit literal defaults (`name: T = literal`), inferred literal defaults (`name := literal`) on ordinary local/imported procedures and their `#run` calls, and on ordinary calls to pure `$T` local/imported procedures exist alongside named arguments, several returns, declaration-only labels such as `-> (value: s64, found: bool)`, `#must`, recursion, and operator overloading. Pure `$T` defaults must have a fixed type and caller arguments must still infer every type variable (ADR-0236). Non-literal defaults, pure-template calls inside `#run`, defaults/named calls on `$N` or mixed templates, procedure-pointer parameter/default metadata, general procedure overloading, unparenthesized/defaulted named results, implicit result bindings, anonymous/lambda procedures, `inline`, `#this`, `#procedure_name`, `#deprecated`, and full procedure reflection do not. |
 | 18A — Arrays | Fixed/dynamic arrays, views, literals, variadics, reverse and pointer iteration | **Partial** | `[N]T`, `[]T`, `[..]T`, typed `T.[...]` literals, indexing, views, reverse loops, and variadic `..T` packing exist. Inferred `.[...]`, multidimensional conveniences, by-reference iteration, broad generic array helpers, and arbitrary evaluated lengths do not. |
 | 18B — Ordered removal | [`examples/18/18B_ordered_remove.jai`](../../references/The_Way_to_Jai/examples/18/18B_ordered_remove.jai) | **Absent** | `modules/List` supports growth, push/pop/get/set/clear/free, but no ordered-remove operation or Jai `remove` loop statement was found. |
-| 18C — Raw struct copy | [`examples/18/18C/18C_memcpy_struct.jai`](../../references/The_Way_to_Jai/examples/18/18C/18C_memcpy_struct.jai) | **Partial** | Compiler-generated aggregate copies use byte-copy lowering, but Jairs has no public `memcpy` intrinsic matching the example; the example also requires a struct literal and evaluated array length. |
+| 18C — Raw struct copy | [`examples/18/18C/18C_memcpy_struct.jai`](../../references/The_Way_to_Jai/examples/18/18C/18C_memcpy_struct.jai) | **Partial** | Compiler-generated aggregate copies and struct literals exist, but Jairs has no public `memcpy` intrinsic matching the example and still lacks the evaluated array length it uses. |
 | 19A — Strings | Strings, builders, operations and C strings; [`examples/19/19.3_string_builder.jai`](../../references/The_Way_to_Jai/examples/19/19.3_string_builder.jai) | **Partial** | Byte strings, direct byte iteration, `#char`, comparisons/search/split/join/replace/trim/case conversion, numeric parsing, C-string conversion, owned copies, freeing, and a chained `Basic.String_Builder` with unbounded formatted append exist. `sprint/tprint`, multiline `#string`, implicit string truthiness, general append overloads, the optional destination allocator, and exact Jai ownership rules remain absent or unconfirmed. |
 | 19B — Command-line arguments | [`examples/19/19B/19B.1_command_line_args.jai`](../../references/The_Way_to_Jai/examples/19/19B/19B.1_command_line_args.jai) | **Absent** | Build scripts can read arguments through `modules/Compiler`, but an ordinary Jairs program has no `get_command_line_arguments()` surface and `main` receives no declared argc/argv. |
 | 19C — Console input | POSIX/Windows examples in [`book/19C_Get_console_input.md`](../../references/The_Way_to_Jai/book/19C_Get_console_input.md) | **Partial** | The FFI can bind `read`, and `modules/File` exposes descriptor reads, but no portable console-input or POSIX/Windows module matching the guide is shipped. Windows is not a verified target. |
@@ -291,8 +291,8 @@ compatibility claim.
 
 1. General procedure overloading. It unlocks guide-shaped `append`, string
    helpers, math APIs, constructors, and many imported modules.
-2. Inferred struct and array literals (`.{...}`, `.[...]`) plus struct field
-   initialization rules.
+2. Inferred array literals (`.[...]`); struct `T.{...}` / `.{...}` and its field
+   initialization rules are now present.
 3. Evaluated type-level constants for array/SIMD/SOA lengths, including
    arithmetic, aliases, and imported constants.
 4. `ifx`, fuller `then`/if-case compatibility, and a decision on `#through`.
@@ -386,7 +386,7 @@ tree model would affect syntax, HIR, const evaluation, diagnostics, and tools.
 1. **Evidence first:** P0 follow-up contracts for CLI, processes, testing, plugins,
    and broad-chapter family probes.
 2. **Largest source multiplier:** general procedure overloading.
-3. **Everyday syntax:** inferred aggregate literals, evaluated lengths, pointer
+3. **Everyday syntax:** inferred array literals, evaluated lengths, pointer
    iteration, then the remaining control-flow spellings.
 4. **Module composition:** `#load`, conditional items, module parameters, argv/stdin.
 5. **Generic library unlock:** cross-file template instantiation and stronger inference.

@@ -670,6 +670,20 @@ pub enum SyntaxKind {
     /// length is the element count, the elements are ordinary expressions, and each is checked against the
     /// *named* type, which is ADR-0016 §1's existing expectation mechanism rather than a new inference.
     ARRAY_LITERAL,
+    /// `T.{x = 1, y = 2}` or `.{1, 2}` — a typed or context-inferred struct literal
+    /// (ADR-0239 §1).
+    ///
+    /// The optional expression naming the explicit type is a direct child. Initializers are
+    /// [`SyntaxKind::STRUCT_LITERAL_ENTRY`] children, so a consumer never has to distinguish the
+    /// type from the values by counting expression children.
+    STRUCT_LITERAL,
+    /// One positional expression or `name = expression` inside a
+    /// [`SyntaxKind::STRUCT_LITERAL`] (ADR-0239 §2).
+    ///
+    /// A dedicated node rather than reusing `NAMED_ARG`: a field initializer and a call argument
+    /// happen to share punctuation, but they name different domains and receive different semantic
+    /// rules.
+    STRUCT_LITERAL_ENTRY,
     /// `a[i]` (ADR-0039 §5).
     ///
     /// Postfix, at the same precedence as `.b` and `.*`, so `a[i].x` and `a.b[i]`

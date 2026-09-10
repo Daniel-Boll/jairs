@@ -3,7 +3,7 @@
 use jr_base::{FileId, Interner};
 use jr_hir::{
     BinOp, ConstValue, Expr, ImportedModule, InsertOperands, Instantiation, ItemKind, Literal, Res,
-    Stmt, TypeRef, UnOp, dump::dump_hir, expand_instantiations, lower_file,
+    Stmt, StructLitEntry, TypeRef, UnOp, dump::dump_hir, expand_instantiations, lower_file,
     lower_file_with_inserts, resolve,
 };
 use jr_pool::Pool;
@@ -724,6 +724,175 @@ fn struct_with_fields() {
     assert_eq!(s.fields.len(), 2);
     assert_eq!(interner.resolve(s.fields[0].name), "x");
     assert_eq!(interner.resolve(s.fields[1].name), "y");
+}
+
+#[test]
+fn typed_struct_literal_lowers_entries_in_source_order() {
+    let source = concat!(
+        "Point :: struct { x: s64; y: s64; }\n",
+        "ORIGIN :: Point.{y = 2, x = 1,};\n",
+    );
+    let (hir, diags, interner) = lower(source);
+    assert!(diags.is_empty(), "{diags:?}");
+
+    let literal = hir
+        .exprs
+        .iter()
+        .find_map(|expr| {
+            let Expr::StructLit {
+                explicit_ty,
+                entries,
+                ..
+            } = expr
+            else {
+                return None;
+            };
+            Some((*explicit_ty, entries))
+        })
+        .expect("ORIGIN must lower to a struct literal");
+
+    let explicit_ty = literal
+        .0
+        .expect("the typed spelling retains its type expression");
+    assert!(
+        matches!(
+            hir.expr(explicit_ty),
+            Expr::Name { name, .. } if interner.resolve(*name) == "Point"
+        ),
+        "the explicit type must remain an ordinary expression child"
+    );
+
+    assert_eq!(literal.1.len(), 2);
+    let StructLitEntry::Named {
+        name: first_name,
+        name_span: first_span,
+        value: first_value,
+    } = literal.1[0]
+    else {
+        panic!("the first entry must stay named");
+    };
+    assert_eq!(interner.resolve(first_name), "y");
+    assert_eq!(&source[first_span.range], "y");
+    assert!(matches!(
+        hir.expr(first_value),
+        Expr::Literal(Literal::Int { value: 2, .. }, _)
+    ));
+
+    let StructLitEntry::Named {
+        name: second_name,
+        name_span: second_span,
+        ..
+    } = literal.1[1]
+    else {
+        panic!("the second entry must stay named");
+    };
+    assert_eq!(interner.resolve(second_name), "x");
+    assert_eq!(&source[second_span.range], "x");
+}
+
+#[test]
+fn inferred_struct_literal_lowers_body_entries_and_dump_shape() {
+    let source = concat!(
+        "Point :: struct { x: s64; y: s64; }\n",
+        "make :: () -> Point {\n",
+        "  first := 1;\n",
+        "  return .{y = first, x = 2,};\n",
+        "}\n",
+    );
+    let (hir, diags, interner) = lower(source);
+    assert!(diags.is_empty(), "{diags:?}");
+    let body = &hir.bodies[0];
+    let entries = body
+        .exprs
+        .iter()
+        .find_map(|expr| {
+            let Expr::StructLit {
+                explicit_ty,
+                entries,
+                ..
+            } = expr
+            else {
+                return None;
+            };
+            assert!(
+                explicit_ty.is_none(),
+                "the inferred spelling must not invent a type expression"
+            );
+            Some(entries)
+        })
+        .expect("the return value must lower to a struct literal");
+
+    assert_eq!(entries.len(), 2);
+    let names: Vec<_> = entries
+        .iter()
+        .map(|entry| match entry {
+            StructLitEntry::Named {
+                name, name_span, ..
+            } => {
+                assert_eq!(&source[name_span.range], interner.resolve(*name));
+                interner.resolve(*name).to_owned()
+            }
+            StructLitEntry::Positional(_) => panic!("both entries are named"),
+        })
+        .collect();
+    assert_eq!(names, ["y", "x"]);
+
+    let dump = dump_hir(&hir, &interner);
+    assert!(
+        dump.contains(".{y = ") && dump.contains("x = 2}"),
+        "the dump must retain inferred syntax and entry names:\n{dump}"
+    );
+}
+
+#[test]
+fn positional_and_empty_struct_literals_reach_hir() {
+    let source = concat!(
+        "Point :: struct { x: s64; y: s64; }\n",
+        "A :: Point.{1, 2,};\n",
+        "B :: Point.{};\n",
+    );
+    let (hir, diags, _) = lower(source);
+    assert!(diags.is_empty(), "{diags:?}");
+    let literals: Vec<_> = hir
+        .exprs
+        .iter()
+        .filter_map(|expr| {
+            let Expr::StructLit { entries, .. } = expr else {
+                return None;
+            };
+            Some(entries)
+        })
+        .collect();
+    assert_eq!(literals.len(), 2);
+    assert!(matches!(
+        literals[0].as_slice(),
+        [StructLitEntry::Positional(_), StructLitEntry::Positional(_)]
+    ));
+    assert!(literals[1].is_empty());
+}
+
+#[test]
+fn explicit_struct_literal_types_resolve_in_type_position() {
+    for (source, expected_unresolved) in [
+        ("X :: s64.{};\n", Vec::<&str>::new()),
+        (
+            "main :: () { x := s64.{MISSING}; }\n",
+            vec!["unresolved name `MISSING`"],
+        ),
+    ] {
+        let (hir, lower_diags, interner) = lower(source);
+        assert!(lower_diags.is_empty(), "{lower_diags:?}");
+        let (_, resolve_diags) = resolve(&hir, &[], &interner);
+        let unresolved: Vec<_> = resolve_diags
+            .iter()
+            .filter(|diagnostic| diagnostic.code == Some("E0201"))
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        assert_eq!(
+            unresolved, expected_unresolved,
+            "the explicit builtin type must be withheld from value-name resolution: {source}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

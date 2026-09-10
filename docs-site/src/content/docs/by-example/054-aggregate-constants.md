@@ -209,15 +209,10 @@ byte-for-byte agreement between `jr run` and `jr build` is a real check.
 
 ## What is absent
 
-- An array literal that **names its element type**, `T.[a, b, c]`, works today — it shipped
-  separately in ADR-0194, and needs no `#run` at all. The bare spelling `[1, 2, 3]` is
-  <span class="jairs-status absent">absent</span> by design: naming the element type is what
-  made the named form buildable, since it answers length, per-element context typing, and
-  constant-ness all in one move, and a bare literal answers none of them. A struct literal,
-  `P.{1, 2}`, is <span class="jairs-status refused">refused</span> for the same *kind* of reason,
-  one level harder — it also needs a field-order decision that an element count does not supply.
-  Neither is what this page's feature is about: `#run` returning a struct or an array gives that
-  value somewhere to live; it does not, by itself, add a way to write an aggregate directly in
-  source.
+- An array literal that names its element type, `T.[a, b, c]`, and typed/inferred struct
+  literals, `P.{x = 1}` / `.{x = 1}`, work at run time. A procedure executed by `#run` may construct
+  and return either. The remaining boundary is a **direct file-scope** aggregate literal:
+  `A :: s64.[1, 2]` and `P :: Point.{1, 2}` are refused because the compile-time thunk has no
+  direct aggregate-literal value yet.
 - A **union** constant is refused: untagged storage makes "which field is valid" unanswerable
   (ADR-0074 §4). That refusal lives in the type-error corpus.

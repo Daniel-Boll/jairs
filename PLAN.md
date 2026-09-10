@@ -433,6 +433,16 @@ Status of each slice component, so this is answerable without reading the tree.
 > | `tests/corpus` | `valid/169` executes raw loads, stores, address-taking, positive/negative indexing, temporary pointer results, pointer compounds and the motivating `string.data` scanner shape. `type-errors/097` pins non-integer indices, unsupported compounds and pointer-difference assignment. |
 > | Documentation / `String` | The memory guide and compatibility matrix now document unchecked indexing and offsets. `String.byte_at` becomes the checked policy wrapper around a direct `s.data[index]` read. |
 
+> **ADR-0239 component delta.**
+>
+> | Component | Current delta |
+> |---|---|
+> | `jr-syntax` / `jr-hir` | Dedicated typed/inferred struct-literal and entry nodes preserve an optional explicit type, named-field spans and source-ordered values. `T.{...}`, `.{...}`, named, positional, empty and trailing-comma forms parse; malformed entries are E0136. |
+> | `jr-sema` | Nominal structs, parameterised instances and `string` are constructible. Named entries resolve direct fields in any order, positional entries use declaration order, omitted fields zero-fill, and E0300 owns missing context/non-record targets/mixed styles/duplicates/excess entries. A parallel destination plan preserves source evaluation order for MIR. |
+> | `jr-mir` / engines | Lowering zeroes one aggregate slot, evaluates each initializer once in source order, stores through sema's recorded `Field`/`StringData`/`StringCount` projection, then loads the completed value. Existing VM, Cranelift and LLVM aggregate operations need no new primitive. A `#run` procedure may construct and return one; a direct file-scope literal remains E0230. |
+> | `jr-fmt` / manifests / editors | Non-empty multiline literals receive a final comma by default; `[fmt] struct_literal_trailing_comma = false` removes it. Compact and empty forms are unchanged. The hand-written parser, Tree-sitter, Neovim and Zed all recognise the same nodes. |
+> | Tests / compatibility | `valid/170` executes explicit/inferred, named/positional/empty/partial/nested/parameterised/string/`#run` construction and source-order side effects. `type-errors/098`, `imports/invalid/024` and `invalid/011` pin semantic, direct-comptime and recovery boundaries. The motivating `ora_to_atlas_test/src/main.jr` now checks with zero errors. |
+
 | Component | Status | Notes |
 |---|---|---|
 | `modules/Game` | **Foundation done** | **ADR-0210 decides ADR-0208's six forks and lands the first slice.** A caller owns `App`; `open(width, height, title)` starts SDL, creates the window, selects top-left/y-down Simp coordinates and unwinds every completed step if GL setup fails. `begin_frame` drains once, latches close, and records an unclamped non-negative delta; `end_frame` presents; `close` is idempotent and destroys Simp before the window and SDL. A private guard refuses a second simultaneous App because Simp has one process-global renderer; the lifecycle stays on one thread. Two native integration tests cover a real synthetic-quit/reopen lifecycle and the dummy driver's no-GL unwind. **Not game-ready v1:** held input, primitive helpers, generation-tagged resources, PNG, text and audio are later slices. |
@@ -466,7 +476,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the real-editor verifier — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua` needs an editor CI does not have. The installed parser is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The verifier asserts tree-sitter node kinds and nesting that ADR-0010's error-count gate cannot see, plus live LSP requests against the real server. |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and another LSP client may launch it; the repository packages integrations for Neovim and Zed. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–**0229**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
+Accepted ADRs: 0001–**0239**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
 counts here are why the ADR index row and this line move in the same commit.
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
@@ -767,27 +777,31 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0238 adds raw-pointer indexing and compound offsets.**
-> `p[i]` now denotes the unchecked, element-scaled place `(p + i).*`, and `p += n` / `p -= n`
-> reuse the same pointer-offset lowering. Existing pointer-to-array/vector/view indexing retains
-> its bounded-container meaning.
+> **ADR-0239 adds typed and context-inferred struct literals.**
+> `T.{...}` and `.{...}` construct nominal structs, parameterised instances and `string` with
+> named, positional or empty entries. Omitted fields are zeroed; named-entry destinations do not
+> reorder initializer evaluation.
 
-**1417 workspace tests (1430 under gate 7), 319 corpus files outside fixture modules, 238 ADRs and
-26 modules.** Two MIR optimiser regressions and `valid/169`/`type-errors/097` supply the new
-coverage. All six ordinary gates and gate 7 are green.
+**1431 workspace tests (1444 under gate 7), 323 corpus files outside fixture modules, 239 ADRs and
+26 modules.** `valid/170`, `type-errors/098`, `imports/invalid/024` and `invalid/011` supply the
+language, semantic, direct-comptime and recovery coverage. All six ordinary gates and gate 7 are
+green; the documentation site builds all 120 pages.
 
-The motivating `trim_whitespaces` shape now checks: `s.data[0]` is a `u8` place and
-`s.data += 1` advances by one byte. Raw indices may be negative and may name a place returned by a
-temporary pointer expression; no bounds check is invented because `*T` carries no length.
-`p *= n`, pointer-plus-pointer and `p -= q` remain E0223.
+The motivating `ora_to_atlas_test/src/main.jr` now checks with zero errors, including
+`return .{data = start, count = finish - start};`. Sema records one destination projection per
+source-ordered entry, and MIR lowers the literal as a zeroed aggregate followed by stores and one
+aggregate load. The VM, Cranelift and LLVM reuse their existing aggregate operations and agree on
+the full corpus.
 
-The first optimized probe exposed a real pre-existing DCE bug: it classified
-`pointer_slot[index] = value` as a dead direct store to `pointer_slot` and deleted the observable
-pointee write. DCE now preserves both an indirect pointer-index store and the pointer spill that
-feeds it; the corpus program agrees at `-O0` and `-O1` in the VM, Cranelift and LLVM. The external
-`ora_to_atlas_test/src/main.jr` no longer reports the three pointer diagnostics; its next remaining
-error is an unrelated procedure that does not return on every path. **E0300** is the first free
-global diagnostic code; **E0136** is the first free parser code.
+The formatter keeps compact and empty literals compact. A non-empty multiline literal receives a
+final comma by default; `[fmt] struct_literal_trailing_comma = false` removes only that final comma.
+The hand-written parser, Tree-sitter, Neovim and Zed recognise the same literal and entry nodes,
+and regeneration leaves both tracked generated artefacts byte-identical.
+
+Direct file-scope struct literals remain E0230, while a procedure called by `#run` may construct
+and return one. Unions, variants, views, dynamic arrays, `Context`, multi-results and
+`using`-promoted initializer names remain separate decisions. **E0301** is the first free global
+diagnostic code; **E0137** is the first free parser code.
 
 ### Next wave: declaration-ordered evidence for comptime templates
 

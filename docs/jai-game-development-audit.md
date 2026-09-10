@@ -166,7 +166,7 @@ leverage, not a commitment to implement.
 | Evaluated array lengths | `infinite-pong` declares dimensions such as `[BOARD_HEIGHT][BOARD_WIDTH]`, where one constant is an expression | Grids, lookup tables and animation frames naturally use products and imported constants; Jairs reports E0233 | **P0** |
 | Pointer iteration, `for *item` | `jaibreak`, `learning-jai`, `jai-simpler` | Mutating particles, enemies and cached resources without manual indexing | **P0** |
 | `ifx` conditional expression | `infinite-pong`, `learning-jai`, raylib examples | Small vector, colour and state expressions without a temporary `var` | **P1** |
-| Inferred aggregate/array literals, `.{…}` and `.[…]` | all surveyed games | Vector-heavy code becomes dominated by repeated type names in Jairs | **P1** |
+| Inferred array literals, `.[…]` | all surveyed games | Struct `.{…}` is present; vector/array-heavy code still repeats element types | **P1** |
 | General procedure overloading | Simp and `jai-simpler` overload rectangles, scissor, fonts and quads | One conceptual operation can accept points, rectangles, textures or scalar coordinates | **P1** |
 | Item/block `#if` | `jaibreak`, `tetris-jai`, `ditch`, `jai-simpler` | Debug-only declarations and platform-specific imports or bodies | **P1** |
 | `#load` | `jaibreak`, `ditch`, generated raylib binding | Split one module across implementation files without creating import namespaces | **P1** |

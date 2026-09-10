@@ -33,7 +33,7 @@ use crate::hir::{
     AggregateKind, AssignOp, BinOp, Body, BodyId, ConstValue, Enum, EnumId, EnumMember, Expr,
     ExprId, Field, FileHir, ForIterable, ForeignInfo, InsertOperands, Item, ItemId, ItemKind,
     ItemScope, Literal, Local, LocalId, Param, ParamId, Proc, ProcId, Res, ResultLabel, Stmt,
-    StmtId, Struct, StructId, TypeRef, TypeRefId, UnOp,
+    StmtId, Struct, StructId, StructLitEntry, TypeRef, TypeRefId, UnOp,
 };
 
 // ---------------------------------------------------------------------------
@@ -993,6 +993,37 @@ impl<'a> LowerCtx<'a> {
                     Expr::ArrayLit {
                         elem_ty,
                         elems,
+                        span,
+                    },
+                    span,
+                )
+            }
+            AstExpr::StructLiteral(literal) => {
+                let explicit_ty = literal.explicit_type().map(|ty| self.lower_top_expr(&ty));
+                let entries = literal
+                    .entries()
+                    .map(|entry| {
+                        let entry_span = self.span_of_node(entry.syntax());
+                        let value = entry
+                            .value()
+                            .map(|value| self.lower_top_expr(&value))
+                            .unwrap_or_else(|| {
+                                self.alloc_top_expr(Expr::Error(entry_span), entry_span)
+                            });
+                        match entry.name_token() {
+                            Some(token) => StructLitEntry::Named {
+                                name: self.intern(token.text()),
+                                name_span: self.span_of_token(&token),
+                                value,
+                            },
+                            None => StructLitEntry::Positional(value),
+                        }
+                    })
+                    .collect();
+                self.alloc_top_expr(
+                    Expr::StructLit {
+                        explicit_ty,
+                        entries,
                         span,
                     },
                     span,
@@ -3292,6 +3323,37 @@ impl<'a> BodyLowerCtx<'a> {
                     Expr::ArrayLit {
                         elem_ty,
                         elems,
+                        span,
+                    },
+                    span,
+                )
+            }
+            AstExpr::StructLiteral(literal) => {
+                let explicit_ty = literal.explicit_type().map(|ty| self.lower_expr(&ty));
+                let entries = literal
+                    .entries()
+                    .map(|entry| {
+                        let entry_span = self.span_of_node(entry.syntax());
+                        let value = entry
+                            .value()
+                            .map(|value| self.lower_expr(&value))
+                            .unwrap_or_else(|| {
+                                self.alloc_expr(Expr::Error(entry_span), entry_span)
+                            });
+                        match entry.name_token() {
+                            Some(token) => StructLitEntry::Named {
+                                name: self.intern(token.text()),
+                                name_span: self.span_of_token(&token),
+                                value,
+                            },
+                            None => StructLitEntry::Positional(value),
+                        }
+                    })
+                    .collect();
+                self.alloc_expr(
+                    Expr::StructLit {
+                        explicit_ty,
+                        entries,
                         span,
                     },
                     span,

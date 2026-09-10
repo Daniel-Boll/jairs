@@ -367,6 +367,13 @@ fn addr_taken(body: &Body) -> (FxHashSet<LocalId>, FxHashSet<jr_hir::ParamId>) {
                     expr_worklist.push((*e, under_addr_of));
                 }
             }
+            // Constructing the literal creates only an anonymous MIR slot. Initializer values may
+            // still take addresses, so walk them with the incoming flag unchanged (ADR-0239 §4).
+            Expr::StructLit { entries, .. } => {
+                for entry in entries {
+                    expr_worklist.push((entry.value(), under_addr_of));
+                }
+            }
             Expr::Name { res, .. } => {
                 // **A promoted name escapes its base unconditionally** (ADR-0050 §2), and this is
                 // not defence in depth — it is load-bearing. `x` where `using p: Point` is in

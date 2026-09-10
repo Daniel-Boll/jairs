@@ -111,6 +111,10 @@ pub type VariadicCalls =
 /// `Index(i)` — the place order the HIR nests the other way round.
 pub type SoaFields = rustc_hash::FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), u32>;
 
+/// Each struct literal and the checked destination of every supplied entry (ADR-0239 §4).
+pub type StructLiterals =
+    rustc_hash::FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), Vec<jr_sema::StructLiteralField>>;
+
 /// Each comptime-value call and the tuple of interned argument *values* — the structural key an
 /// instantiation is built for (ADR-0088 §3). Same shape as [`Instantiations`] once const-eval has run.
 pub type ComptimeCallValues = rustc_hash::FxHashMap<
@@ -214,6 +218,8 @@ pub struct CheckResult {
     /// `ConstValues::set_soa_field`, so lowering builds the place in the order sema decided rather
     /// than recognising the pattern a second time. Empty for programs with no `#soa` accesses.
     pub soa_fields: Arc<SoaFields>,
+    /// Each struct literal's supplied entry destinations, in source evaluation order (ADR-0239).
+    pub struct_literals: Arc<StructLiterals>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1351,6 +1357,7 @@ fn translate_check_output(
         comptime_calls: Arc::new(output.comptime_calls),
         variadic_calls: Arc::new(output.variadic_calls),
         soa_fields: Arc::new(output.soa_fields),
+        struct_literals: Arc::new(output.struct_literals),
     }
 }
 

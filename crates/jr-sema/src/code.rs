@@ -569,5 +569,15 @@ pub(crate) const E0298: &str = "E0298";
 /// message names the actionable cause: a non-struct shape/candidate, missing field, wrong field
 /// type, or ambiguous `using` promotion.
 ///
-/// Owned by `jr-sema`, continuing this crate's block. E0300 is the first free code.
+/// Owned by `jr-sema`, continuing this crate's block. E0300 is the next code.
 pub(crate) const E0299: &str = "E0299";
+
+/// A typed or inferred struct literal cannot be constructed as written (ADR-0239).
+///
+/// Covers the structural rules specific to the literal itself: an inferred literal with no
+/// concrete context, a non-record target, mixed named/positional entries, duplicate fields, or
+/// more positional entries than direct fields. A value with the wrong field type remains E0214,
+/// and an unknown named field remains E0218.
+///
+/// Owned by `jr-sema`, continuing this crate's block. E0301 is the first free code.
+pub(crate) const E0300: &str = "E0300";

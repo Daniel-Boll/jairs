@@ -395,7 +395,6 @@ Jaibreak's `first.jai` is the clearest primary source for a multi-target build:
 | Jai feature seen in game/library source | Jairs state | Practical impact |
 |---|---|---|
 | Procedure overloading (`immediate_quad` and other library families) | Absent | Jairs needs suffixed names or a smaller selected subset. |
-| Struct literals such as `.{}` and typed aggregate defaults | Absent | Build/config and graphics option code becomes field-by-field setup. |
 | Iterate by reference, `for *item: items` | Absent | Asset/entity updates require indexing and taking addresses manually. |
 | `#add_context` for per-thread library state | Absent | Jairs `Simp` state is process-wide rather than context/thread-local. |
 | `Code` as a value for metaprogramming | Refused in current plan | Reusable custom iteration/transformation patterns cannot be ported directly. |
@@ -407,15 +406,13 @@ Jairs evidence:
   [`docs/capabilities.md:75-91`](../../docs/capabilities.md#L75-L91)
 - polymorphic cross-file limit:
   [`docs/capabilities.md:108`](../../docs/capabilities.md#L108)
-- no struct literal:
-  [`docs/capabilities.md:252`](../../docs/capabilities.md#L252)
 - `#add_context` gap:
   [`docs/capabilities.md:87`](../../docs/capabilities.md#L87)
 
 ### Features observed but already substantially present in Jairs
 
-The projects make heavy use of `#run`, polymorphic procedures/types, `#expand`, `#c_call`,
-multiple returns, file-scope state, typed enums, fixed/dynamic arrays, and compiler-driven
+The projects make heavy use of struct literals, `#run`, polymorphic procedures/types, `#expand`,
+`#c_call`, multiple returns, file-scope state, typed enums, fixed/dynamic arrays, and compiler-driven
 builds. These should not be reported wholesale as missing: Jairs implements substantial
 versions of them. Portability still needs per-program testing because edge semantics and
 cross-file restrictions differ.

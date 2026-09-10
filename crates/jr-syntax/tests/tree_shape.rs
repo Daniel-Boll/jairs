@@ -263,6 +263,98 @@ fn mixed_postfix_chain_nests_in_source_order() {
 }
 
 // ---------------------------------------------------------------------------
+// Struct literals keep their optional type and dedicated entries
+// ---------------------------------------------------------------------------
+
+#[test]
+fn typed_struct_literal_keeps_its_type_and_named_entries() {
+    let Expr::StructLiteral(literal) = expr_of("Point.{y = 2, x = 1,}") else {
+        panic!("expected a typed struct literal");
+    };
+    assert_eq!(
+        literal
+            .explicit_type()
+            .map(|ty| ty.syntax().text().to_string()),
+        Some("Point".to_owned())
+    );
+
+    let entries: Vec<_> = literal.entries().collect();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        entries[0].name_token().map(|token| token.text().to_owned()),
+        Some("y".to_owned())
+    );
+    assert_eq!(
+        entries[0]
+            .value()
+            .map(|value| value.syntax().text().to_string()),
+        Some("2".to_owned())
+    );
+    assert_eq!(
+        entries[1].name_token().map(|token| token.text().to_owned()),
+        Some("x".to_owned())
+    );
+}
+
+#[test]
+fn inferred_struct_literal_keeps_positional_entries_and_accepts_empty() {
+    let Expr::StructLiteral(literal) = expr_of(".{1, 2,}") else {
+        panic!("expected an inferred struct literal");
+    };
+    assert!(literal.explicit_type().is_none());
+    let entries: Vec<_> = literal.entries().collect();
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|entry| entry.name_token().is_none()));
+    assert_eq!(
+        entries
+            .iter()
+            .filter_map(|entry| entry.value())
+            .map(|value| value.syntax().text().to_string())
+            .collect::<Vec<_>>(),
+        ["1", "2"]
+    );
+
+    let Expr::StructLiteral(empty) = expr_of(".{}") else {
+        panic!("expected an empty inferred struct literal");
+    };
+    assert!(empty.explicit_type().is_none());
+    assert_eq!(empty.entries().count(), 0);
+}
+
+#[test]
+fn struct_literals_participate_in_postfix_chains() {
+    let Expr::Field(field) = expr_of("Point.{x = 1}.x") else {
+        panic!("a field access should wrap the completed literal");
+    };
+    assert!(matches!(field.object(), Some(Expr::StructLiteral(_))));
+
+    let Expr::Index(index) = expr_of(".{1, 2}[0]") else {
+        panic!("an index should wrap the completed inferred literal");
+    };
+    assert!(matches!(index.base(), Some(Expr::StructLiteral(_))));
+}
+
+#[test]
+fn malformed_struct_literal_entries_report_e0136_losslessly() {
+    for source in [
+        "X :: .{x =};\n",
+        "X :: .{, x = 1};\n",
+        "X :: .{x = 1 y = 2};\n",
+    ] {
+        let parsed = parse(source, FileId::from_usize(0));
+        assert!(
+            parsed
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == Some("E0136")),
+            "expected E0136 for {source:?}, got {:?}",
+            parsed.diagnostics()
+        );
+        assert_eq!(parsed.syntax().text().to_string(), source);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Prefix vs postfix binding
 // ---------------------------------------------------------------------------
 

@@ -83,7 +83,7 @@ use rustc_hash::FxHashMap;
 
 use crate::hir::{
     BodyId, ConstValue, Expr, ExprId, FileHir, ForIterable, ItemId, ItemKind, ItemScope, Res, Stmt,
-    StmtId,
+    StmtId, StructLitEntry,
 };
 
 // ---------------------------------------------------------------------------
@@ -1027,6 +1027,12 @@ impl<'a> ResolveCtx<'a> {
                 }
                 // Only the element *type*; the elements are values and must keep their own errors.
                 Expr::ArrayLit { elem_ty, .. } => work.push(*elem_ty),
+                // As with an array literal, the explicit receiver is a type expression living in
+                // the ordinary expression arena. Inferred literals have no such child.
+                Expr::StructLit {
+                    explicit_ty: Some(explicit_ty),
+                    ..
+                } => work.push(*explicit_ty),
                 _ => {}
             }
         }
@@ -1225,6 +1231,21 @@ impl<'a> ResolveCtx<'a> {
                 self.in_type_info_argument = outer;
                 for e in elems {
                     self.resolve_top_expr(e);
+                }
+            }
+            Expr::StructLit {
+                explicit_ty,
+                entries,
+                ..
+            } => {
+                if let Some(explicit_ty) = explicit_ty {
+                    let outer = self.in_type_info_argument;
+                    self.in_type_info_argument = true;
+                    self.resolve_top_expr(*explicit_ty);
+                    self.in_type_info_argument = outer;
+                }
+                for entry in entries {
+                    self.resolve_top_expr(entry.value());
                 }
             }
             Expr::Field { receiver, .. } => {
@@ -1500,6 +1521,21 @@ impl<'a> ResolveCtx<'a> {
                     self.resolve_body_expr(body_id, e);
                 }
             }
+            Expr::StructLit {
+                explicit_ty,
+                entries,
+                ..
+            } => {
+                if let Some(explicit_ty) = explicit_ty {
+                    let outer = self.in_type_info_argument;
+                    self.in_type_info_argument = true;
+                    self.resolve_body_expr(body_id, explicit_ty);
+                    self.in_type_info_argument = outer;
+                }
+                for entry in entries {
+                    self.resolve_body_expr(body_id, entry.value());
+                }
+            }
             Expr::Field { receiver, .. } => {
                 self.resolve_body_expr(body_id, receiver);
             }
@@ -1604,6 +1640,15 @@ fn top_child_exprs(expr: &Expr) -> Vec<ExprId> {
         Expr::ArrayLit { elem_ty, elems, .. } => {
             let mut out = vec![*elem_ty];
             out.extend(elems.iter().copied());
+            out
+        }
+        Expr::StructLit {
+            explicit_ty,
+            entries,
+            ..
+        } => {
+            let mut out = explicit_ty.iter().copied().collect::<Vec<_>>();
+            out.extend(entries.iter().map(StructLitEntry::value));
             out
         }
         Expr::Field { receiver, .. } => vec![*receiver],

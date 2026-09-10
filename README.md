@@ -43,6 +43,7 @@ name = "hello"
 indent_style = "space"         # "space" or "tab"
 indent_width = 2               # new projects use two spaces; not read for tabs
 case_block_style = "next_line" # or "same_line" for `case .TEXT; {`
+struct_literal_trailing_comma = true # final comma in non-empty multiline struct literals
 max_width = 100                # breaks a long argument or parameter list. Comments are
                                # never reflowed, so a longer line can still survive.
 
@@ -57,7 +58,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0238.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0239.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -88,6 +89,14 @@ Raw pointers can now be indexed directly: `p[i]` is the unchecked, element-scale
 Existing pointer-to-array/vector/view indexing keeps its bounded-container meaning. An optimiser
 regression found by this feature is pinned too: `-O1` no longer mistakes an indirect pointer-index
 write for a dead store to the temporary slot holding the pointer.
+
+Structs can now be constructed as expressions. `Point.{x = 1, y = 2}` names its type;
+`.{x = 1, y = 2}` inherits one from a return, annotation, assignment, argument, or containing
+field. Entries may be named in any order or positional in declaration order, omitted fields are
+zeroed, and initializer expressions retain source order. The same form constructs `string` through
+its public `data` and `count` fields, which makes the counted-string scanners in
+`ora_to_atlas_test` check cleanly. Unions, variants, views, dynamic arrays, and direct file-scope
+aggregate literals remain separate decisions.
 
 Jai-shaped control flow can now be written without a parallel implementation: `then` optionally
 marks one braceless `if` statement, and `if #complete value == { case ... }` uses the same
@@ -195,7 +204,9 @@ Formatter projects can now choose `case_block_style = "same_line"` to render an 
 statement is a block as `case .TEXT; {`, with comment-free empty blocks rendered as
 `case .TAG; {}`. The default remains `"next_line"`. Newly scaffolded manifests explicitly choose
 two-space indentation, and direct formatter users, manifest-free files, examples, modules and the
-canonical corpus now use the same default (ADR-0220–ADR-0222).
+canonical corpus now use the same default (ADR-0220–ADR-0222). Multiline struct literals gain a
+final comma by default; `[fmt] struct_literal_trailing_comma = false` removes only that final comma
+without changing compact or empty literals (ADR-0239).
 
 **A project can be built by a Jairs program.** `jr build build.jr` compiles the script, runs it, and
 performs the compilations it asked for — no flag, because importing `modules/Compiler` is what makes a
@@ -255,9 +266,9 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1417** workspace tests (**1430** under gate 7), with all six ordinary gates and the LLVM gate
-  green for ADR-0238.
-- **319** `.jr` corpus files outside the fixture-module directory, **238** accepted ADRs, **26** standard library
+- **1431** workspace tests (**1444** under gate 7), with all six ordinary gates and the LLVM gate
+  green for ADR-0239.
+- **323** `.jr` corpus files outside the fixture-module directory, **239** accepted ADRs, **26** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative

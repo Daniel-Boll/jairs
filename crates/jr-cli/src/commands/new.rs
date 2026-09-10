@@ -219,6 +219,7 @@ name = \"{name}\"
 indent_style = \"space\"         # \"space\" or \"tab\"
 indent_width = 2               # spaces per level; not read when indent_style = \"tab\"
 case_block_style = \"next_line\" # \"next_line\" or \"same_line\" for a case's sole {{ ... }} block
+struct_literal_trailing_comma = true # final comma in non-empty multiline `T.{{ ... }}` / `.{{ ... }}`
 max_width = 100                # breaks a long argument or parameter list. Comments are never
 #                              # reflowed, so a longer line can still survive here.
 
@@ -296,6 +297,10 @@ mod tests {
         assert_eq!(default.indent_width, 2);
         assert_eq!(config.indent_style, default.indent_style);
         assert_eq!(config.case_block_style, default.case_block_style);
+        assert_eq!(
+            config.struct_literal_trailing_comma,
+            default.struct_literal_trailing_comma
+        );
         assert_eq!(config.max_width, default.max_width);
     }
 

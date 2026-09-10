@@ -264,6 +264,30 @@ fn the_manifest_puts_a_cases_sole_block_on_the_same_line() {
 }
 
 #[test]
+fn the_manifest_can_remove_a_multiline_struct_literals_trailing_comma() {
+    let (_guard, root) = scaffolded();
+    std::fs::write(
+        root.join("jairs.toml"),
+        "[fmt]\nstruct_literal_trailing_comma = false\n",
+    )
+    .expect("write");
+    let src = root.join("src").join("main.jr");
+    std::fs::write(
+        &src,
+        "Pair :: struct { left: s64; right: s64; }\nmain :: () {\npair := Pair.{\nleft = 1,\nright = 2,\n};\n}\n",
+    )
+    .expect("write");
+
+    let (code, _, stderr) = run_in(&root, &["fmt"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let formatted = std::fs::read_to_string(&src).expect("read");
+    assert!(
+        formatted.contains("    right = 2\n  };"),
+        "expected the configured final comma to be removed, got: {formatted:?}"
+    );
+}
+
+#[test]
 fn the_manifest_selects_tabs() {
     // Tabs were impossible before this wave: the formatter hard-coded `" ".repeat(..)`.
     let (_guard, root) = scaffolded();

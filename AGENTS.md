@@ -2119,7 +2119,11 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0300 is the first free code**; E0136 is the first free *parser* code. **E0299** refuses
+**E0301 is the first free code**; E0137 is the first free *parser* code. **E0300** refuses
+a struct literal with no concrete context or record target, mixed entry styles, duplicate fields,
+or excess positional entries (ADR-0239); a wrong field name remains E0218 and a wrong value type
+remains E0214. **E0136** is the parser's malformed struct-literal entry (ADR-0239).
+**E0299** refuses
 an invalid `$T/interface Shape` declaration or inferred structural match (ADR-0233), and
 **E0298** refuses
 two declaration-only result positions carrying the same label (ADR-0227) — **owned by

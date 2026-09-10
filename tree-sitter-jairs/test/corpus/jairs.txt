@@ -494,6 +494,121 @@ f :: () {
         (decl_stmt (var_decl name: (name (identifier)) value: (field_expr operand: (name_expr (identifier)) field: (identifier))))))))
 
 ================================================================================
+Struct literals
+================================================================================
+
+Point :: struct {
+    x: s64;
+    y: s64;
+}
+
+make :: () -> Point {
+    empty := Point.{};
+    positional: Point = .{1, 2};
+    named: Point = .{y = 4, x = 3};
+    multiline := Point.{
+        y = 6,
+        x = 5,
+    };
+    colour := .RED;
+    field := multiline.x;
+    return multiline;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    (name
+      (identifier))
+    (struct_type
+      (field_list
+        (field
+          (identifier)
+          (name_type
+            (identifier)))
+        (field
+          (identifier)
+          (name_type
+            (identifier))))))
+  (const_decl
+    (name
+      (identifier))
+    (proc
+      (param_list)
+      (ret_type
+        (name_type
+          (identifier)))
+      (block
+        (decl_stmt
+          (var_decl
+            (name
+              (identifier))
+            (struct_literal
+              (name_expr
+                (identifier)))))
+        (decl_stmt
+          (var_decl
+            (name
+              (identifier))
+            (name_type
+              (identifier))
+            (struct_literal
+              (struct_literal_entry
+                (literal_expr
+                  (integer_literal)))
+              (struct_literal_entry
+                (literal_expr
+                  (integer_literal))))))
+        (decl_stmt
+          (var_decl
+            (name
+              (identifier))
+            (name_type
+              (identifier))
+            (struct_literal
+              (struct_literal_entry
+                (identifier)
+                (literal_expr
+                  (integer_literal)))
+              (struct_literal_entry
+                (identifier)
+                (literal_expr
+                  (integer_literal))))))
+        (decl_stmt
+          (var_decl
+            (name
+              (identifier))
+            (struct_literal
+              (name_expr
+                (identifier))
+              (struct_literal_entry
+                (identifier)
+                (literal_expr
+                  (integer_literal)))
+              (struct_literal_entry
+                (identifier)
+                (literal_expr
+                  (integer_literal))))))
+        (decl_stmt
+          (var_decl
+            (name
+              (identifier))
+            (member_expr
+              (identifier))))
+        (decl_stmt
+          (var_decl
+            (name
+              (identifier))
+            (field_expr
+              (name_expr
+                (identifier))
+              (identifier))))
+        (return_stmt
+          (name_expr
+            (identifier)))))))
+
+================================================================================
 Function call
 ================================================================================
 

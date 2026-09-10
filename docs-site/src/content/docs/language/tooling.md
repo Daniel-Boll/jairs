@@ -64,12 +64,16 @@ an explicit flag still outranks it: a flag is an instruction, the file is a defa
 indent_style = "space"   # "space" or "tab"
 indent_width = 2         # new projects use two spaces; not read for tabs
 case_block_style = "next_line" # or "same_line" for `case .TEXT; {`
+struct_literal_trailing_comma = true # final comma in non-empty multiline struct literals
 max_width = 100          # breaks a long argument or parameter list; comments are never reflowed
 ```
 
 `indent_style` and `indent_width` mirror EditorConfig's own vocabulary rather than inventing one.
 `case_block_style = "same_line"` moves the opening brace of an arm whose sole statement is a block
 onto the arm header and prints a comment-free empty block as `{}`. The default is `"next_line"`.
+`struct_literal_trailing_comma` defaults to `true`: it ensures the final entry of a non-empty
+multiline `T.{ ... }` or `.{ ... }` has a comma. Set it to `false` to remove that final comma;
+compact one-line and empty literals are unchanged.
 New project manifests and formatting with no manifest both default to two spaces.
 `max_width`'s scope is narrow by measurement, not by taste: across the whole tree, 99% of the
 lines that exceed it are comments, which this formatter never reflows, and a boolean chain or a

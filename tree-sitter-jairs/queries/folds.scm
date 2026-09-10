@@ -12,3 +12,6 @@
 
 ; Argument lists (for long calls)
 (arg_list) @fold
+
+; Multiline typed and inferred record literals (ADR-0239)
+(struct_literal) @fold
