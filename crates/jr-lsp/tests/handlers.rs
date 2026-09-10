@@ -754,6 +754,29 @@ fn a_dot_on_a_string_offers_its_pseudo_fields() {
 }
 
 #[test]
+fn a_dot_on_a_dynamic_array_offers_its_three_pseudo_fields() {
+    // ADR-0136 makes all three words public places. A `[..]*Node` stack therefore has the
+    // same completion surface sema accepts: ownership pointer, used count, and capacity.
+    let source = concat!(
+        "Node :: struct {}\n\n",
+        "main :: () {\n",
+        "    stack: [..]*Node;\n",
+        "    n := stack.;\n",
+        "}\n",
+    );
+    let (db, search, file) = program(source);
+    let mut items = jr_lsp::completion(&db, file, search, Encoding::Utf8, at(source, ";\n}"));
+    items.sort_by(|left, right| left.label.cmp(&right.label));
+    let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+    assert_eq!(labels, vec!["capacity", "count", "data"]);
+    let data = items
+        .iter()
+        .find(|item| item.label == "data")
+        .expect("data");
+    assert_eq!(data.detail.as_deref(), Some("**Node"));
+}
+
+#[test]
 fn a_field_completion_carries_its_type_as_detail() {
     let source = "Point :: struct { x: s64; }\n\nmain :: () {\n    p: Point;\n    n := p.;\n}\n";
     let (db, search, file) = program(source);
