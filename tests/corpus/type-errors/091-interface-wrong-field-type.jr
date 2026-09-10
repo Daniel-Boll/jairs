@@ -1,0 +1,18 @@
+// EXPECT: E0299 — a required field matches by exact resolved type (ADR-0233).
+
+Shape :: struct {
+  value: s64;
+}
+
+Wrong :: struct {
+  value: u8;
+}
+
+read :: (value: $T/interface Shape) -> s64 {
+  return value.value;
+}
+
+main :: () {
+  value: Wrong;
+  result := read(value);
+}

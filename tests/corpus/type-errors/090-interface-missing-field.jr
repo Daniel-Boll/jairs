@@ -1,0 +1,19 @@
+// EXPECT: E0299 — every field directly declared by the interface shape is required (ADR-0233).
+
+Shape :: struct {
+  x: s64;
+  y: s64;
+}
+
+Only_X :: struct {
+  x: s64;
+}
+
+read :: (value: $T/interface Shape) -> s64 {
+  return value.x + value.y;
+}
+
+main :: () {
+  value: Only_X;
+  result := read(value);
+}

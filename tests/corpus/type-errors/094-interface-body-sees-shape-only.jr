@@ -1,0 +1,19 @@
+// EXPECT: E0218 — a constrained template body may use requirements, not caller-specific extras.
+
+Shape :: struct {
+  x: s64;
+}
+
+Candidate :: struct {
+  x: s64;
+  extra: s64;
+}
+
+read :: (value: $T/interface Shape) -> s64 {
+  return value.extra;
+}
+
+main :: () {
+  value: Candidate;
+  result := read(value);
+}

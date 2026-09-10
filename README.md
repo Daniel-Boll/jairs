@@ -57,7 +57,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0232.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0233.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -128,6 +128,14 @@ hash/equality callbacks. `table_add` and pointer-returning `table_set` are safe 
 Jairs' `(value, found)` convention, explicit cursors reject structural mutation, and allocation is
 transactional through the allocator captured by the first backing allocation. Keys and values are
 shallow copies, iteration order is unspecified, and `deinit` is explicit and idempotent.
+
+Structural data interfaces now constrain existing specialisation without adding a runtime interface
+object: `value: $T/interface Shape` requires `T` to expose every field directly declared by `Shape`.
+Field declaration order is irrelevant, extra fields are allowed, and a unique nearest field promoted
+through `using` satisfies the requirement; a missing, differently typed or ambiguous field is E0299.
+The same spelling composes under pointers as `*$T/interface Shape`. Template bodies see only the
+declared shape, while each accepted call is rechecked and lowered with the candidate's concrete field
+indices and layout.
 
 Every fresh Jairs context now has a working allocator/free pair in the VM, Cranelift and LLVM;
 assigning a custom pair and copying one through `push_context` remain unchanged. Whole-file
@@ -218,9 +226,9 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1384** workspace tests (**1397** under gate 7), with all six ordinary gates green for
-  ADR-0232. Gate 7 is unchanged and was not required for this library-only wave.
-- **304** `.jr` corpus files, **232** accepted ADRs, **26** standard library
+- **1397** workspace tests (**1410** under gate 7), with all six ordinary gates and gate 7 green
+  for ADR-0233.
+- **311** `.jr` corpus files outside the fixture-module directory, **233** accepted ADRs, **26** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative

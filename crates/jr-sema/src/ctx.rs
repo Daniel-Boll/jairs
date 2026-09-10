@@ -297,6 +297,13 @@ pub(crate) struct Ctx<'a> {
     /// same discipline `comptime_param_names` gives an array length whose value is not yet known. Each
     /// instantiation resolves `T` for real and is checked normally.
     pub(crate) poly_var_names: FxHashSet<Symbol>,
+    /// Polymorphic names temporarily mapped to an interface shape while the uninstantiated template
+    /// body is checked (ADR-0233 §5).
+    ///
+    /// These bindings are a checking surface, not concrete specialisation evidence. Layout-sensitive
+    /// intrinsics and nested inference therefore continue to treat the variable as unbound until a
+    /// clone supplies a real `proc_bindings` entry.
+    pub(crate) interface_witnesses: FxHashSet<Symbol>,
     /// Array types whose length is a **placeholder** because it named a `$N` comptime parameter of a
     /// template (ADR-0089 §2).
     ///
@@ -348,6 +355,7 @@ impl<'a> Ctx<'a> {
             value_bindings: FxHashMap::default(),
             comptime_param_names: FxHashSet::default(),
             poly_var_names: FxHashSet::default(),
+            interface_witnesses: FxHashSet::default(),
             placeholder_arrays: FxHashSet::default(),
             any_calls: FxHashMap::default(),
             hir,
@@ -488,7 +496,7 @@ impl<'a> Ctx<'a> {
             // introduced: without an instantiation there is no type yet, so it resolves to `ERROR`, which
             // is the "not concrete" state the signature phase records rather than a wrong answer. The bare
             // `T` case is handled in `resolve_type_name`, which consults the same map.
-            TypeRef::Poly(sym) => self
+            TypeRef::Poly { name: sym, .. } => self
                 .type_bindings
                 .get(&sym)
                 .copied()

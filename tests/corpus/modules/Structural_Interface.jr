@@ -1,0 +1,10 @@
+// ADR-0233 — an imported template exports its resolved data-interface constraint in `ProcSig`.
+
+Position :: struct {
+  x: s64;
+  y: s64;
+}
+
+position_sum :: (value: $T/interface Position) -> s64 {
+  return value.x + value.y;
+}

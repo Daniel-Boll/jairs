@@ -8,10 +8,10 @@ use jr_hir::{
 use jr_pool::{ContextKind, Item, Pool, PoolId};
 
 use crate::check::bin_op_text;
-use crate::code::{E0204, E0214, E0226, E0246, E0252, E0255, E0298};
+use crate::code::{E0204, E0214, E0226, E0246, E0252, E0255, E0298, E0299};
 use crate::ctx::{Ctx, Mode};
 use crate::map::TypeMap;
-use crate::sigs::{FileSignatures, ProcSig, SigEntry, SigKind};
+use crate::sigs::{FileSignatures, PolyVarSig, ProcSig, SigEntry, SigKind};
 
 // ---------------------------------------------------------------------------
 // Inputs and outputs
@@ -35,6 +35,18 @@ pub struct ImportedFile<'a> {
     pub hir: &'a FileHir,
     /// The imported file's name resolution.
     pub resolve: &'a ResolveMap,
+}
+
+/// One source polymorphic variable and every `/interface` spelling attached to it.
+///
+/// Several parameter positions may introduce the same `$T`. Keeping all constraints until they
+/// are resolved lets `Shape` and an imported alias of `Shape` compare by `PoolId` rather than by
+/// syntax (ADR-0233 §1).
+#[derive(Debug, Clone)]
+struct PolyVarRef {
+    name: jr_base::Symbol,
+    interfaces: Vec<jr_hir::TypeRefId>,
+    span: Span,
 }
 
 /// What the signature phase produces.
@@ -564,11 +576,11 @@ impl Ctx<'_> {
     /// Walks each parameter's `TypeRef` tree for [`TypeRef::Poly`] — `$T` may be nested (`*$T`, `[]$T`),
     /// so it recurses. First-seen order and de-duplication mean `swap :: (a: $T, b: $T)` yields one
     /// variable `T`, not two, which is ADR-0081 §4's "one `$T` used across several positions" case.
-    fn collect_poly_vars(&self, params: &[jr_hir::Param]) -> Vec<jr_base::Symbol> {
+    fn collect_poly_vars(&self, params: &[jr_hir::Param]) -> Vec<PolyVarRef> {
         let mut vars = Vec::new();
         for param in params {
             if let Some(id) = param.ty {
-                self.collect_poly_in_type(ExprScope::TopLevel, id, &mut vars);
+                self.collect_poly_in_type(ExprScope::TopLevel, id, param.name_span, &mut vars);
             }
         }
         vars
@@ -579,15 +591,24 @@ impl Ctx<'_> {
         &self,
         scope: ExprScope,
         id: jr_hir::TypeRefId,
-        vars: &mut Vec<jr_base::Symbol>,
+        span: Span,
+        vars: &mut Vec<PolyVarRef>,
     ) {
         match self.type_ref(scope, id) {
-            TypeRef::Poly(sym) => {
-                if !vars.contains(&sym) {
-                    vars.push(sym);
+            TypeRef::Poly { name, interface } => {
+                if let Some(existing) = vars.iter_mut().find(|var| var.name == name) {
+                    if let Some(interface) = interface {
+                        existing.interfaces.push(interface);
+                    }
+                } else {
+                    vars.push(PolyVarRef {
+                        name,
+                        interfaces: interface.into_iter().collect(),
+                        span,
+                    });
                 }
             }
-            TypeRef::Pointer(inner) => self.collect_poly_in_type(scope, inner, vars),
+            TypeRef::Pointer(inner) => self.collect_poly_in_type(scope, inner, span, vars),
             TypeRef::Array { elem, .. }
             // A `#simd [4]$T` collects its `$T` exactly as `[4]$T` does — the vector's lane type is
             // an ordinary type position (ADR-0148 §1). Whether the *inferred* element then makes a
@@ -595,14 +616,14 @@ impl Ctx<'_> {
             | TypeRef::Vector { elem, .. }
             | TypeRef::View { elem }
             | TypeRef::DynamicArray { elem } => {
-                self.collect_poly_in_type(scope, elem, vars);
+                self.collect_poly_in_type(scope, elem, span, vars);
             }
             // `Table($K, $V)` contributes both variables, in argument order (ADR-0229).
             // The application is still one nominal type; this walk only discovers the variables
             // its call-time inference must bind.
             TypeRef::Apply { args, .. } => {
                 for arg in args {
-                    self.collect_poly_in_type(scope, arg, vars);
+                    self.collect_poly_in_type(scope, arg, span, vars);
                 }
             }
             // A `$T` inside a proc-pointer or results type is not part of this sub-wave's one-`$T` slice;
@@ -754,16 +775,70 @@ impl Ctx<'_> {
         // empty, so it is lowered and declared like any other procedure (ADR-0082 §2). Only a *template*
         // — a `$T` proc with no binding — keeps its variables here.
         let is_instantiation = self.hir.proc_bindings.iter().any(|(p, _, _)| *p == proc);
+        let source_poly_vars = self.collect_poly_vars(&declaration.params);
+        let mut resolved_poly_vars = Vec::with_capacity(source_poly_vars.len());
+        if !is_instantiation {
+            for var in &source_poly_vars {
+                let mut interface = None;
+                for &interface_ref in &var.interfaces {
+                    let resolved = self.resolve_type(ExprScope::TopLevel, interface_ref, var.span);
+                    if resolved == PoolId::ERROR {
+                        continue;
+                    }
+                    if !matches!(self.pool.item(resolved), Item::StructType { .. }) {
+                        let shape = self.describe(resolved);
+                        self.diags.push(
+                            Diagnostic::error(
+                                var.span,
+                                format!(
+                                    "interface shape `{shape}` must be a struct type"
+                                ),
+                            )
+                            .with_code(E0299)
+                            .with_note(
+                                "a data interface is the set of directly declared fields on a struct",
+                            ),
+                        );
+                        continue;
+                    }
+                    match interface {
+                        None => interface = Some(resolved),
+                        Some(previous) if previous == resolved => {}
+                        Some(previous) => {
+                            let first = self.describe(previous);
+                            let second = self.describe(resolved);
+                            let name = self.interner.resolve(var.name);
+                            self.diags.push(
+                                Diagnostic::error(
+                                    var.span,
+                                    format!(
+                                        "polymorphic variable `${name}` has conflicting interfaces `{first}` and `{second}`"
+                                    ),
+                                )
+                                .with_code(E0299)
+                                .with_note(
+                                    "repeated uses of one polymorphic variable must name the same interface",
+                                ),
+                            );
+                        }
+                    }
+                }
+                resolved_poly_vars.push(PolyVarSig {
+                    name: var.name,
+                    interface,
+                });
+            }
+        }
         let poly_vars = if is_instantiation {
             Vec::new()
         } else {
-            self.collect_poly_vars(&declaration.params)
+            resolved_poly_vars.clone()
         };
         // Bind whatever variables the params introduce — for a template, to `ERROR`; for an
         // instantiation, `poly_vars` is empty but its params still mention `$T`, so bind those from
         // `proc_bindings` too, else the concrete signature would resolve `$T` to `ERROR`.
-        let vars_to_bind = self.collect_poly_vars(&declaration.params);
-        for &var in &vars_to_bind {
+        let vars_to_bind = source_poly_vars;
+        for var in &vars_to_bind {
             // An **instantiation** binds its variable to a concrete type (ADR-0082 §2), carried on the
             // expanded HIR's `proc_bindings`; the *template* binds to `ERROR`. Reading the concrete
             // binding here is what makes an instantiation's signature — and, downstream, its body —
@@ -772,9 +847,16 @@ impl Ctx<'_> {
                 .hir
                 .proc_bindings
                 .iter()
-                .find(|(p, v, _)| *p == proc && *v == var)
-                .map_or(PoolId::ERROR, |(_, _, ty)| *ty);
-            self.type_bindings.insert(var, bound);
+                .find(|(p, v, _)| *p == proc && *v == var.name)
+                .map(|(_, _, ty)| *ty)
+                .or_else(|| {
+                    resolved_poly_vars
+                        .iter()
+                        .find(|resolved| resolved.name == var.name)
+                        .and_then(|resolved| resolved.interface)
+                })
+                .unwrap_or(PoolId::ERROR);
+            self.type_bindings.insert(var.name, bound);
         }
 
         // The **baked comptime values** of this procedure's `$N` parameters, if it is an instantiation
@@ -889,8 +971,8 @@ impl Ctx<'_> {
 
         // Clear this signature's bindings before returning, so they never leak into the next signature
         // computed on the same context (ADR-0081 §1: the map is empty outside a polymorphic signature).
-        for &var in &vars_to_bind {
-            self.type_bindings.remove(&var);
+        for var in &vars_to_bind {
+            self.type_bindings.remove(&var.name);
         }
         // Clear this signature's comptime-value bindings, exactly as the type bindings above are cleared:
         // two instantiations of one template share the parameter name `N` with different values, so

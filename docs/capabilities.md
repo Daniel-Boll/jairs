@@ -9,13 +9,13 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1377** workspace tests (**1390** under gate 7), with all six ordinary gates and gate 7 green
-  for ADR-0229.
-- **299** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
-  (**310** counting those).
-- **229** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
-- **25** standard library modules under `modules/`.
-- Diagnostic codes run **E0001–E0298**; **E0299** is the first free one
+- **1397** workspace tests (**1410** under gate 7), with all six ordinary gates and gate 7 green
+  for ADR-0233.
+- **311** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
+  (**325** counting those).
+- **233** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **26** standard library modules under `modules/`.
+- Diagnostic codes run **E0001–E0299**; **E0300** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership
   table, and `crates/jr-cli/tests/codes.rs` is what makes the "first free"
   claim fail a test when it rots).
@@ -113,6 +113,7 @@ The authoritative version of this list is
 | `#insert <expr>;` of a **computed** operand — a constant or a `#run` whose text is evaluated at compile time and spliced (ADR-0073) | **At file scope a computed operand may generate only a library declaration** (E0294, ADR-0184 §4) — a phase-order refusal, not a policy one |
 | **`#code { … }`** — unquoted source spliced into the enclosing scope, sugar over `#insert` (ADR-0080) | a `Code` **value** — declined, not deferred |
 | **`$T` polymorphic procedures** — inferred from arguments directly, through pointers/views/vectors/dynamic arrays, and through parameterised nominal instances such as `*Table($K, $V)` (ADR-0081–0084, ADR-0229); instantiated once per bound-type tuple and checked/run as ordinary procedures. A template may call another template (ADR-0120), and a pure `$T` template imported from another module is specialised in its declaration file for the root program (ADR-0230) | two-way unification and explicit type arguments; an imported `$N` or mixed `$T`+`$N` instantiation (E0268); an imported polymorphic `#expand` (E0272) |
+| **Structural data interfaces** — `$T/interface Shape` requires the inferred struct to expose every field directly declared by `Shape`, by visible name and exact resolved type (ADR-0233). Order is irrelevant, extras are allowed, a unique nearest `using` promotion satisfies a requirement, pointer parameters compose, and accepted calls lower with the candidate's concrete field indices | runtime interface values or vtables; method/operator requirements; promotion inside the interface shape; constraints on polymorphic struct parameters |
 | **polymorphic structs** — `Box :: struct($T) { value: T; }` used as `Box(s64)`, keyed on `(decl, args)` (ADR-0085). Crosses a module boundary (ADR-0117), and its concrete arguments may drive a local procedure's `$T` inference (ADR-0229) | `using` on a parameterised struct; recursive `List($T)` |
 | `talloc(n)` / `reset_temporary_storage()` — a per-context bump arena, valid until reset, no per-piece free (ADR-0065) | aligned `talloc` and a configurable region size |
 | **`[N]T` sized by a `$N` comptime parameter** (ADR-0089) | a length needing *arithmetic over `N`*, or one naming a constant from another file |

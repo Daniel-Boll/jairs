@@ -169,7 +169,7 @@ pub(crate) fn program_specializations(
                 let owner_signatures = files[owner].prepared.signatures.as_ref();
                 let vars = owner_signatures
                     .proc_sig(key.0.proc)
-                    .map(|signature| signature.poly_vars.clone())
+                    .map(jr_sema::ProcSig::poly_var_names)
                     .unwrap_or_default();
                 let bindings: Vec<_> = vars.into_iter().zip(key.1.iter().copied()).collect();
                 let pool = crate::sema::read_pool(db);
@@ -200,7 +200,7 @@ pub(crate) fn program_specializations(
                     .prepared
                     .signatures
                     .proc_sig(key.0.proc)
-                    .map(|signature| signature.poly_vars.clone())
+                    .map(jr_sema::ProcSig::poly_var_names)
                     .unwrap_or_default();
                 let bindings: Vec<_> = vars.into_iter().zip(key.1.iter().copied()).collect();
                 let pool = crate::sema::read_pool(db);

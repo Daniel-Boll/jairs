@@ -84,7 +84,7 @@ use jr_hir::{
     AssignOp, Body, BodyId, ConstValue, Expr, ExprId, ExprScope, FileHir, ItemKind, Literal,
     LocalId, ParamId, ProcId, Res, ResolveMap, Stmt, StmtId,
 };
-use jr_pool::{Item, Pool, PoolId};
+use jr_pool::{FieldLookup, FieldStep, Item, Pool, PoolId};
 use jr_sema::{FileSignatures, TypeMap};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -4613,48 +4613,35 @@ impl Lower<'_> {
             let index = jr_pool::Pool::context_field(self.interner.resolve(name))?;
             return Some((place.project(Projection::Field(index)), field_ty));
         }
-        match self.pool.item(ty) {
-            // All three aggregate forms keep their fields in one side table (ADR-0068 §2), so a
-            // field lookup reaches them the same way. The lookup is by the *instance* type, so a
-            // parameterised `Box(s64)`'s `value` field is `s64` (ADR-0085 §2); an ordinary struct
-            // reads the same fields it always has.
-            Item::StructType { .. } | Item::UnionType { .. } | Item::VariantType { .. } => {}
-            _ => return None,
-        }
-        let fields = self.pool.fields_of(ty)?.to_vec();
-        // A direct field first — its own declaration shadows an embedded one, matching
-        // `jr-sema`'s `check_field` (ADR-0050 §4).
-        if let Some(index) = fields.iter().position(|field| field.name == name) {
-            let field_ty = fields[index].ty;
-            let index = u32::try_from(index).ok()?;
-            let projected = place.project(Projection::Field(index));
-            // Remembered here, where the receiver's *type* is in hand, so that `assign` can emit the
-            // tag store without re-deriving it (ADR-0068 §4). Recorded only for a variant, so the map
-            // stays empty for every program that declares none.
-            if matches!(self.pool.item(ty), Item::VariantType { .. }) {
-                self.variant_cases.insert(projected.clone(), index);
-            }
-            return Some((projected, field_ty));
-        }
-        // **Then a field of a `using`-embedded base**, which is what makes `e.x` reach
-        // `e.base.x` (ADR-0050 §4). Missing this was not a compile error: sema accepted `e.x`
-        // through its own embedded search and MIR returned `None`, which `give_up` turned into a
-        // refused body and a trap at run time. Two searches that must agree, so both are written
-        // against the same `using` flag on the same field list — the shape ADR-0050 §4 chose
-        // precisely so that no *offset* is computed twice.
-        for (index, field) in fields.iter().enumerate() {
-            if !field.using {
-                continue;
-            }
-            let index = u32::try_from(index).ok()?;
-            let base_place = place.clone().project(Projection::Field(index));
-            // Recurses, so an embedding nested more than one deep resolves — the transitivity
-            // ADR-0050 §4 promises, and untestable with a single level of nesting.
-            if let Some(found) = self.project_field(base_place, field.ty, name) {
-                return Some(found);
+        let FieldLookup::Unique { ty: field_ty, path } = self.pool.visible_field(ty, name) else {
+            // Sema reports a missing or ambiguous field and poisons the expression before MIR is
+            // requested. Reaching either here means the caller asked us to lower a failed body.
+            return None;
+        };
+
+        // The pool decided the name once and returned an executable path (ADR-0233 §3). Applying
+        // it here rather than searching again is what makes sema and MIR structurally incapable of
+        // choosing different `using` branches and therefore different offsets.
+        for step in path {
+            match step {
+                FieldStep::Deref => {
+                    place = place.project(Projection::Deref);
+                    ty = self.pointee(ty)?;
+                }
+                FieldStep::Field(index) => {
+                    let fields = self.pool.fields_of(ty)?;
+                    let field = fields.get(usize::try_from(index).ok()?)?;
+                    let projected = place.project(Projection::Field(index));
+                    if matches!(self.pool.item(ty), Item::VariantType { .. }) {
+                        self.variant_cases.insert(projected.clone(), index);
+                    }
+                    place = projected;
+                    ty = field.ty;
+                }
             }
         }
-        None
+        debug_assert_eq!(ty, field_ty);
+        Some((place, field_ty))
     }
 
     /// The field position sema recorded for an `#soa` access whose receiver is `index_expr`.

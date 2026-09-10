@@ -410,6 +410,12 @@ struct Parser<'src> {
     depth_error_reported: bool,
     /// Trivia tokens that have been lexed but not yet emitted into the tree.
     pending_trivia: Vec<Token>,
+    /// Whether a `$T` parsed at the current position may carry `/interface Shape`.
+    ///
+    /// Structural data interfaces constrain procedure inference (ADR-0233); accepting the suffix
+    /// on a struct parameter, field or return type would preserve syntax whose constraint no
+    /// specialisation path reads.
+    allow_poly_interface: bool,
 }
 
 impl<'src> Parser<'src> {
@@ -424,6 +430,7 @@ impl<'src> Parser<'src> {
             depth: 0,
             depth_error_reported: false,
             pending_trivia: Vec::new(),
+            allow_poly_interface: false,
         }
     }
 
@@ -1304,7 +1311,10 @@ impl<'src> Parser<'src> {
             // reads the marker separately from the element type.
             let _ = self.eat(DOT_DOT);
             if self.at_set(TYPE_START) {
+                let previous = self.allow_poly_interface;
+                self.allow_poly_interface = true;
                 self.parse_type();
+                self.allow_poly_interface = previous;
             } else {
                 let span = self.current_span();
                 self.error(span, "expected a type for parameter", E0107);
@@ -1536,6 +1546,14 @@ impl<'src> Parser<'src> {
                 // a child of the same node, so existing consumers still meet one polymorphic type
                 // shape and can opt into the new accessor independently.
                 if self.eat(SLASH) {
+                    if !self.allow_poly_interface {
+                        let span = self.current_span();
+                        self.error(
+                            span,
+                            "`/interface` is only allowed on a polymorphic procedure parameter",
+                            E0135,
+                        );
+                    }
                     if self.at(IDENT) && self.current_token_text() == "interface" {
                         self.bump(); // contextual `interface`
                         if self.at_set(TYPE_START) {

@@ -164,6 +164,25 @@ fn malformed_polymorphic_interfaces_report_e0135_losslessly() {
     }
 }
 
+#[test]
+fn polymorphic_interfaces_are_refused_outside_procedure_parameters() {
+    for source in [
+        "Box :: struct($T/interface Shape) { value: T; }\n",
+        "bad :: () -> $T/interface Shape { todo; }\n",
+    ] {
+        let parsed = parse(source, FileId::from_usize(0));
+        assert!(
+            parsed
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == Some("E0135")),
+            "expected E0135 for {source:?}, got {:?}",
+            parsed.diagnostics()
+        );
+        assert_eq!(parsed.syntax().text().to_string(), source);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Postfix chains must nest, with the receiver inside
 // ---------------------------------------------------------------------------
