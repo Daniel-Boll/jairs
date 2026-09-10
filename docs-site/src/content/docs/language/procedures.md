@@ -51,7 +51,8 @@ hatch — visible in a diff, unlike a wrapper that swallows the flag silently.
 
 ## Named and default arguments
 
-Arguments can be passed by name, in any order, and a parameter can have a **literal** default:
+Arguments can be passed by name, in any order, and a parameter can have a **literal** default.
+The explicit form declares its type:
 
 ```jr
 box :: (width: s64, height: s64 = 1, label: string = "box") -> s64 {
@@ -65,10 +66,24 @@ main :: () {
 }
 ```
 
-Defaults must be literals for now. Named arguments and omitted defaults work across module
-boundaries and inside `#run`, using the same resolved positional list as an ordinary call.
-Non-literal defaults and Jai's inferred parameter spelling such as `height := 1` remain
-<span class="jairs-status absent">absent</span>.
+The inferred form `name := literal` derives one fixed natural type from the declaration:
+
+```jr
+measure :: (count := 10, marker := #char "x", ratio := 0.5,
+            enabled := true, label := "box") -> s64 {
+    return count;
+}
+```
+
+Integer and `#char` defaults infer `s64`; floats infer `float64`; booleans infer `bool`; and
+strings infer `string`. A supplied argument is checked against that fixed type rather than
+changing it. `null` has no natural pointer type, so write an explicit default such as
+`next: *Node = null`; bare `next := null` reports E0257.
+
+Both forms work for ordinary local and imported procedures and for `#run` calls. Defaults must
+still be literals. Inferred defaults on `$T`, `$N`, or `$$T` template/comptime procedures report
+E0252 because template call binding does not yet use the ordinary filled-argument/default binder.
+Procedure-pointer types also carry no parameter-name or default metadata.
 
 ## Aggregate returns
 

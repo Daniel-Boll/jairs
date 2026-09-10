@@ -22,6 +22,25 @@ fn lower(source: &str) -> (jr_hir::FileHir, jr_diag::Diagnostics, Interner) {
 }
 
 #[test]
+fn inferred_parameter_defaults_reach_hir_without_synthetic_types() {
+    let (hir, diags, _) = lower("hello :: (amount := 9, typed: s64 = 10) {}\n");
+    assert!(diags.is_empty(), "{diags:?}");
+    let inferred = &hir.procs[0].params[0];
+    assert!(inferred.inferred);
+    assert!(inferred.ty.is_none());
+    let default = inferred.default.expect("inferred parameter default");
+    assert!(matches!(
+        hir.expr(default),
+        Expr::Literal(Literal::Int { value: 9, .. }, _)
+    ));
+
+    let typed = &hir.procs[0].params[1];
+    assert!(!typed.inferred);
+    assert!(typed.ty.is_some());
+    assert!(typed.default.is_some());
+}
+
+#[test]
 fn named_result_labels_reach_hir_without_becoming_types() {
     let source = concat!(
         "expect_char :: (s: *string, c: u8) -> (exists: bool) {\n",

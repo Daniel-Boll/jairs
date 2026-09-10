@@ -8,7 +8,7 @@ mod harness;
 
 use harness::Program;
 use jr_hir::{BodyId, ExprId, ExprScope, LocalId};
-use jr_pool::PoolId;
+use jr_pool::{Item, PoolId};
 
 // ---------------------------------------------------------------------------
 // ADR-0016 §1 — context-typed integer literals
@@ -521,6 +521,84 @@ fn a_constant_cycle_is_reported_once() {
 // ---------------------------------------------------------------------------
 // Calls
 // ---------------------------------------------------------------------------
+
+#[test]
+fn inferred_parameter_defaults_get_fixed_natural_types() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "inferred :: (whole := 9, ratio := 0.5, flag := true, label := \"x\", negative := -9) -> s64 {\n\
+             return whole + negative;\n\
+         }\n\
+         main :: () {\n\
+             a := inferred();\n\
+             b := inferred(10, ratio = 1.5, flag = false, label = \"y\", negative = -10);\n\
+         }\n",
+    );
+    analysis.assert_silent();
+    assert!(
+        analysis.earlier_diagnostics.is_empty(),
+        "{:?}",
+        analysis.earlier_diagnostics
+    );
+
+    let inferred = program.interner.get("inferred").unwrap();
+    let proc = analysis
+        .signatures
+        .lookup(inferred)
+        .and_then(|entry| entry.proc)
+        .unwrap();
+    let sig = analysis.signatures.proc_sig(proc).unwrap();
+    assert_eq!(sig.params[0], PoolId::S64);
+    assert!(matches!(
+        program.pool.item(sig.params[1]),
+        Item::FloatType { bits: 64 }
+    ));
+    assert_eq!(sig.params[2], PoolId::BOOL);
+    assert_eq!(sig.params[3], PoolId::STRING);
+    assert_eq!(sig.params[4], PoolId::S64);
+    assert!(sig.defaults.iter().all(Option::is_some));
+}
+
+#[test]
+fn supplied_arguments_do_not_reinfer_an_inferred_parameter() {
+    let mut program = Program::new();
+    let analysis = program.analyse("take :: (amount := 9) {}\nmain :: () {\n    take(true);\n}\n");
+    assert_eq!(analysis.codes(), vec!["E0214"]);
+}
+
+#[test]
+fn null_cannot_infer_a_parameter_type() {
+    let mut program = Program::new();
+    let analysis = program.analyse("take :: (pointer := null) {}\n");
+    assert_eq!(analysis.codes(), vec!["E0257"]);
+}
+
+#[test]
+fn inferred_parameter_defaults_are_still_literal_only() {
+    let mut program = Program::new();
+    let analysis = program.analyse("SIZE :: 9;\ntake :: (amount := SIZE) {}\n");
+    assert_eq!(analysis.codes(), vec!["E0252"]);
+}
+
+#[test]
+fn inferred_defaults_are_refused_on_template_procedures() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "typed :: (value: $T, amount := 9) -> T { return value; }\n\
+         valued :: ($N := 9) -> s64 { return N; }\n",
+    );
+    assert_eq!(analysis.codes(), vec!["E0252", "E0252"]);
+}
+
+#[test]
+fn inferred_defaults_remain_illegal_on_foreign_parameters() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "libc :: #system_library \"c\";\n\
+         read :: (fd := 1, data: *u8, count: s64) -> s64 #foreign libc \"read\";\n",
+    );
+    assert_eq!(analysis.codes(), vec!["E0252"]);
+}
 
 #[test]
 fn assert_records_an_unmessaged_check() {

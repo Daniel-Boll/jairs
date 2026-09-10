@@ -9,7 +9,7 @@ use jr_hir::{
 use jr_pool::{ContextKind, Item, Pool, PoolId};
 
 use crate::check::bin_op_text;
-use crate::code::{E0204, E0214, E0226, E0246, E0252, E0255, E0298, E0299};
+use crate::code::{E0204, E0214, E0226, E0246, E0252, E0255, E0257, E0298, E0299};
 use crate::ctx::{Ctx, Mode};
 use crate::map::TypeMap;
 use crate::sigs::{FileSignatures, PolyVarSig, ProcSig, SigEntry, SigKind};
@@ -651,12 +651,11 @@ impl Ctx<'_> {
         }
     }
 
-    fn param_default(
+    fn param_default_literal(
         &mut self,
         param: &jr_hir::Param,
-        ty: PoolId,
         foreign: bool,
-    ) -> Option<PoolId> {
+    ) -> Option<(Literal, Span)> {
         let expr = param.default?;
         let span = param.name_span;
         // A `#foreign` procedure's parameters are the C function's, and Jairs does not control its
@@ -681,9 +680,44 @@ impl Ctx<'_> {
             );
             return None;
         };
+        Some((literal, lit_span))
+    }
+
+    /// The fixed type inferred by `name := literal` (ADR-0235).
+    ///
+    /// These are the same no-context defaults ordinary expression checking uses. `null` is the
+    /// deliberate exception: ADR-0060 gives it no fallback pointer type, so inference must ask for
+    /// an explicit annotation rather than guess `*u8`.
+    fn inferred_param_type(&mut self, literal: &Literal, span: Span) -> PoolId {
+        match literal {
+            Literal::Bool(_) => PoolId::BOOL,
+            Literal::Str(_) => PoolId::STRING,
+            Literal::Int { .. } => PoolId::S64,
+            Literal::Float { .. } => self.pool.intern(Item::FloatType { bits: 64 }),
+            Literal::Null => {
+                self.diags.push(
+                    Diagnostic::error(span, "`null` cannot infer a parameter type")
+                        .with_code(E0257)
+                        .with_note("unlike an integer literal, `null` has no default pointer type")
+                        .with_help("write an explicit pointer type, e.g. `p: *u8 = null`"),
+                );
+                PoolId::ERROR
+            }
+        }
+    }
+
+    fn intern_param_default(
+        &mut self,
+        literal: &Literal,
+        ty: PoolId,
+        span: Span,
+    ) -> Option<PoolId> {
+        if ty == PoolId::ERROR {
+            return None;
+        }
         // Checked against the parameter's own type through the *existing* literal fit rule
         // (ADR-0016 §1, ADR-0038), so `b: u8 = 300` is the established E0204 rather than a new code.
-        self.intern_default(&literal, ty, lit_span)
+        self.intern_default(literal, ty, span)
     }
 
     /// Interns a literal as a value of type `ty`, reporting a mismatch.
@@ -784,6 +818,8 @@ impl Ctx<'_> {
         // — a `$T` proc with no binding — keeps its variables here.
         let is_instantiation = self.hir.proc_bindings.iter().any(|(p, _, _)| *p == proc);
         let source_poly_vars = self.collect_poly_vars(&declaration.params);
+        let source_is_template =
+            !source_poly_vars.is_empty() || declaration.params.iter().any(|param| param.comptime);
         let mut resolved_poly_vars = Vec::with_capacity(source_poly_vars.len());
         if !is_instantiation {
             for var in &source_poly_vars {
@@ -897,14 +933,42 @@ impl Ctx<'_> {
         let mut comptime_params = Vec::with_capacity(declaration.params.len());
         let mut variadic_params = Vec::with_capacity(declaration.params.len());
         for param in &declaration.params {
-            let ty = match param.ty {
+            if param.inferred && source_is_template && !is_instantiation {
+                self.diags.push(
+                    Diagnostic::error(
+                        param.name_span,
+                        "an inferred default is not yet supported on a polymorphic procedure",
+                    )
+                    .with_code(E0252)
+                    .with_note(
+                        "template calls bind their type or compile-time arguments before the ordinary default-argument binder runs",
+                    )
+                    .with_help(
+                        "write an explicit parameter type and pass this argument at every template call",
+                    ),
+                );
+            }
+            let explicit_ty = match param.ty {
                 // Parameter types live in `FileHir::type_refs`, not in
                 // `Proc::type_refs`, which is always empty.
                 Some(id) => self.resolve_type(ExprScope::TopLevel, id, param.name_span),
                 None => PoolId::ERROR,
             };
+            let default_literal = self.param_default_literal(param, foreign);
+            let ty = if param.inferred {
+                default_literal
+                    .as_ref()
+                    .map_or(PoolId::ERROR, |(literal, span)| {
+                        self.inferred_param_type(literal, *span)
+                    })
+            } else {
+                explicit_ty
+            };
             names.push(param.name);
-            defaults.push(self.param_default(param, ty, foreign));
+            defaults.push(
+                default_literal
+                    .and_then(|(literal, span)| self.intern_param_default(&literal, ty, span)),
+            );
             // A `$N` parameter's *type* is ordinary and resolved above; the mark only affects when its
             // value is known (ADR-0087 §1), so its `ty` is real — which is what lets the body check.
             comptime_params.push(param.comptime);

@@ -1304,31 +1304,43 @@ impl<'src> Parser<'src> {
         self.eat(DOLLAR);
         if self.at(IDENT) {
             self.bump(); // param name
-            self.expect(COLON);
-            // `args: ..Any` — a variadic parameter (ADR-0138). The `..` before the type marks
-            // the parameter as collecting the caller's trailing arguments into a `[]T` view of
-            // the element type that follows. Bumped as a child token of `PARAM`, so the AST
-            // reads the marker separately from the element type.
-            let _ = self.eat(DOT_DOT);
-            if self.at_set(TYPE_START) {
-                let previous = self.allow_poly_interface;
-                self.allow_poly_interface = true;
-                self.parse_type();
-                self.allow_poly_interface = previous;
-            } else {
-                let span = self.current_span();
-                self.error(span, "expected a type for parameter", E0107);
-            }
-            // `= 10` — a default value (ADR-0053 §2). Any expression parses here; sema refuses
-            // anything but a literal, with a message saying why. Accepting only a literal in the
-            // parser would report "expected a literal" for `= SIZE`, which is true and unhelpful:
-            // the reader needs to know the value must be one *because* const-eval runs later.
-            if self.eat(EQ) {
+            // `amount := 9` — infer the parameter's fixed type from its literal default
+            // (ADR-0235). The expression is parsed with the same permissive surface as `= 9`;
+            // sema owns both the literal-only rule and the inference.
+            if self.eat(COLON_EQ) {
                 if self.at_set(EXPR_START) {
                     self.parse_expr();
                 } else {
                     let span = self.current_span();
-                    self.error(span, "expected a default value after `=`", E0130);
+                    self.error(span, "expected a default value after `:=`", E0130);
+                }
+            } else {
+                self.expect(COLON);
+                // `args: ..Any` — a variadic parameter (ADR-0138). The `..` before the type marks
+                // the parameter as collecting the caller's trailing arguments into a `[]T` view of
+                // the element type that follows. Bumped as a child token of `PARAM`, so the AST
+                // reads the marker separately from the element type.
+                let _ = self.eat(DOT_DOT);
+                if self.at_set(TYPE_START) {
+                    let previous = self.allow_poly_interface;
+                    self.allow_poly_interface = true;
+                    self.parse_type();
+                    self.allow_poly_interface = previous;
+                } else {
+                    let span = self.current_span();
+                    self.error(span, "expected a type for parameter", E0107);
+                }
+                // `= 10` — a default value (ADR-0053 §2). Any expression parses here; sema refuses
+                // anything but a literal, with a message saying why. Accepting only a literal in the
+                // parser would report "expected a literal" for `= SIZE`, which is true and unhelpful:
+                // the reader needs to know the value must be one *because* const-eval runs later.
+                if self.eat(EQ) {
+                    if self.at_set(EXPR_START) {
+                        self.parse_expr();
+                    } else {
+                        let span = self.current_span();
+                        self.error(span, "expected a default value after `=`", E0130);
+                    }
                 }
             }
         } else {
@@ -3290,6 +3302,26 @@ mod tests {
     #[test]
     fn proc_with_params_and_return() {
         check_no_errors("add :: (a: s64, b: s64) -> s64 { return a + b; }");
+    }
+
+    #[test]
+    fn inferred_parameter_defaults_parse_and_round_trip() {
+        let source = "hello :: (a := 9, b: s64 = 10, label := \"x\") {}";
+        check_no_errors(source);
+        check_round_trip(source);
+    }
+
+    #[test]
+    fn inferred_parameter_default_needs_a_value() {
+        let parsed = parse("hello :: (a :=) {}", file());
+        assert!(
+            parsed
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == Some("E0130")),
+            "expected E0130, got {:?}",
+            parsed.diagnostics()
+        );
     }
 
     #[test]

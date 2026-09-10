@@ -395,6 +395,16 @@ Status of each slice component, so this is answerable without reading the tree.
 > | `tests/corpus` | `valid/165` executes local file/body defaults and named reordering; `imports/valid/020` now compile-time-asserts both behaviours through an imported procedure. |
 > | Documentation | The stale claims that imported and `#run` named/default arguments were absent are removed; inferred and non-literal defaults remain explicit gaps. |
 
+> **ADR-0235 component delta.**
+>
+> | Component | Current delta |
+> |---|---|
+> | `jr-syntax` / `jr-hir` | A parameter may spell `name := expression`; the CST/HIR preserve that inference was written while retaining the default expression and no synthetic annotation. |
+> | `jr-sema` | Literal defaults fix the parameter to the ordinary natural type (`s64`, `float64`, `bool` or `string`); supplied arguments do not re-infer it. `null` remains E0257, non-literals/foreign defaults remain E0252, and inferred defaults on `$T`/`$N`/`$$T` procedures are honestly refused until template calls use the ordinary binder. |
+> | `jr-fmt` / `tree-sitter-jairs` / editors | Formatting preserves `:=`; Tree-sitter exposes a default with no type field. A dynamic completed-parse preference restores `result_list` after the new alternative changed GLR scoring, while a following arrow still selects a returned procedure-pointer type. Neovim pins both shapes. |
+> | `jr-lsp` | Hover and signature help render the resolved inferred type rather than the absent source annotation. |
+> | Tests / documentation | Fourteen Rust tests plus one dynamic chapter-17 compatibility probe cover parsing, lowering, natural types, refusals, formatting and LSP rendering. `valid/166`, `type-errors/095` and the imported fixture execute the ordinary and `#run` paths. |
+
 | Component | Status | Notes |
 |---|---|---|
 | `modules/Game` | **Foundation done** | **ADR-0210 decides ADR-0208's six forks and lands the first slice.** A caller owns `App`; `open(width, height, title)` starts SDL, creates the window, selects top-left/y-down Simp coordinates and unwinds every completed step if GL setup fails. `begin_frame` drains once, latches close, and records an unclamped non-negative delta; `end_frame` presents; `close` is idempotent and destroys Simp before the window and SDL. A private guard refuses a second simultaneous App because Simp has one process-global renderer; the lifecycle stays on one thread. Two native integration tests cover a real synthetic-quit/reopen lifecycle and the dummy driver's no-GL unwind. **Not game-ready v1:** held input, primitive helpers, generation-tagged resources, PNG, text and audio are later slices. |
@@ -729,33 +739,41 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0234 closes named/default argument parity for `#run`.**
-> Sema remains the only argument binder. The signature phase now preserves file-level binding
-> evidence, `jr-db` merges it with body-call evidence, and the standalone MIR thunk consumes the
-> same positional list ordinary procedure lowering does. Local and imported calls may omit literal
-> defaults or reorder names at file scope and inside a body.
+> **ADR-0235 closes the pinned guide's inferred literal-default spelling.**
+> `amount := 9` is a defaulted parameter with one declaration-fixed type, not a caller-inferred
+> generic. The resolved `ProcSig` remains the authority consumed by ordinary local/imported calls
+> and `#run`; the source HIR records that inference was written without inventing a type annotation.
 
-**1397 workspace tests (1410 under gate 7), 312 corpus files outside fixture modules, 234 ADRs and
-26 modules.** The Rust test count holds because the new executable file is covered by the existing
-parser, MIR snapshot and differential harnesses. `valid/165` makes omitted and same-arity reordered
-arguments observable in both scopes; `imports/valid/020` compile-time-asserts the same two behaviours
-through another module.
+**1412 workspace tests (1425 under gate 7), 314 corpus files outside fixture modules, 235 ADRs and
+26 modules.** Fourteen added Rust tests plus the manifest-generated chapter-17 probe move the test
+count by fifteen; `valid/166` and `type-errors/095` move the corpus count by two. All six ordinary
+gates are green. Gate 7 was not required because this wave changes no MIR, layout, pool layout or
+back end.
 
-The old query-order rationale was stale: `file_consts` already requested `checked`. The remaining
-defect was that `SignatureOutput` computed file-level `filled_calls` and discarded them, while
-`lower_const` had no input slot for the map. ADR-0196's claim that a `#run` could already use a
-default was true only inside a reached procedure body and is corrected by ADR-0234.
+Integer and `#char` defaults infer `s64`, floats `float64`, booleans `bool`, and strings `string`.
+An explicit supplied argument is checked against that fixed type. `null` reuses E0257 because it has
+no honest default pointer type. Non-literal defaults and inferred defaults on template/comptime
+procedures remain E0252.
+
+The editor check caught the wave's subtle failure: Tree-sitter parsed every corpus file with zero
+errors but classified `-> (s64, bool)` as an optional-arrow procedure-pointer type. A dynamic
+completed-parse preference restores the result-list shape while a following `->` still forces the
+procedure-pointer reading. This is the exact wrong-tree/clean-parse gap `verify.lua` exists to catch.
 **E0300** is the first free global diagnostic code; **E0136** is the first free parser code.
 
-### Next wave: inferred default parameter syntax
+### Next wave: template calls consume the ordinary argument binder
 
-The pinned guide demonstrates `amount := 9` in a parameter list. The recommended first slice infers
-the parameter type from the same literal default forms Jairs already interns, preserves the existing
-`name: Type = literal` form, and refuses a default whose type cannot be inferred honestly (notably
-`null` without a declared pointer type). Do not use this syntax change to smuggle in arbitrary
-default expressions: constants, calls, aggregate defaults, `context` values and caller-location
-defaults need a separate decision about declaration scope, call-site scope, evaluation timing and
-side effects.
+The inferred-default implementation exposed the nearer default-argument gap: `$T`, `$N` and `$$T`
+calls dispatch before `fill_arguments`, so they require exact source arity and cannot honestly
+advertise omission or named reordering. The recommended first slice routes **pure `$T` templates**
+through the same positional binding before type inference, while allowing defaults only on ordinary
+non-polymorphic parameters. That keeps type-variable inference sourced from real supplied arguments
+and avoids pretending a default can invent `T`.
+
+Defaulted `$N` positions are a separate follow-up because the template path currently carries the
+source `ExprId`, while an omitted default is already an interned value. Non-literal defaults remain
+after both binder slices: constants, calls, aggregates, `context` values and caller-location defaults
+still need decisions about declaration scope, evaluation timing and side effects.
 
 After that default-argument slice, the parity-module queue is `Pool`/`Flat_Pool` first if the new
 `New` + `[..]T` + `Table(K,V)` composition should be exercised immediately; `Text_File_Handler` is

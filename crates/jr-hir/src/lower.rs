@@ -630,6 +630,7 @@ impl<'a> LowerCtx<'a> {
                     using: p.is_using(),
                     comptime: p.is_comptime() || type_is_comptime_poly,
                     variadic: p.is_variadic(),
+                    inferred: p.is_inferred(),
                     default,
                 });
             }

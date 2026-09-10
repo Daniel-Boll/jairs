@@ -14,3 +14,9 @@ add :: (a: s64, b: s64 = 3) -> s64 {
 three :: (a: s64, b: s64, c: s64 = 100) -> s64 {
   return a + b + c;
 }
+
+/// The ADR-0235 spelling, so imports/valid/020 proves inferred defaults cross
+/// the same module boundary as explicitly typed defaults.
+inferred :: (a := 4, b := 6) -> s64 {
+  return a * 10 + b;
+}

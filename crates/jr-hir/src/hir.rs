@@ -1164,6 +1164,12 @@ pub struct Param {
     /// `[]T`; the caller's trailing arguments are packed into a stack-allocated array and a
     /// view of that array is passed. Must be the **last** parameter, and there is at most one.
     pub variadic: bool,
+    /// `true` for `name := literal`, whose fixed type is inferred from the default while resolving
+    /// the procedure signature (ADR-0235).
+    ///
+    /// `ty` deliberately remains `None`: the source wrote no annotation, and sema already owns the
+    /// natural no-context type of each literal kind.
+    pub inferred: bool,
     /// The default value, for `b: s64 = 10` (ADR-0053 §2).
     ///
     /// Lowered as an ordinary expression so the tree stays faithful; **sema refuses anything but a

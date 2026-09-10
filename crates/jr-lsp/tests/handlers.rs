@@ -1038,6 +1038,15 @@ fn hovering_a_parameter_at_its_declaration_shows_its_type() {
 }
 
 #[test]
+fn hovering_an_inferred_parameter_shows_its_resolved_type() {
+    let source = "take :: (amount := 9) -> s64 {\n    return amount;\n}\n";
+    let (db, search, file) = program(source);
+    let found = hover(&db, file, search, Encoding::Utf8, at(source, "amount :="))
+        .expect("an inferred parameter declaration hovers");
+    assert_eq!(hover_text(&found.contents), "```jr\nmain\namount: s64\n```");
+}
+
+#[test]
 fn hovering_a_local_at_its_declaration_shows_its_type() {
     let source = "main :: () {\n    total := 7;\n}\n";
     let (db, search, file) = program(source);
@@ -2103,6 +2112,28 @@ fn signature_help_lists_parameters_with_their_types() {
         })
         .collect();
     assert_eq!(labels, vec!["a: s64", "b: s64"]);
+}
+
+#[test]
+fn signature_help_renders_inferred_parameter_types() {
+    let source = "take :: (amount := 9, label := \"x\") -> s64 {\n    return amount;\n}\n\nmain :: () {\n    n := take(1);\n}\n";
+    let (db, search, _f) = program(source);
+    let file = db.source_file("/jairs-lsp-test/main.jr").expect("added");
+    let help = jr_lsp::signature_help(&db, file, search, Encoding::Utf8, at(source, "1);"))
+        .expect("inside a call");
+    assert_eq!(
+        help.signatures[0].label,
+        "take :: (amount: s64, label: string) -> s64"
+    );
+    let params = help.signatures[0].parameters.as_ref().expect("parameters");
+    let labels: Vec<String> = params
+        .iter()
+        .map(|parameter| match &parameter.label {
+            lsp_types::ParameterLabel::Simple(text) => text.clone(),
+            other => panic!("expected a simple label, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(labels, vec!["amount: s64", "label: string"]);
 }
 
 #[test]

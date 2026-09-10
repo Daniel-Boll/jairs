@@ -826,6 +826,23 @@ impl Formatter {
         {
             self.emit(name_tok.text());
         }
+
+        // `amount := 9` — the parameter's fixed type is inferred from its literal default
+        // (ADR-0235). Preserve the source distinction rather than manufacturing a type
+        // annotation the user did not write. This branch must precede the typed spelling:
+        // otherwise the unconditional `: ` below would turn `:=` into an incomplete type.
+        let inferred = node
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .any(|t| t.kind() == COLON_EQ);
+        if inferred {
+            self.emit(" := ");
+            if let Some(default) = node.children().find(|n| is_expr_kind(n.kind())) {
+                self.format_expr(&default);
+            }
+            return;
+        }
+
         self.emit(": ");
         // `args: ..T` — a variadic parameter (ADR-0138). The `..` precedes the type; a
         // formatter that dropped it would silently turn a variadic parameter into a
@@ -2925,6 +2942,42 @@ mod tests {
         let out = fmt(src);
         assert!(out.contains("(a: s64, b: s64 = 10)"), "got: {out}");
         assert!(out.contains("f(1, b = 2)"), "got: {out}");
+        assert_parses(&out);
+    }
+
+    /// Inferred and typed defaults share a parameter list without losing which spelling was written.
+    #[test]
+    fn inferred_parameter_defaults_are_canonicalised() {
+        let src = "f :: (amount:=9, scale:float64=1.5, enabled:=true, label:=\"ok\") -> s64 { return amount; }\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("(amount := 9, scale: float64 = 1.5, enabled := true, label := \"ok\")"),
+            "got:\n{out}"
+        );
+        assert_idempotent(src);
+        assert_parses(&out);
+    }
+
+    /// Width-driven parameter breaking must treat inferred defaults exactly like typed parameters.
+    #[test]
+    fn mixed_inferred_parameter_defaults_break_one_per_line() {
+        let src = "f :: (amount:=9, scale:float64=1.5, enabled:=true, label:=\"a deliberately long label\") -> s64 { return amount; }\n";
+        let config = Config {
+            max_width: 60,
+            ..Config::default()
+        };
+        let out = format(src, file(), &config).expect("format failed");
+        assert!(
+            out.contains(
+                "f :: (\n  amount := 9,\n  scale: float64 = 1.5,\n  enabled := true,\n  label := \"a deliberately long label\",\n) -> s64 {"
+            ),
+            "got:\n{out}"
+        );
+        let twice = format(&out, file(), &config).expect("second format failed");
+        assert_eq!(
+            out, twice,
+            "multiline inferred parameters must be idempotent"
+        );
         assert_parses(&out);
     }
 
