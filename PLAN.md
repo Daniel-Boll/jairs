@@ -352,12 +352,27 @@ Status of each slice component, so this is answerable without reading the tree.
 > `*Table($K, $V)` introduces both variables and binds them from the concrete nominal instance's type
 > arguments. Inference requires the same declaration identity before recursing, so equal names or
 > field layouts cannot unify distinct structs. The constructor may be local or imported; the
-> procedure itself must still be local until the next root-scoped specialization wave.
+> procedure may now be imported under ADR-0230.
+>
+> **Current cross-file specialisation surface (ADR-0230).** Imported pure `$T` procedures are
+> instantiated in their declaration file and called through a full `(FileId, ProcId)` redirect. One
+> root-scoped fixed point covers every reachable file, including a concrete clone that first reveals
+> a demand in another owner. Run, build, optimisation and diagnostics consume that same plan. Imported
+> `$N`/mixed templates remain E0268 and imported `#expand` macros remain E0272.
 
 > **Current correction to the cumulative component notes.** ADR-0117 superseded the older
 > `jr-sema` sentence that associated E0269 with cross-file parameterised structs. Generic struct
 > instances now cross module boundaries; E0269 only rejects a non-parameterised constructor, while
-> imported polymorphic procedure instantiation remains the E0268 blocker.
+> E0268 now names the narrower imported comptime-value boundary.
+>
+> **ADR-0230 component delta.**
+>
+> | Component | Current delta |
+> |---|---|
+> | `jr-hir` | An instantiation site stores its complete materialised diagnostic frame list, so an owner-file clone can point back into an importing caller without interpreting another file's arena indices. |
+> | `jr-sema` | Imported pure `$T` inference runs in the template owner's HIR/signature/import environment and records a full `TemplateRef`; imported `$N`/mixed and imported `#expand` retain E0268/E0272. |
+> | `jr-db` | One root-scoped planner groups keys by owner, reaches a deterministic global fixed point, combines mixed type/value keys into one clone, and provides root-aware MIR, optimisation and diagnostics. |
+> | `jr-cli` / `jr-driver` | Check, run, native build and build scripts gate on the same root-aware diagnostics and clone set they execute. |
 
 | Component | Status | Notes |
 |---|---|---|
@@ -693,40 +708,41 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0229 composes procedure inference with parameterised nominal types.**
-> `*Table($K, $V)` matched against `*Table(string, s64)` binds both variables after proving the
-> constructor declaration is identical. Imported constructors work too; imported procedures remain
-> E0268 until specialization becomes a root-program operation.
+> **ADR-0230 closes the owner-file compiler blocker for generic containers.**
+> Imported pure `$T` operations now infer in their declaration environment, materialise in their
+> owner file and run through one root-program clone plan in the VM, Cranelift and LLVM. A nested
+> owner-to-owner demand reaches the same bounded fixed point, and concrete-clone diagnostics point
+> back to the importing call.
 
-**1377 workspace tests (1390 under gate 7), 299 corpus files, 229 ADRs and 25 modules.** ADR-0229
-adds two direct sema tests, one executable corpus program and one imported-corpus program. The
-executable case proves two ordered variables inferred solely through one pointer-wrapped nominal
-instance; the imported case proves the constructor lookup crosses a module boundary. All six
-ordinary gates and gate 7 are green. **E0299** is the first free global diagnostic code;
-**E0135** is the first free parser code.
+**1382 workspace tests (1395 under gate 7), 302 corpus files, 230 ADRs and 25 modules.** ADR-0230
+adds three sema/import tests, two database/root-planning tests, one executable differential program,
+two imports programs and two module fixtures. The fixtures deliberately give templates in different
+owners the same local `ProcId`; the database test also proves two same-type callers deduplicate to
+one clone per owner. The broad nextest lane is green with the six macOS/SDL GUI tests excluded from
+that sandboxed feedback run; all six authoritative gates and the LLVM gate are green, including
+those GUI tests when run with application-services access.
+**E0299** is the first free global diagnostic code; **E0135** is the first free parser code.
 
-### Next wave: cross-file generic procedure specialization
+### Next wave: generic dynamic-array operations
 
-This is the remaining compiler blocker for both requested generic containers. `Table(string, string)`
-already names a cross-file polymorphic struct instance, and ADR-0229 now infers `$K/$V` through it;
-calling the operation from another module is still E0268.
+Generalise `modules/List` from its concrete `[..]s64` surface to pure `$T` operations over native
+`[..]T`. The requested proof shape is `stack: [..]*Node`: append pointers, inspect the last pointer,
+pop, clear and free without introducing a per-type module or hiding ownership.
 
-The accepted recommended direction is:
+The design forks to put to the decider before code are:
 
-1. Key a specialization by the template's full `ProcRef` plus bound types, not by a caller-local
-   `ProcId`.
-2. Materialize the clone in the declaration file, then redirect every importing caller to that
-   owner-file specialization through one root-scoped fixed point.
-3. Keep imported `$N` comptime-value templates refused in this wave; their evaluated arguments add
-   a separate cross-file const-eval dependency.
-4. Convert the existing imported `$T` refusal probe to execution while retaining an imported `$N`
-   refusal, and add a cross-file template-calls-template fixed-point case.
+1. whether the public module remains `List` with generic procedures or gains a new compatibility
+   namespace while the existing concrete spellings delegate;
+2. whether `pop` returns `(value, found)` or requires non-empty input and returns `T`; and
+3. whether growth captures the active allocator in an owning wrapper now or keeps the native
+   dynamic array caller-owned until `Hash_Table` establishes the shared container ownership shape.
 
-### Following waves required by the requested container surface
+The recommendation is to keep `List`, preserve concrete compatibility wrappers, make `pop`
+explicitly fallible as `(T, bool)`, and keep the native array caller-owned in this wave.
 
-1. **Dynamic-array operations.** Generalise `modules/List` to `$T`, including `[..]*Node`, so a
-   caller can maintain a stack of node pointers without a concrete per-type module.
-2. **`Hash_Table`.** Ship `Table(K, V)` with add/update, find, remove, contains, reserve, clear,
+### Following wave required by the requested container surface
+
+1. **`Hash_Table`.** Ship `Table(K, V)` with add/update, find, remove, contains, reserve, clear,
    pointer lookup/mutation, explicit iteration and cleanup; string and integer hash/equality helpers;
    captured allocator ownership; unspecified iteration order. Keep `Map` compatible. Exact
    `for table` expansion remains a separate metaprogramming feature rather than a fake special case.

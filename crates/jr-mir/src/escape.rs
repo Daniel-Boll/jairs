@@ -534,6 +534,8 @@ mod tests {
             &[],
             // No imported HIRs: this unit test checks a file alone (ADR-0117 §1).
             &[],
+            // No imported polymorphic template owners.
+            &[],
             &mut pool,
             &interner,
         );

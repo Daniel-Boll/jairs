@@ -1,26 +1,23 @@
-// A module declaring **templates**, for `imports/invalid/017` to try (and fail) to instantiate.
+// A module declaring both kinds of **templates**, for the imports corpus to distinguish.
 //
-// Cross-file instantiation is deferred (ADR-0082 §5), so a call to any of these from an importing file is
-// refused with E0268 (ADR-0104 §2). This module exists to make that refusal *reachable*: before it, nothing
-// in the corpus imported a polymorphic procedure, which is why the refusal did not exist at all — the call
-// type-checked (a `$T` parameter's type is `PoolId::ERROR` and `ERROR` matches anything) and the missing
-// instantiation leaked out of whichever engine ran first as "no routine for file N proc M".
+// ADR-0230 permits imported pure `$T` procedures, while imported `$N` procedures remain E0268 because their
+// compile-time values require a separate cross-file const-eval dependency. `imports/invalid/017` pins that
+// narrower refusal through `scaled`.
 //
-// The wrapper is here too, because it is the *workaround* the diagnostic names: a non-polymorphic procedure
-// in the declaring module, which instantiates the template where instantiation works. `imports/valid/017`
-// calls it, so the two halves of the story are both pinned.
+// The wrapper remains as historical and composition coverage: `imports/valid/017` proves an owner-local
+// specialization can still sit behind an ordinary imported procedure.
 
-/// A `$T` template. Instantiating this from another file is E0268.
+/// A pure `$T` template. ADR-0230 permits importing and specializing this shape.
 identity :: (x: $T) -> T {
   return x;
 }
 
-/// A `$N` comptime-value template, so the refusal covers both marks rather than only `$T`.
+/// A `$N` comptime-value template. Instantiating this from another file remains E0268.
 scaled :: ($N: s64, factor: s64) -> s64 {
   return N * factor;
 }
 
-/// The workaround: instantiated *here*, where cross-file instantiation is not in the way.
+/// An owner-local specialization exposed through an ordinary procedure.
 identity_int :: (x: s64) -> s64 {
   return identity(x);
 }

@@ -27,8 +27,6 @@ use crate::hir::{
     ConstValue, Expr, FileHir, Item, ItemKind, Literal, Param, ParamId, Proc, ProcId, Res, TypeRef,
     TypeRefId,
 };
-use crate::resolve::ExprScope;
-
 /// One instantiation to append: the template procedure, its type bindings, and — for a comptime-value
 /// template — the baked value of each `$N` parameter (ADR-0083 §2, ADR-0088 §3).
 ///
@@ -54,21 +52,15 @@ pub struct Instantiation {
     pub site: Option<InstantiationSite>,
 }
 
-/// Where an instantiation was demanded, and how to describe it in a backtrace.
+/// Where an instantiation was demanded, materialised as a complete backtrace.
 ///
-/// # Why the scope is kept beside the rendered frame
-///
-/// The [`frame`](Self::frame) alone gives one `note:` line. A **chain** — `main` calls `outer`, whose
-/// body calls `inner` — needs to know which *body* the call sat in, so the walk can ask whether that
-/// body's own procedure was itself an instantiation. [`ExprScope::Body`] carries exactly that, and
-/// `check_file` already holds the `BodyId → ProcId` map, so keeping the scope turns one frame into a
-/// full backtrace with no new bookkeeping.
+/// Materialising the chain when the clone is planned is what lets a clone in one file point back to
+/// a demanding call in another (ADR-0230 §5). Every frame's span already carries its file id; keeping
+/// an `ExprScope` here would leave that scope ambiguous outside its own HIR arena.
 #[derive(Debug, Clone)]
 pub struct InstantiationSite {
-    /// The rendered frame: the call's span, and a description like ``in instantiation of `f($T = bool)` ``.
-    pub frame: jr_diag::InstantiationFrame,
-    /// The expression arena the demanding call sat in, or `None` for a top-level one.
-    pub called_from: Option<ExprScope>,
+    /// Innermost first, matching the diagnostic renderer.
+    pub frames: Vec<jr_diag::InstantiationFrame>,
 }
 
 /// Appends one procedure per instantiation to `hir`, returning each instantiation's new `ProcId`

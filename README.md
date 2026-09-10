@@ -57,7 +57,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0229.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0230.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -110,8 +110,10 @@ only a byte count, so `New` refuses types requiring alignment above its 16-byte 
 Polymorphic calls now infer variables through parameterised nominal types:
 `*Table($K, $V)` matched with `*Table(string, s64)` binds both variables from the struct instance's
 type arguments. Matching uses the constructor's declaration identity, not its name or field layout,
-and the constructor may itself be imported. Instantiating a procedure declared in another module
-remains the next separate, program-scoped specialization wave.
+and the constructor may itself be imported. A pure `$T` procedure declared in another module is
+now specialised in that declaration file through one root-program fixed point, including nested
+owner-to-owner demands; run, build, optimisation and diagnostics consume the same clone plan.
+Imported `$N`/mixed templates remain E0268, and imported polymorphic `#expand` remains E0272.
 
 Every fresh Jairs context now has a working allocator/free pair in the VM, Cranelift and LLVM;
 assigning a custom pair and copying one through `push_context` remain unchanged. Whole-file
@@ -202,9 +204,9 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1377** workspace tests (**1390** under gate 7), with all six ordinary gates and gate 7 green
-  for ADR-0229.
-- **299** `.jr` corpus files, **229** accepted ADRs, **25** standard library
+- **1382** workspace tests (**1395** under gate 7), with all six ordinary gates and gate 7 green
+  for ADR-0230.
+- **302** `.jr` corpus files, **230** accepted ADRs, **25** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative
@@ -320,7 +322,7 @@ before: two gates run at once and race a shared binary.
 - **[`docs/jai-game-development-audit.md`](docs/jai-game-development-audit.md)** —
   the primary-source games audit, language/library gaps, and the staged `Game`
   facade plan whose foundation is now implemented.
-- **[`docs/adr/README.md`](docs/adr/README.md)** — all 226 accepted decision
+- **[`docs/adr/README.md`](docs/adr/README.md)** — all 230 accepted decision
   records.
 - **[`docs/spec/`](docs/spec/)** — the language specification chapters.
 - **[`examples/`](examples/)** — runnable programs, each verified.

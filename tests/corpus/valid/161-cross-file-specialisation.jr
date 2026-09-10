@@ -1,0 +1,11 @@
+// ADR-0230 — imported pure `$T` procedures are specialised in their declaration files.
+//
+// This executable lives in `valid/` so the differential harness runs the complete imported clone through
+// the VM and native back end. The separate imports fixture `023-cross-owner-generic-fixed-point.jr` pins
+// the two-owner fixed point and the same-local-ProcId collision.
+
+#import "Generic_Types";
+
+main :: () {
+  assert(identity(42) == 42);
+}

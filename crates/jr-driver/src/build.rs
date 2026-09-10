@@ -3,7 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use jr_base::SourceMap;
-use jr_db::{BackendChoice, Db as _, JairsDatabase, OptLevel, build_object, file_diagnostics};
+use jr_db::{
+    BackendChoice, Db as _, JairsDatabase, OptLevel, build_object, file_diagnostics_for_root,
+};
 use jr_diag::{Diagnostics, Severity};
 use jr_link::{LinkRequest, link};
 
@@ -222,7 +224,11 @@ pub fn build(request: &BuildRequest) -> Result<BuildOutcome, String> {
     // the MIR assembly walks, so this adds no query and cannot disagree with what is compiled.
     let mut diagnostics = Diagnostics::new();
     for file in jr_db::reachable_files(&db, root, search) {
-        diagnostics.extend(file_diagnostics(&db, file, search).iter().cloned());
+        diagnostics.extend(
+            file_diagnostics_for_root(&db, root, file, search)
+                .iter()
+                .cloned(),
+        );
     }
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
         return Ok(BuildOutcome::Rejected {

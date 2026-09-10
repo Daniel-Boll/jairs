@@ -114,6 +114,15 @@ fn polymorphic_calls_infer_through_parameterised_nominal_types() {
          }\n",
     );
     analysis.assert_silent();
+    let measure = analysis
+        .signatures
+        .lookup(program.interner.get("measure").unwrap())
+        .and_then(|entry| entry.proc)
+        .unwrap();
+    let (_, (template, key)) = analysis.instantiations.iter().next().unwrap();
+    assert_eq!(template.file, jr_base::FileId::from_usize(0));
+    assert_eq!(template.proc, measure);
+    assert_eq!(key, &[PoolId::S64, PoolId::U8]);
 }
 
 #[test]

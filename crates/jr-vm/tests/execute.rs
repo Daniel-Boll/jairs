@@ -65,6 +65,8 @@ impl Fixture {
             &[],
             // No imported HIRs: this harness checks a file alone (ADR-0117 §1).
             &[],
+            // No imported polymorphic template owners.
+            &[],
             &mut pool,
             &interner,
         );
@@ -937,6 +939,7 @@ fn a_globals_initialiser_cannot_read_another_global() {
         FILE,
         &resolve,
         &signatures.signatures,
+        &[],
         &[],
         &[],
         &mut pool,

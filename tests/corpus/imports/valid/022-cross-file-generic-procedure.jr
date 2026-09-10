@@ -1,0 +1,12 @@
+// ADR-0230 — a pure `$T` procedure may be specialized in the module that declares it and called from an
+// importing root.
+//
+// The imports corpus checks and lowers rather than executes, so the returned `s64` is consumed by arithmetic:
+// if specialization preserved the unresolved type variable, this file would not type-check or lower.
+
+#import "Generic";
+
+main :: () {
+  answer := identity(42);
+  next := answer + 1;
+}

@@ -11947,7 +11947,7 @@ proc main -> void {
 proc main -> void {
   params: v0: *Context
   bb0(v0: *Context):
-    v1: s64 = call proc5(v0, 7_s64)
+    v1: s64 = call proc3(v0, 7_s64)
     v2: bool = v1 == 35_s64
     branch v2 ? bb1() : bb2()
   bb1():
@@ -11956,7 +11956,7 @@ proc main -> void {
   bb2():
     goto bb3(0_s64)
   bb3(v6: s64):
-    v4: s64 = call proc6(v0, 2_s64)
+    v4: s64 = call proc4(v0, 2_s64)
     v5: bool = v4 == 8_s64
     branch v5 ? bb4() : bb5()
   bb4():
@@ -11965,7 +11965,7 @@ proc main -> void {
   bb5():
     goto bb6(v6)
   bb6(v10: s64):
-    v8: s64 = call proc7(v0)
+    v8: s64 = call proc5(v0)
     v9: bool = v8 == 1_s64
     branch v9 ? bb7() : bb8()
   bb7():
@@ -11974,7 +11974,7 @@ proc main -> void {
   bb8():
     goto bb9(v10)
   bb9(v14: s64):
-    v12: s64 = call proc8(v0)
+    v12: s64 = call proc6(v0)
     v13: bool = v12 == 0_s64
     branch v13 ? bb10() : bb11()
   bb10():
@@ -11995,35 +11995,18 @@ proc main -> void {
     return
 }
 proc $inst0 -> s64 {
-  params: v0: *Context, v1: s64, v2: s64
-  bb0(v0: *Context, v1: s64, v2: s64):
-    v3: s64 = v1 * v2
-    return v3
-}
-proc $inst1 -> s64 {
-  params: v0: *Context, v1: bool
-  bb0(v0: *Context, v1: bool):
-    branch v1 ? bb1() : bb2()
-  bb1():
-    return 1_s64
-  bb2():
-    goto bb3()
-  bb3():
-    return 0_s64
-}
-proc $inst2 -> s64 {
   params: v0: *Context, v1: s64
   bb0(v0: *Context, v1: s64):
     v2: s64 = v1 * 5_s64
     return v2
 }
-proc $inst3 -> s64 {
+proc $inst1 -> s64 {
   params: v0: *Context, v1: s64
   bb0(v0: *Context, v1: s64):
     v2: s64 = v1 * 4_s64
     return v2
 }
-proc $inst4 -> s64 {
+proc $inst2 -> s64 {
   params: v0: *Context
   bb0(v0: *Context):
     branch true ? bb1() : bb2()
@@ -12034,7 +12017,7 @@ proc $inst4 -> s64 {
   bb3():
     return 0_s64
 }
-proc $inst5 -> s64 {
+proc $inst3 -> s64 {
   params: v0: *Context
   bb0(v0: *Context):
     branch false ? bb1() : bb2()
@@ -19976,4 +19959,16 @@ proc $inst0 -> s64 {
     v2: s64 = 8_s64 * 10_s64
     v3: s64 = v2 + 1_s64
     return v3
+}
+
+========================================
+161-cross-file-specialisation.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  bb0(v0: *Context):
+    v1: s64 = call extern proc0(v0, 42_s64)
+    v2: bool = v1 == 42_s64
+    assert v2
+    return
 }

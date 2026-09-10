@@ -315,6 +315,36 @@ const E0281: &str = "E0281";
 /// Uses `no_eq` to match the rest of this crate's queries.
 #[salsa::tracked(returns(clone), no_eq)]
 pub fn file_mir(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> MirResult {
+    file_mir_impl(db, file, catalog, None)
+}
+
+/// Lowers `file` with the clone set planned for the whole program rooted at `root` (ADR-0230 §3).
+///
+/// When no demand crosses a file boundary this delegates to [`file_mir`], preserving the established
+/// local-specialisation path. Once one does, every reachable file reads the same root-scoped plan.
+#[salsa::tracked(returns(clone), no_eq)]
+pub fn file_mir_for_root(
+    db: &dyn Db,
+    root: SourceFile,
+    file: SourceFile,
+    catalog: ModuleCatalog,
+) -> MirResult {
+    let plan = crate::specialization::program_specializations(db, root, catalog);
+    if !plan.active() {
+        return file_mir(db, file, catalog);
+    }
+    let Some(specialization) = plan.file(file) else {
+        return file_mir(db, file, catalog);
+    };
+    file_mir_impl(db, file, catalog, Some(specialization))
+}
+
+fn file_mir_impl(
+    db: &dyn Db,
+    file: SourceFile,
+    catalog: ModuleCatalog,
+    program: Option<&crate::specialization::ProgramFileSpecialization>,
+) -> MirResult {
     // The gate first, so that a file with errors costs nothing beyond the
     // diagnostics that were going to be computed anyway.
     if frontend_diagnostics(db, file, catalog).has_errors() {
@@ -335,7 +365,6 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> MirRes
     //
     // Acyclic: `insert_operands` reaches `file_consts` → `frontend_diagnostics`, which is mir-free (only
     // `file_diagnostics` calls this query), so nothing here loops back.
-    let operands = crate::consts::insert_operands(db, file, catalog);
     #[allow(clippy::type_complexity)]
     let expanded: Option<(
         Arc<FileHir>,
@@ -343,28 +372,41 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> MirRes
         crate::sema::CheckResult,
         jr_diag::Diagnostics,
         Arc<jr_sema::FileSignatures>,
-    )> = if operands.is_empty() {
-        None
+    )> = if let Some(program) = program {
+        program.prepared.inserted.then(|| {
+            (
+                program.prepared.hir.clone(),
+                program.prepared.resolve.clone(),
+                program.prepared.check.clone(),
+                program.prepared.diagnostics.clone(),
+                program.prepared.signatures.clone(),
+            )
+        })
     } else {
-        let parse = crate::parse_file(db, file);
-        let file_id = crate::queries::resolve_file_id(db, file);
-        let interner = db.interner();
-        // **The expanded lowering's own diagnostics are kept** (ADR-0184 §4). They were dropped, which was
-        // harmless while an expanded tree could only *add statements* — nothing in that path reports. A
-        // file-scope insert refuses a generated declaration it cannot support (E0294), and that refusal is
-        // raised exactly here, so dropping it left the user with the *downstream* symptoms — "unresolved
-        // name `double`", "unknown type name `Point`" — both true and neither naming the cause.
-        let (tree, lower_diags) =
-            jr_hir::lower_file_with_inserts(&parse, file_id, interner, operands.as_ref());
-        let tree = Arc::new(tree);
-        let (resolve_map, check, mut diags, signatures) =
-            crate::sema::checked_expanded(db, file, catalog, tree.as_ref());
-        // **The lowering's first**, so a reader sees the cause above the consequences: the refusal
-        // explains why the names that follow it do not resolve.
-        let mut ordered = lower_diags;
-        ordered.extend(diags.iter().cloned());
-        diags = ordered;
-        Some((tree, resolve_map, check, diags, signatures))
+        let operands = crate::consts::insert_operands(db, file, catalog);
+        if operands.is_empty() {
+            None
+        } else {
+            let parse = crate::parse_file(db, file);
+            let file_id = crate::queries::resolve_file_id(db, file);
+            let interner = db.interner();
+            // **The expanded lowering's own diagnostics are kept** (ADR-0184 §4). They were dropped, which was
+            // harmless while an expanded tree could only *add statements* — nothing in that path reports. A
+            // file-scope insert refuses a generated declaration it cannot support (E0294), and that refusal is
+            // raised exactly here, so dropping it left the user with the *downstream* symptoms — "unresolved
+            // name `double`", "unknown type name `Point`" — both true and neither naming the cause.
+            let (tree, lower_diags) =
+                jr_hir::lower_file_with_inserts(&parse, file_id, interner, operands.as_ref());
+            let tree = Arc::new(tree);
+            let (resolve_map, check, mut diags, signatures) =
+                crate::sema::checked_expanded(db, file, catalog, tree.as_ref());
+            // **The lowering's first**, so a reader sees the cause above the consequences: the refusal
+            // explains why the names that follow it do not resolve.
+            let mut ordered = lower_diags;
+            ordered.extend(diags.iter().cloned());
+            diags = ordered;
+            Some((tree, resolve_map, check, diags, signatures))
+        }
     };
 
     // **Polymorphic instantiations, expanded** (ADR-0082 §2). When a file has polymorphic calls, the HIR
@@ -379,14 +421,18 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> MirRes
     // it nothing. So such a file lost every redirect and lowered `Callee::Direct(template)`, which has no
     // MIR: `no routine for file N proc M` on a program `jr check` called clean. Instantiation now runs on
     // whichever tree is current, which is the narrow exclusion the comment always described.
-    let instantiated = match &expanded {
-        // `None` for the comptime values: they are keyed to the *unexpanded* tree, which the splice
-        // renumbered, so a `$N` call here is refused (E0281) rather than paired with a value that may
-        // belong to another expression (ADR-0120 §6).
-        Some((tree, _, check, _, _)) => {
-            crate::sema::instantiated_from(db, file, catalog, tree.clone(), check, None)
+    let instantiated = if let Some(program) = program {
+        program.instantiated.clone()
+    } else {
+        match &expanded {
+            // `None` for the comptime values: they are keyed to the *unexpanded* tree, which the splice
+            // renumbered, so a `$N` call here is refused (E0281) rather than paired with a value that may
+            // belong to another expression (ADR-0120 §6).
+            Some((tree, _, check, _, _)) => {
+                crate::sema::instantiated_from(db, file, catalog, tree.clone(), check, None)
+            }
+            None => crate::sema::instantiated(db, file, catalog),
         }
-        None => crate::sema::instantiated(db, file, catalog),
     };
 
     // **The instantiated tree wins where both exist**, because instantiation now runs *on* the
@@ -395,12 +441,15 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> MirRes
     let hir = match (&instantiated, &expanded) {
         (Some(inst), _) => inst.hir.clone(),
         (_, Some((tree, _, _, _, _))) => tree.clone(),
-        _ => file_hir(db, file),
+        _ => program.map_or_else(|| file_hir(db, file), |plan| plan.prepared.hir.clone()),
     };
     let own_resolve = match (&instantiated, &expanded) {
         (Some(inst), _) => inst.resolve.clone(),
         (_, Some((_, resolve_map, _, _, _))) => resolve_map.clone(),
-        _ => resolved(db, file, catalog).map,
+        _ => program.map_or_else(
+            || resolved(db, file, catalog).map,
+            |plan| plan.prepared.resolve.clone(),
+        ),
     };
     let base_sigs = crate::sema::file_signatures(db, file, catalog);
     let own_signatures = match (&instantiated, &expanded) {
@@ -410,12 +459,18 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> MirRes
         // generated `#system_library` that these signatures do not carry is a library the declare phase
         // never collects and the link line never names.
         (_, Some((_, _, _, _, signatures))) => signatures.clone(),
-        _ => base_sigs.signatures.clone(),
+        _ => program.map_or_else(
+            || base_sigs.signatures.clone(),
+            |plan| plan.prepared.signatures.clone(),
+        ),
     };
     let checked_file = match (&instantiated, &expanded) {
         (Some(inst), _) => inst.check.clone(),
         (_, Some((_, _, check, _, _))) => check.clone(),
-        _ => checked(db, file, catalog),
+        _ => program.map_or_else(
+            || checked(db, file, catalog),
+            |plan| plan.prepared.check.clone(),
+        ),
     };
     let types = checked_file.types;
     let operators = checked_file.operator_calls;
@@ -578,7 +633,7 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> MirRes
             }
             Arc::new(values)
         };
-        match &instantiated {
+        let base = match &instantiated {
             Some(inst) => {
                 let mut values = (*base).clone();
                 // **A clone inherits its template body's values first** (ADR-0120 §5). A `#run`, a
@@ -664,6 +719,15 @@ pub fn file_mir(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> MirRes
                 Arc::new(values)
             }
             None => base,
+        };
+        if let Some(program) = program {
+            let mut values = (*base).clone();
+            for (call, target) in &program.redirects {
+                values.set_instantiation(call.0, call.1, *target);
+            }
+            Arc::new(values)
+        } else {
+            base
         }
     };
     let interner = db.interner();
@@ -825,7 +889,39 @@ pub fn optimized_file_mir(
     catalog: ModuleCatalog,
     config: BuildConfig,
 ) -> MirResult {
-    let built = file_mir(db, file, catalog);
+    optimized_file_mir_impl(db, None, file, catalog, config)
+}
+
+/// Optimises `file` using the root-scoped clone plan for `root` (ADR-0230 §3).
+///
+/// Imported callees are fetched through this same interface, so an inliner can never see a caller from
+/// one clone set and a callee from another.
+#[salsa::tracked(returns(clone), no_eq)]
+pub fn optimized_file_mir_for_root(
+    db: &dyn Db,
+    root: SourceFile,
+    file: SourceFile,
+    catalog: ModuleCatalog,
+    config: BuildConfig,
+) -> MirResult {
+    let plan = crate::specialization::program_specializations(db, root, catalog);
+    if !plan.active() {
+        return optimized_file_mir(db, file, catalog, config);
+    }
+    optimized_file_mir_impl(db, Some(root), file, catalog, config)
+}
+
+fn optimized_file_mir_impl(
+    db: &dyn Db,
+    root: Option<SourceFile>,
+    file: SourceFile,
+    catalog: ModuleCatalog,
+    config: BuildConfig,
+) -> MirResult {
+    let built = match root {
+        Some(root) => file_mir_for_root(db, root, file, catalog),
+        None => file_mir(db, file, catalog),
+    };
     if built.gated {
         return built;
     }
@@ -845,7 +941,10 @@ pub fn optimized_file_mir(
     // `Callee::Direct` in this file can name.
     let modules: Vec<Arc<FileMir>> = imported_modules(db, &hir, catalog)
         .into_iter()
-        .map(|module| file_mir(db, module, catalog))
+        .map(|module| match root {
+            Some(root) => file_mir_for_root(db, root, module, catalog),
+            None => file_mir(db, module, catalog),
+        })
         .filter(|result| !result.gated)
         .map(|result| result.mir)
         .collect();

@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use jr_base::SourceMap;
-use jr_db::{Db as _, JairsDatabase, file_diagnostics};
+use jr_db::{Db as _, JairsDatabase, file_diagnostics_for_root};
 use jr_diag::Severity;
 
 use crate::cli::{CheckArgs, GlobalArgs};
@@ -110,17 +110,17 @@ pub fn run(args: CheckArgs, global: &GlobalArgs) -> Result<i32> {
     // fix goes. Attributing it to the `#import` instead would read better for someone using a module they cannot
     // edit and would discard the only thing that locates the bug — ADR-0043's lesson about a diagnostic that is
     // true and useless.
-    let mut reported: Vec<jr_db::SourceFile> = Vec::new();
+    // Expansion is root-scoped: the same module may have different private clones for two roots, so the
+    // diagnostic identity is `(root, file)`, not `file`. Base diagnostics can consequently repeat when
+    // two requested roots share a broken module; suppressing the second would also suppress a genuine
+    // root-specific clone error, which is the less honest failure.
+    let mut reported: Vec<(jr_db::SourceFile, jr_db::SourceFile)> = Vec::new();
     for source_file in &roots {
         for file in jr_db::reachable_files(&db, *source_file, search_paths_input) {
-            // Deduped **across roots**: `jr check a.jr b.jr` may reach one module from both, and reporting its
-            // errors twice would make a shared module look worse the more files import it. Each reachable set is
-            // distinct on its own (the seen-set that makes an import cycle terminate), so this is the only place
-            // duplication can arise.
-            if reported.contains(&file) {
+            if reported.contains(&(*source_file, file)) {
                 continue;
             }
-            reported.push(file);
+            reported.push((*source_file, file));
 
             // `file_diagnostics` covers parse, lower, resolve and type-check in
             // source order.
@@ -129,7 +129,7 @@ pub fn run(args: CheckArgs, global: &GlobalArgs) -> Result<i32> {
             // existed, resolution diagnostics were discarded for any file containing
             // an `#import`, because every imported name would have been reported
             // unresolved. That workaround is gone, which is the point of that wave.
-            let diags = file_diagnostics(&db, file, search_paths_input);
+            let diags = file_diagnostics_for_root(&db, *source_file, file, search_paths_input);
 
             emit_diagnostics(&renderer, &map, &diags);
 

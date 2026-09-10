@@ -124,6 +124,7 @@ pub fn file_signatures(
         pool,
         import_refs,
         imported_hirs,
+        Vec::new(),
         Mode::Signatures,
     );
     // Recorded so that an *imported* overload can become a `ProcRef` (ADR-0048 §5).

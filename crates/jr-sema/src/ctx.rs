@@ -126,6 +126,12 @@ pub(crate) struct Ctx<'a> {
     ///
     /// Empty in every test harness that checks a file alone, which is why every reader must tolerate a miss.
     pub(crate) imported_hirs: Vec<(FileId, &'a FileHir)>,
+    /// Complete owner environments for imported procedure templates.
+    ///
+    /// The ordinary import tables expose a template's resolved signature, but its parameter and return
+    /// `TypeRefId`s still index the owner's HIR. Pure-`$T` calls temporarily select one of these contexts
+    /// while inferring and concretizing the template.
+    pub(crate) imported_templates: Vec<crate::ImportedTemplateContext<'a>>,
     /// While resolving an **imported** parameterised struct's fields, that module's signatures (ADR-0117 §2).
     ///
     /// `None` in the ordinary case. Set for the duration of `resolve_instance_fields_in`, because a field naming
@@ -243,7 +249,7 @@ pub(crate) struct Ctx<'a> {
     /// expression's `(scope, id)`, so the pass can rewrite that exact call to target the instantiated
     /// procedure. Empty for a file with no polymorphic calls, which is every ordinary program.
     pub(crate) instantiations:
-        FxHashMap<(ExprScope, jr_hir::ExprId), (jr_hir::ProcId, Vec<PoolId>)>,
+        FxHashMap<(ExprScope, jr_hir::ExprId), (crate::TemplateRef, Vec<PoolId>)>,
     /// Each **comptime-value** call and the argument expressions its `$N` parameters need
     /// (ADR-0088 §1): `(proc, [arg ExprId per comptime parameter])`.
     ///
@@ -312,6 +318,7 @@ impl<'a> Ctx<'a> {
         pool: &'a mut Pool,
         imports: Vec<(&'a str, &'a FileSignatures)>,
         imported_hirs: Vec<(FileId, &'a FileHir)>,
+        imported_templates: Vec<crate::ImportedTemplateContext<'a>>,
         mode: Mode,
     ) -> Self {
         Self {
@@ -350,6 +357,7 @@ impl<'a> Ctx<'a> {
             pool,
             imports,
             imported_hirs,
+            imported_templates,
             resolving_in_module: None,
             sigs: FileSignatures::new(),
             mode,

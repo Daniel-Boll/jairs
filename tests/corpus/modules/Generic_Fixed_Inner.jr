@@ -1,0 +1,9 @@
+// The second owner in `imports/valid/023-cross-owner-generic-fixed-point.jr`.
+//
+// This is intentionally the first procedure in this file. `Generic_Fixed_Outer.outer` is also its file's
+// first procedure, so both templates have the same local `ProcId`; their owner file must remain part of
+// specialization identity.
+
+inner :: (value: $T) -> T {
+  return value;
+}

@@ -20,7 +20,7 @@
 use std::path::PathBuf;
 
 use jr_base::SourceMap;
-use jr_db::{BackendChoice, Db as _, JairsDatabase, OptLevel, file_diagnostics};
+use jr_db::{BackendChoice, Db as _, JairsDatabase, OptLevel, file_diagnostics_for_root};
 use jr_diag::{Diagnostics, Severity};
 use jr_vm::{Host, HostArg, HostValue};
 
@@ -754,7 +754,11 @@ pub fn run_script(request: &ScriptRequest) -> Result<ScriptResult, String> {
 
     let mut diagnostics = Diagnostics::new();
     for file in jr_db::reachable_files(&db, root, search) {
-        diagnostics.extend(file_diagnostics(&db, file, search).iter().cloned());
+        diagnostics.extend(
+            file_diagnostics_for_root(&db, root, file, search)
+                .iter()
+                .cloned(),
+        );
     }
 
     // What a `#run` printed, emitted here for the reason `jr-driver`'s `build` emits it: the output is
