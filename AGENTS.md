@@ -2119,7 +2119,9 @@ E0276 is `#bake_arguments` refusing a **non-literal** baked value or an
 operand that is not a locally-declared procedure (ADR-0096/0097) — **owned by `jr-hir`**, since a directive's
 validity in expression position is judged in lowering.
 
-**E0299 is the first free code**; E0135 is the first free *parser* code. **E0298** refuses
+**E0300 is the first free code**; E0136 is the first free *parser* code. **E0299** refuses
+an invalid `$T/interface Shape` declaration or inferred structural match (ADR-0233), and
+**E0298** refuses
 two declaration-only result positions carrying the same label (ADR-0227) — **owned by
 `jr-sema`**, because the label lives beside `ProcSig` rather than in type identity or body scope.
 **E0134** refuses a

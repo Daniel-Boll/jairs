@@ -1183,6 +1183,14 @@ impl Formatter {
                 {
                     self.emit(tok.text());
                 }
+                // `$T/interface Shape` (ADR-0233 §1). The contextual marker itself is a direct
+                // `IDENT`, while the shape is the `POLY_TYPE`'s only child type. Emitting from that
+                // structure both preserves `interface` as an ordinary identifier elsewhere and
+                // prevents the formatter from silently deleting the constraint.
+                if let Some(interface) = node.children().find(|n| is_type_kind(n.kind())) {
+                    self.emit("/interface ");
+                    self.format_type(&interface);
+                }
             }
             POINTER_TYPE => {
                 self.emit("*");
@@ -2917,6 +2925,23 @@ mod tests {
         let out = fmt(src);
         assert!(out.contains("(a: s64, b: s64 = 10)"), "got: {out}");
         assert!(out.contains("f(1, b = 2)"), "got: {out}");
+        assert_parses(&out);
+    }
+
+    #[test]
+    fn polymorphic_interface_constraints_are_canonicalised_and_preserved() {
+        let src =
+            "interface :: struct { value:s64; }\nread :: (value:*$T/interface Shape) { todo; }\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("interface :: struct"),
+            "`interface` must remain an ordinary identifier outside the constraint: {out}"
+        );
+        assert!(
+            out.contains("value: *$T/interface Shape"),
+            "the polymorphic interface constraint must survive formatting: {out}"
+        );
+        assert_idempotent(src);
         assert_parses(&out);
     }
 

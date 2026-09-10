@@ -947,7 +947,7 @@ pub(crate) fn instantiated_from(
                 let vars = base_sigs_for_sites
                     .signatures
                     .proc_sig(template.proc)
-                    .map(|sig| sig.poly_vars.clone())
+                    .map(jr_sema::ProcSig::poly_var_names)
                     .unwrap_or_default();
                 let bindings: Vec<(jr_base::Symbol, jr_pool::PoolId)> =
                     vars.into_iter().zip(bound_types.iter().copied()).collect();
@@ -970,7 +970,7 @@ pub(crate) fn instantiated_from(
                 let vars = base_sigs_for_sites
                     .signatures
                     .proc_sig(template.proc)
-                    .map(|sig| sig.poly_vars.clone())
+                    .map(jr_sema::ProcSig::poly_var_names)
                     .unwrap_or_default();
                 let bindings: Vec<(jr_base::Symbol, jr_pool::PoolId)> =
                     vars.into_iter().zip(bound_types.iter().copied()).collect();
@@ -1099,7 +1099,7 @@ pub(crate) fn expand_round(
             let vars = base_sigs_for_vars
                 .signatures
                 .proc_sig(template.proc)
-                .map(|sig| sig.poly_vars.clone())
+                .map(jr_sema::ProcSig::poly_var_names)
                 .unwrap_or_default();
             let bindings: Vec<(jr_base::Symbol, jr_pool::PoolId)> =
                 vars.into_iter().zip(bound_types.iter().copied()).collect();
@@ -1121,7 +1121,9 @@ pub(crate) fn expand_round(
     for (n, (template, bound_types, values)) in comptime_keys.iter().enumerate() {
         debug_assert_eq!(template.file, file_id);
         let sig = base_sigs_for_vars.signatures.proc_sig(template.proc);
-        let vars = sig.map(|s| s.poly_vars.clone()).unwrap_or_default();
+        let vars = sig
+            .map(jr_sema::ProcSig::poly_var_names)
+            .unwrap_or_default();
         let bindings: Vec<(jr_base::Symbol, jr_pool::PoolId)> =
             vars.into_iter().zip(bound_types.iter().copied()).collect();
         let comptime_flags = sig.map(|s| s.comptime_params.clone()).unwrap_or_default();

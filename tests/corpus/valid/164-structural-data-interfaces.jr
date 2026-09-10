@@ -1,0 +1,96 @@
+// ADR-0233 — `$T/interface Shape` checks visible fields and still specializes to the concrete type.
+//
+// The three candidates cover reordered direct fields with extras, value `using` promotion, and a
+// pointer-valued `using` path. `translate` mutates through both a pointer parameter and the promoted
+// path, so sema and MIR must agree on the candidate's real projection indices.
+
+#import "Basic";
+
+Vector3 :: struct {
+  x: s64;
+  y: s64;
+  z: s64;
+}
+
+Player :: struct {
+  name: string;
+  hp: u16;
+  y: s64;
+  z: s64;
+  x: s64;
+}
+
+Positioned :: struct {
+  name: string;
+  using position: Vector3;
+}
+
+Referenced :: struct {
+  tag: u8;
+  using position: *Vector3;
+}
+
+sum_position :: (position: $T/interface Vector3) -> s64 {
+  return position.x + position.y + position.z;
+}
+
+translate_x :: (position: *$T/interface Vector3, delta: s64) {
+  position.x = position.x + delta;
+}
+
+size_of_value :: (value: $T) -> s64 {
+  return size_of(T);
+}
+
+candidate_size :: (position: $T/interface Vector3) -> s64 {
+  // The template body sees Vector3, but this nested generic call must be re-inferred in the
+  // concrete clone. Returning `size_of(Vector3)` for Player would expose a leaked shape witness.
+  return size_of_value(position);
+}
+
+main :: () {
+  player: Player;
+  player.name = "player";
+  player.hp = 99;
+  player.x = 1;
+  player.y = 2;
+  player.z = 3;
+  if sum_position(player) != 6 {
+    exit(1);
+  }
+  translate_x(*player, 10);
+  if player.x != 11 || sum_position(player) != 16 {
+    exit(2);
+  }
+  if candidate_size(player) != size_of(Player) || candidate_size(player) == size_of(Vector3) {
+    exit(7);
+  }
+
+  positioned: Positioned;
+  positioned.position.x = 4;
+  positioned.position.y = 5;
+  positioned.position.z = 6;
+  if sum_position(positioned) != 15 {
+    exit(3);
+  }
+  translate_x(*positioned, 10);
+  if positioned.position.x != 14 || sum_position(positioned) != 25 {
+    exit(4);
+  }
+
+  vector: Vector3;
+  vector.x = 7;
+  vector.y = 8;
+  vector.z = 9;
+  referenced: Referenced;
+  referenced.position = *vector;
+  if sum_position(referenced) != 24 {
+    exit(5);
+  }
+  translate_x(*referenced, 10);
+  if vector.x != 17 || sum_position(referenced) != 34 {
+    exit(6);
+  }
+
+  exit(42);
+}

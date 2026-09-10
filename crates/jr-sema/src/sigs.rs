@@ -159,14 +159,15 @@ pub struct ProcSig {
     /// deliberately absent from [`Item::ProcType`](jr_pool::Item::ProcType), so renaming one
     /// cannot change type identity.
     pub result_names: Vec<Option<jr_base::Symbol>>,
-    /// The polymorphic type-variable names this signature introduces, in first-seen order (ADR-0081 §1).
+    /// The polymorphic type variables this signature introduces, in first-seen order
+    /// (ADR-0081 §1, ADR-0233 §1).
     ///
     /// Empty for an ordinary procedure. Non-empty means the signature is a **template**: its `params`
-    /// and `ret` are not concrete (a `$T` position is [`PoolId::ERROR`] until a call instantiates it), so
-    /// the body is not checked against them and a call is instantiated rather than checked directly. This
-    /// sub-wave (ADR-0081) *recognises* the template and refuses a call pending the instantiation
-    /// sub-wave; the field is what a consumer keys that decision on.
-    pub poly_vars: Vec<Symbol>,
+    /// and `ret` are not executable concrete types until a call instantiates it. An unconstrained `$T`
+    /// resolves to [`PoolId::ERROR`] in the template; `$T/interface Shape` may use `Shape` as the
+    /// template body's checking surface, while the variable remains polymorphic and the clone is
+    /// rechecked under its real binding.
+    pub poly_vars: Vec<PolyVarSig>,
     /// Which parameters are `$N` — comptime-value polymorphic — parallel to `params` (ADR-0087 §1).
     ///
     /// All `false` for an ordinary procedure. Any `true` makes the signature a **template** the same
@@ -202,6 +203,27 @@ impl ProcSig {
     pub fn is_template(&self) -> bool {
         !self.poly_vars.is_empty() || self.comptime_params.iter().any(|&c| c)
     }
+
+    /// The variable names in structural-key order.
+    ///
+    /// Kept as a helper because expansion needs names but must not learn how a constraint is
+    /// represented (ADR-0233 §1).
+    pub fn poly_var_names(&self) -> Vec<Symbol> {
+        self.poly_vars.iter().map(|var| var.name).collect()
+    }
+}
+
+/// One polymorphic type variable and the optional data-interface shape constraining it
+/// (ADR-0233).
+///
+/// The shape is resolved in the template's declaration environment and travels with imported
+/// signatures, because a caller must validate the constraint without reading the owner's HIR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PolyVarSig {
+    /// The `$T` variable's name.
+    pub name: Symbol,
+    /// The resolved struct whose directly declared fields are required.
+    pub interface: Option<PoolId>,
 }
 
 // ---------------------------------------------------------------------------

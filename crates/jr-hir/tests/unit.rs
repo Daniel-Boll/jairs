@@ -2,9 +2,11 @@
 
 use jr_base::{FileId, Interner};
 use jr_hir::{
-    BinOp, ConstValue, Expr, ImportedModule, InsertOperands, ItemKind, Literal, Res, Stmt, UnOp,
-    dump::dump_hir, lower_file, lower_file_with_inserts, resolve,
+    BinOp, ConstValue, Expr, ImportedModule, InsertOperands, Instantiation, ItemKind, Literal, Res,
+    Stmt, TypeRef, UnOp, dump::dump_hir, expand_instantiations, lower_file,
+    lower_file_with_inserts, resolve,
 };
+use jr_pool::Pool;
 use jr_syntax::parse;
 
 fn file() -> FileId {
@@ -56,6 +58,96 @@ fn named_result_labels_reach_hir_without_becoming_types() {
     assert!(
         hir.procs[2].result_labels.is_empty(),
         "a bare `-> T` has no written result-list metadata"
+    );
+}
+
+#[test]
+fn polymorphic_interface_shape_reaches_top_level_and_nested_type_refs() {
+    let source = concat!(
+        "Shape :: struct { value: s64; }\n",
+        "read :: (value: $T/interface Shape) { todo; }\n",
+        "write :: (value: *$T/interface Shape) { todo; }\n",
+    );
+    let (hir, diags, interner) = lower(source);
+    assert!(diags.is_empty(), "{diags:?}");
+
+    let read_ty = hir.procs[0].params[0].ty.expect("read parameter type");
+    let TypeRef::Poly {
+        name,
+        interface: Some(shape),
+    } = hir.type_refs[read_ty.index()]
+    else {
+        panic!("read must lower to a constrained polymorphic type");
+    };
+    assert_eq!(interner.resolve(name), "T");
+    assert!(
+        matches!(hir.type_refs[shape.index()], TypeRef::Name(sym) if interner.resolve(sym) == "Shape")
+    );
+
+    let write_ty = hir.procs[1].params[0].ty.expect("write parameter type");
+    let TypeRef::Pointer(pointee) = hir.type_refs[write_ty.index()] else {
+        panic!("write must retain its pointer");
+    };
+    assert!(matches!(
+        hir.type_refs[pointee.index()],
+        TypeRef::Poly {
+            interface: Some(_),
+            ..
+        }
+    ));
+
+    let dump = dump_hir(&hir, &interner);
+    assert!(
+        dump.contains("$T/interface"),
+        "the HIR dump must distinguish constrained and unconstrained variables:\n{dump}"
+    );
+}
+
+#[test]
+fn instantiation_copies_the_polymorphic_interface_type_ref() {
+    let source = concat!(
+        "Shape :: struct { value: s64; }\n",
+        "read :: (value: $T/interface Shape) { todo; }\n",
+    );
+    let (mut hir, diags, interner) = lower(source);
+    assert!(diags.is_empty(), "{diags:?}");
+
+    let original_ty = hir.procs[0].params[0].ty.expect("template parameter type");
+    let TypeRef::Poly {
+        interface: Some(original_shape),
+        ..
+    } = hir.type_refs[original_ty.index()]
+    else {
+        panic!("template must retain its interface shape");
+    };
+
+    let cloned = expand_instantiations(
+        &mut hir,
+        &interner,
+        &Pool::new(),
+        &[Instantiation {
+            template: jr_hir::ProcId::from_usize(0),
+            bindings: Vec::new(),
+            comptime_values: Vec::new(),
+            site: None,
+        }],
+    )[0];
+    let cloned_ty = hir.proc(cloned).params[0]
+        .ty
+        .expect("cloned parameter type");
+    let TypeRef::Poly {
+        interface: Some(cloned_shape),
+        ..
+    } = hir.type_refs[cloned_ty.index()]
+    else {
+        panic!("the clone must retain the interface shape");
+    };
+    assert_ne!(
+        original_shape, cloned_shape,
+        "the interface child must be copied into the shared type-ref arena"
+    );
+    assert!(
+        matches!(hir.type_refs[cloned_shape.index()], TypeRef::Name(sym) if interner.resolve(sym) == "Shape")
     );
 }
 

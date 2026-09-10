@@ -561,3 +561,13 @@ pub(crate) const E0297: &str = "E0297";
 ///
 /// Owned by `jr-sema`, continuing this crate's block. E0299 is the first free code.
 pub(crate) const E0298: &str = "E0298";
+
+/// A `$T/interface Shape` declaration or inferred argument does not satisfy its structural
+/// data-interface constraint (ADR-0233).
+///
+/// One code covers the one operation — validating a compile-time field constraint — while the
+/// message names the actionable cause: a non-struct shape/candidate, missing field, wrong field
+/// type, or ambiguous `using` promotion.
+///
+/// Owned by `jr-sema`, continuing this crate's block. E0300 is the first free code.
+pub(crate) const E0299: &str = "E0299";

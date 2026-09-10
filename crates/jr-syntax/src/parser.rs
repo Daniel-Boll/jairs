@@ -29,7 +29,7 @@ use rowan::{Checkpoint, GreenNode, GreenNodeBuilder};
 use crate::code::{
     E0100, E0101, E0102, E0103, E0104, E0105, E0106, E0107, E0108, E0109, E0110, E0111, E0112,
     E0113, E0114, E0115, E0116, E0117, E0118, E0119, E0121, E0123, E0124, E0125, E0126, E0127,
-    E0128, E0129, E0130, E0131, E0132, E0133, E0134, E0199,
+    E0128, E0129, E0130, E0131, E0132, E0133, E0134, E0135, E0199,
 };
 use crate::kind::{SyntaxKind, SyntaxKind::*, SyntaxNode};
 use crate::lexer::{Token, lex};
@@ -410,6 +410,12 @@ struct Parser<'src> {
     depth_error_reported: bool,
     /// Trivia tokens that have been lexed but not yet emitted into the tree.
     pending_trivia: Vec<Token>,
+    /// Whether a `$T` parsed at the current position may carry `/interface Shape`.
+    ///
+    /// Structural data interfaces constrain procedure inference (ADR-0233); accepting the suffix
+    /// on a struct parameter, field or return type would preserve syntax whose constraint no
+    /// specialisation path reads.
+    allow_poly_interface: bool,
 }
 
 impl<'src> Parser<'src> {
@@ -424,6 +430,7 @@ impl<'src> Parser<'src> {
             depth: 0,
             depth_error_reported: false,
             pending_trivia: Vec::new(),
+            allow_poly_interface: false,
         }
     }
 
@@ -827,6 +834,17 @@ impl<'src> Parser<'src> {
         } else {
             ""
         }
+    }
+
+    /// The current non-trivia token's source text, or the empty string at EOF.
+    ///
+    /// Used for contextual words such as `interface`: the lexer deliberately leaves them as
+    /// `IDENT`, and only the grammar position decides whether the spelling has special meaning.
+    fn current_token_text(&mut self) -> &'src str {
+        self.skip_trivia_peek();
+        self.tokens
+            .get(self.pos)
+            .map_or("", |token| &self.text[token.range])
     }
 
     /// Parses `#scope_module` or `#scope_export` (ADR-0054 §1).
@@ -1293,7 +1311,10 @@ impl<'src> Parser<'src> {
             // reads the marker separately from the element type.
             let _ = self.eat(DOT_DOT);
             if self.at_set(TYPE_START) {
+                let previous = self.allow_poly_interface;
+                self.allow_poly_interface = true;
                 self.parse_type();
+                self.allow_poly_interface = previous;
             } else {
                 let span = self.current_span();
                 self.error(span, "expected a type for parameter", E0107);
@@ -1518,6 +1539,37 @@ impl<'src> Parser<'src> {
                         "`$` must be followed by a type-variable name, e.g. `$T`",
                         E0107,
                     );
+                }
+                // `$T/interface Shape` — a compile-time structural constraint (ADR-0233 §1).
+                // `interface` stays an ordinary `IDENT` everywhere else; only a slash inside this
+                // `POLY_TYPE` gives the spelling contextual meaning. The constrained type remains
+                // a child of the same node, so existing consumers still meet one polymorphic type
+                // shape and can opt into the new accessor independently.
+                if self.eat(SLASH) {
+                    if !self.allow_poly_interface {
+                        let span = self.current_span();
+                        self.error(
+                            span,
+                            "`/interface` is only allowed on a polymorphic procedure parameter",
+                            E0135,
+                        );
+                    }
+                    if self.at(IDENT) && self.current_token_text() == "interface" {
+                        self.bump(); // contextual `interface`
+                        if self.at_set(TYPE_START) {
+                            self.parse_type();
+                        } else {
+                            let span = self.current_span();
+                            self.error(span, "expected a type after `/interface`", E0135);
+                        }
+                    } else {
+                        let span = self.current_span();
+                        self.error(
+                            span,
+                            "expected `interface` after `/` in a polymorphic type constraint",
+                            E0135,
+                        );
+                    }
                 }
                 self.finish_node();
             }

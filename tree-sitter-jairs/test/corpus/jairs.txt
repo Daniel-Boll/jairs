@@ -92,6 +92,36 @@ add :: (a: s64, b: s64) -> s64 {
             rhs: (name_expr (identifier))))))))
 
 ================================================================================
+Contextual polymorphic interface
+================================================================================
+
+interface :: 1;
+
+read :: (value: *$T/interface Window.Shape) {
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_decl
+    name: (name (identifier))
+    value: (literal_expr (integer_literal)))
+  (const_decl
+    name: (name (identifier))
+    value: (proc
+      params: (param_list
+        (param
+          (identifier)
+          type: (pointer_type
+            inner: (poly_type
+              name: (identifier)
+              marker: (identifier)
+              interface: (name_type
+                (identifier)
+                member: (identifier))))))
+      body: (block))))
+
+================================================================================
 Typed variable declaration
 ================================================================================
 

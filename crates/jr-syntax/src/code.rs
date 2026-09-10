@@ -229,6 +229,14 @@ pub(crate) const E0133: &str = "E0133";
 /// moving `else` behind it would make the syntax tree disagree with the program the author wrote.
 pub(crate) const E0134: &str = "E0134";
 
+/// A malformed `/interface <type>` suffix on a polymorphic type variable.
+///
+/// `interface` is contextual rather than reserved: only the `/` after `$T` enters this syntax, so
+/// both a missing marker and a missing shape type use this one code. Keeping the refusal in the
+/// parser prevents lowering from receiving a `POLY_TYPE` that appears constrained but has no type
+/// to carry.
+pub(crate) const E0135: &str = "E0135";
+
 /// Input nested more deeply than the parser's depth limit.
 ///
 /// Deliberately at the top of the parser's range rather than in sequence: it is a
@@ -279,6 +287,7 @@ mod tests {
         ("E0132", "a field layout attribute with no value"),
         ("E0133", "a `#simd` with no array type"),
         ("E0134", "an `else` arm that is not final"),
+        ("E0135", "a malformed polymorphic interface constraint"),
         ("E0199", "nesting depth limit"),
     ];
 

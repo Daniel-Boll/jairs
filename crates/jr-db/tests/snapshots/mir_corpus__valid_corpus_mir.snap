@@ -21239,3 +21239,232 @@ proc main -> void {
     discard call extern proc1(42_s64)
     return
 }
+
+========================================
+164-structural-data-interfaces.jr
+========================================
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: Player  // local 0
+    s1: Positioned  // local 1
+    s2: Vector3  // local 2
+    s3: Referenced  // local 3
+  bb0(v0: *Context):
+    zero s0
+    store s0.0 <- "player"
+    store s0.1 <- 99_u16
+    store s0.4 <- 1_s64
+    store s0.2 <- 2_s64
+    store s0.3 <- 3_s64
+    v1: Player = load s0
+    v2: s64 = call proc6(v0, v1)
+    v3: bool = v2 != 6_s64
+    branch v3 ? bb1() : bb2()
+  bb1():
+    discard call extern proc1(1_s64)
+    goto bb3()
+  bb2():
+    goto bb3()
+  bb3():
+    v4: *Player = addr s0
+    discard call proc7(v0, v4, 10_s64)
+    v5: s64 = load s0.4
+    v6: bool = v5 != 11_s64
+    branch v6 ? bb5() : bb4()
+  bb5():
+    goto bb6(true)
+  bb4():
+    v8: Player = load s0
+    v9: s64 = call proc6(v0, v8)
+    v10: bool = v9 != 16_s64
+    goto bb6(v10)
+  bb6(v7: bool):
+    branch v7 ? bb7() : bb8()
+  bb7():
+    discard call extern proc1(2_s64)
+    goto bb9()
+  bb8():
+    goto bb9()
+  bb9():
+    v11: Player = load s0
+    v12: s64 = call proc8(v0, v11)
+    v13: bool = v12 != 48_s64
+    branch v13 ? bb11() : bb10()
+  bb11():
+    goto bb12(true)
+  bb10():
+    v15: Player = load s0
+    v16: s64 = call proc8(v0, v15)
+    v17: bool = v16 == 24_s64
+    goto bb12(v17)
+  bb12(v14: bool):
+    branch v14 ? bb13() : bb14()
+  bb13():
+    discard call extern proc1(7_s64)
+    goto bb15()
+  bb14():
+    goto bb15()
+  bb15():
+    zero s1
+    store s1.1.0 <- 4_s64
+    store s1.1.1 <- 5_s64
+    store s1.1.2 <- 6_s64
+    v18: Positioned = load s1
+    v19: s64 = call proc9(v0, v18)
+    v20: bool = v19 != 15_s64
+    branch v20 ? bb16() : bb17()
+  bb16():
+    discard call extern proc1(3_s64)
+    goto bb18()
+  bb17():
+    goto bb18()
+  bb18():
+    v21: *Positioned = addr s1
+    discard call proc10(v0, v21, 10_s64)
+    v22: s64 = load s1.1.0
+    v23: bool = v22 != 14_s64
+    branch v23 ? bb20() : bb19()
+  bb20():
+    goto bb21(true)
+  bb19():
+    v25: Positioned = load s1
+    v26: s64 = call proc9(v0, v25)
+    v27: bool = v26 != 25_s64
+    goto bb21(v27)
+  bb21(v24: bool):
+    branch v24 ? bb22() : bb23()
+  bb22():
+    discard call extern proc1(4_s64)
+    goto bb24()
+  bb23():
+    goto bb24()
+  bb24():
+    zero s2
+    store s2.0 <- 7_s64
+    store s2.1 <- 8_s64
+    store s2.2 <- 9_s64
+    zero s3
+    v28: *Vector3 = addr s2
+    store s3.1 <- v28
+    v29: Referenced = load s3
+    v30: s64 = call proc11(v0, v29)
+    v31: bool = v30 != 24_s64
+    branch v31 ? bb25() : bb26()
+  bb25():
+    discard call extern proc1(5_s64)
+    goto bb27()
+  bb26():
+    goto bb27()
+  bb27():
+    v32: *Referenced = addr s3
+    discard call proc12(v0, v32, 10_s64)
+    v33: s64 = load s2.0
+    v34: bool = v33 != 17_s64
+    branch v34 ? bb29() : bb28()
+  bb29():
+    goto bb30(true)
+  bb28():
+    v36: Referenced = load s3
+    v37: s64 = call proc11(v0, v36)
+    v38: bool = v37 != 34_s64
+    goto bb30(v38)
+  bb30(v35: bool):
+    branch v35 ? bb31() : bb32()
+  bb31():
+    discard call extern proc1(6_s64)
+    goto bb33()
+  bb32():
+    goto bb33()
+  bb33():
+    discard call extern proc1(42_s64)
+    return
+}
+proc $inst0 -> s64 {
+  params: v0: *Context, v1: Vector3
+  slots:
+    s0: Vector3  // temporary
+  bb0(v0: *Context, v1: Vector3):
+    store s0 <- v1
+    return 24_s64
+}
+proc $inst1 -> s64 {
+  params: v0: *Context, v1: Player
+  slots:
+    s0: Player  // temporary
+  bb0(v0: *Context, v1: Player):
+    store s0 <- v1
+    v2: s64 = load s0.4
+    v3: s64 = load s0.2
+    v4: s64 = v2 + v3
+    v5: s64 = load s0.3
+    v6: s64 = v4 + v5
+    return v6
+}
+proc $inst2 -> void {
+  params: v0: *Context, v1: *Player, v2: s64
+  bb0(v0: *Context, v1: *Player, v2: s64):
+    v3: s64 = load (v1).*.4
+    v4: s64 = v3 + v2
+    store (v1).*.4 <- v4
+    return
+}
+proc $inst3 -> s64 {
+  params: v0: *Context, v1: Player
+  slots:
+    s0: Player  // temporary
+  bb0(v0: *Context, v1: Player):
+    store s0 <- v1
+    v2: s64 = call proc13(v0, v1)
+    return v2
+}
+proc $inst4 -> s64 {
+  params: v0: *Context, v1: Positioned
+  slots:
+    s0: Positioned  // temporary
+  bb0(v0: *Context, v1: Positioned):
+    store s0 <- v1
+    v2: s64 = load s0.1.0
+    v3: s64 = load s0.1.1
+    v4: s64 = v2 + v3
+    v5: s64 = load s0.1.2
+    v6: s64 = v4 + v5
+    return v6
+}
+proc $inst5 -> void {
+  params: v0: *Context, v1: *Positioned, v2: s64
+  bb0(v0: *Context, v1: *Positioned, v2: s64):
+    v3: s64 = load (v1).*.1.0
+    v4: s64 = v3 + v2
+    store (v1).*.1.0 <- v4
+    return
+}
+proc $inst6 -> s64 {
+  params: v0: *Context, v1: Referenced
+  slots:
+    s0: Referenced  // temporary
+  bb0(v0: *Context, v1: Referenced):
+    store s0 <- v1
+    v2: s64 = load s0.1.*.0
+    v3: s64 = load s0.1.*.1
+    v4: s64 = v2 + v3
+    v5: s64 = load s0.1.*.2
+    v6: s64 = v4 + v5
+    return v6
+}
+proc $inst7 -> void {
+  params: v0: *Context, v1: *Referenced, v2: s64
+  bb0(v0: *Context, v1: *Referenced, v2: s64):
+    v3: s64 = load (v1).*.1.*.0
+    v4: s64 = v3 + v2
+    store (v1).*.1.*.0 <- v4
+    return
+}
+proc $inst8 -> s64 {
+  params: v0: *Context, v1: Player
+  slots:
+    s0: Player  // temporary
+  bb0(v0: *Context, v1: Player):
+    store s0 <- v1
+    return 48_s64
+}

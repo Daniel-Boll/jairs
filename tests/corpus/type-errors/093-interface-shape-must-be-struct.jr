@@ -1,0 +1,9 @@
+// EXPECT: E0299 — a data-interface shape must be a struct (ADR-0233).
+
+read :: (value: $T/interface s64) -> s64 {
+  return value;
+}
+
+main :: () {
+  result := read(1);
+}

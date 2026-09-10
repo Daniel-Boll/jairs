@@ -374,6 +374,17 @@ Status of each slice component, so this is answerable without reading the tree.
 > | `jr-db` | One root-scoped planner groups keys by owner, reaches a deterministic global fixed point, combines mixed type/value keys into one clone, and provides root-aware MIR, optimisation and diagnostics. |
 > | `jr-cli` / `jr-driver` | Check, run, native build and build scripts gate on the same root-aware diagnostics and clone set they execute. |
 
+> **ADR-0233 component delta.**
+>
+> | Component | Current delta |
+> |---|---|
+> | `jr-syntax` / `jr-hir` | A procedure parameter may spell `$T/interface Shape`; the HIR keeps the variable and optional shape together. The spelling is refused outside procedure parameters. |
+> | `jr-pool` | One visible-field resolver returns missing, unique or ambiguous together with the concrete dereference/field-index path, including unique nearest `using` promotion. |
+> | `jr-sema` / `jr-db` | Signatures resolve the shape in the template owner's environment; calls require each direct shape field by visible name and exact type before recording a concrete specialisation. Template bodies see only the shape surface. |
+> | `jr-mir` | Field lowering consumes the pool-owned concrete projection path, so accepted reordered, promoted and pointer-promoted candidates use their real layout. |
+> | `jr-fmt` / `tree-sitter-jairs` | The structural constraint is preserved, highlighted and generated into the tracked parser artefact. |
+> | `tests/corpus` | One executable program covers reordered fields, extras, direct and pointer parameters, value and pointer `using`, mutation and nested generic specialisation; five refusal files and one import fixture cover the boundaries. |
+
 | Component | Status | Notes |
 |---|---|---|
 | `modules/Game` | **Foundation done** | **ADR-0210 decides ADR-0208's six forks and lands the first slice.** A caller owns `App`; `open(width, height, title)` starts SDL, creates the window, selects top-left/y-down Simp coordinates and unwinds every completed step if GL setup fails. `begin_frame` drains once, latches close, and records an unclamped non-negative delta; `end_frame` presents; `close` is idempotent and destroys Simp before the window and SDL. A private guard refuses a second simultaneous App because Simp has one process-global renderer; the lifecycle stays on one thread. Two native integration tests cover a real synthetic-quit/reopen lifecycle and the dummy driver's no-GL unwind. **Not game-ready v1:** held input, primitive helpers, generation-tagged resources, PNG, text and audio are later slices. |
@@ -708,33 +719,32 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0232 completes the requested generic containers.**
-> `modules/List` provides one operation set for native `[..]T`, including the independent
-> `[..]*Node` stack. `modules/Hash_Table` now provides a real zero-ready `Table(K, V)`, including
-> `properties: Table(string, string)` inside `node := New(Node)`. Common scalar, pointer and string
-> keys have built-in policy; arbitrary keys install callbacks; storage is captured-allocator-owned
-> and transactional; lookup, removal, reserve, mutable pointers and mutation-checked cursors are
-> generic over both `K` and `V`.
+> **ADR-0233 delivers the supplied structural data-interface form.**
+> `$T/interface Shape` is a compile-time constraint over the existing concrete specialisation path:
+> fields match by visible name and exact resolved type, order is irrelevant, extras are allowed,
+> unique nearest `using` promotion satisfies a requirement, and ambiguity rejects the call. Pointer
+> parameters compose as `*$T/interface Shape`. One pool-owned projection path now keeps sema and MIR
+> on the same concrete field indices.
 
-**1384 workspace tests (1397 under gate 7), 304 corpus files, 232 ADRs and 26 modules.** ADR-0232
-adds one executable corpus program covering the exact recursive node, generic pointer stack,
-content-keyed strings, integer growth and rehash, enum/bool/pointer defaults, custom struct policy,
-cursor traversal, allocator capture, partial-allocation rollback and idempotent cleanup. The MIR
-snapshot grows because every valid corpus file is part of the snapshot. The no-module sema harness
-tolerates only this probe's derived E0266 for its unresolved imported table field; the ordinary
-with-modules corpus gates compute and execute the real layout.
-**E0299** is the first free global diagnostic code; **E0135** is the first free parser code.
+**1397 workspace tests (1410 under gate 7), 311 corpus files outside fixture modules, 233 ADRs and
+26 modules.** Thirteen focused Rust tests cover contextual syntax, lossless recovery, HIR copying,
+formatter preservation and visible-field paths. Seven new ordinary corpus programs cover the
+executable and refusal matrix; the imported positive probe has one fixture module of its own.
 
-### Next wave: structural data interfaces
+The executable probe covers reordered direct fields, value embedding, pointer-valued embedding,
+pointer parameters and mutation through the concrete projection. Refusal probes pin missing,
+wrongly typed and ambiguous fields, a non-struct shape, and the rule that a template body sees the
+declared interface rather than caller-specific extras. An imported constrained template proves the
+resolved shape travels in `ProcSig` and specialises in its owner file.
+**E0300** is the first free global diagnostic code; **E0136** is the first free parser code.
 
-The supplied `$T/interface Shape` feature is queued independently from `Hash_Table`. It is a
-compile-time structural constraint over the existing `$T` specialisation path, not a runtime
-vtable: required fields match by resolved name and type, extra fields are allowed, and concrete
-offsets remain the concrete struct's. The wave must probe reordered fields and `using` promotion
-before deciding them, plus missing/wrong/ambiguous fields and value versus pointer parameters.
-Design forks still requiring the decider are whether reordered direct fields match, whether
-promoted `using` fields satisfy a requirement, and whether ambiguity is diagnosed at constraint
-checking or ordinary field lookup.
+### Next wave: behavioural structural interfaces
+
+Data fields now have a compile-time requirement representation and concrete projection evidence.
+The next structural-interface fork is whether Jai-shaped interfaces may also require procedures or
+operators, and if so whether a successful match records a direct compile-time callee or relies on
+ordinary overload lookup inside each clone. Probe the public Jai spelling and behaviour first; do
+not infer method requirements from the data-interface syntax or introduce a runtime vtable.
 
 Commit each substrate wave before starting the next; merge remains a separate decider action.
 

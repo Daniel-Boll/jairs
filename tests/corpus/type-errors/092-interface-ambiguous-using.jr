@@ -1,0 +1,27 @@
+// EXPECT: E0299 — two promoted matches at the nearest depth are ambiguous (ADR-0233).
+
+Shape :: struct {
+  value: s64;
+}
+
+Left :: struct {
+  value: s64;
+}
+
+Right :: struct {
+  value: s64;
+}
+
+Ambiguous :: struct {
+  using left: Left;
+  using right: Right;
+}
+
+read :: (value: $T/interface Shape) -> s64 {
+  return value.value;
+}
+
+main :: () {
+  value: Ambiguous;
+  result := read(value);
+}

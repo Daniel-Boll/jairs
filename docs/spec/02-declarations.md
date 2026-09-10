@@ -227,6 +227,40 @@ Jairs-0 structs are "one level" in the sense of no polymorphic parameters, no
 features arrive in later waves (`using` is W2; polymorphic structs follow the
 polymorphism wave W5).
 
+### Structural data interfaces
+
+A polymorphic procedure parameter may constrain its inferred type with
+`$T/interface Shape` (ADR-0233):
+
+```jr
+Position :: struct {
+    x: s64;
+    y: s64;
+}
+
+length_squared :: (value: $T/interface Position) -> s64 {
+    return value.x * value.x + value.y * value.y;
+}
+```
+
+`Shape` must be a struct. Every field directly declared by it is required by
+resolved name and exact resolved type. The candidate may declare those fields in
+another order and may have additional fields. A direct field shadows promoted
+ones; otherwise one nearest `using` path may provide the field. Several matches
+at that depth are ambiguous.
+
+The constraint applies to `T`, so pointer inference composes normally:
+
+```jr
+move_x :: (value: *$T/interface Position, delta: s64) {
+    value.x = value.x + delta;
+}
+```
+
+This is a compile-time admissibility check over ordinary `$T` specialisation,
+not a runtime interface value or vtable. An accepted call is lowered with the
+candidate struct's concrete field indices and layout.
+
 ## The pointer type
 
 `*T` is the type "pointer to `T`", and it nests: `**T` is a pointer to a pointer

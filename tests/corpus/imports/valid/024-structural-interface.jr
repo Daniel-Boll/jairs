@@ -1,0 +1,16 @@
+// ADR-0233 — a caller validates and specializes an imported constrained template.
+
+#import "Structural_Interface";
+
+Entity :: struct {
+  y: s64;
+  name: string;
+  x: s64;
+}
+
+main :: () {
+  entity: Entity;
+  entity.x = 20;
+  entity.y = 22;
+  answer := position_sum(entity);
+}

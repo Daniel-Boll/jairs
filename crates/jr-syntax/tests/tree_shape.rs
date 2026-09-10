@@ -11,7 +11,7 @@
 //! them ever asked a `FIELD_EXPR` for its receiver. These tests do.
 
 use jr_base::FileId;
-use jr_syntax::ast::{AstNode, Expr, Proc, SourceFile};
+use jr_syntax::ast::{AstNode, Expr, Proc, SourceFile, TypeExpr};
 use jr_syntax::parse;
 
 /// Parses `X :: <expr>;` and returns the expression.
@@ -90,6 +90,97 @@ fn named_results_keep_labels_separate_from_their_types() {
         .map(|result| result.name_token().map(|token| token.text().to_owned()))
         .collect();
     assert_eq!(mixed_labels, [Some("value".to_owned()), None]);
+}
+
+#[test]
+fn polymorphic_interface_is_a_child_type_and_interface_stays_contextual() {
+    let source = concat!(
+        "interface :: struct { value: s64; }\n",
+        "read :: (value: *$T/interface Window.Shape) {\n",
+        "  todo;\n",
+        "}\n",
+    );
+    let parsed = parse(source, FileId::from_usize(0));
+    assert!(
+        !parsed.has_errors(),
+        "the contextual constraint and an ordinary `interface` identifier must coexist: {:?}",
+        parsed.diagnostics()
+    );
+
+    let proc = parsed
+        .syntax()
+        .descendants()
+        .find_map(Proc::cast)
+        .expect("read procedure");
+    let param = proc
+        .param_list()
+        .expect("parameter list")
+        .params()
+        .next()
+        .expect("value parameter");
+    let TypeExpr::Pointer(pointer) = param.ty().expect("pointer parameter type") else {
+        panic!("expected the outer pointer");
+    };
+    let Some(TypeExpr::Poly(poly)) = pointer.pointee() else {
+        panic!("expected a polymorphic pointee");
+    };
+    assert_eq!(
+        poly.name_token().map(|token| token.text().to_owned()),
+        Some("T".into())
+    );
+    let Some(TypeExpr::Name(shape)) = poly.interface() else {
+        panic!("the interface shape must remain a child type");
+    };
+    assert_eq!(
+        shape.module_token().map(|token| token.text().to_owned()),
+        Some("Window".into())
+    );
+    assert_eq!(
+        shape.name_token().map(|token| token.text().to_owned()),
+        Some("Shape".into())
+    );
+}
+
+#[test]
+fn malformed_polymorphic_interfaces_report_e0135_losslessly() {
+    for source in [
+        "read :: (value: $T/Shape) { todo; }\n",
+        "read :: (value: $T/interface) { todo; }\n",
+    ] {
+        let parsed = parse(source, FileId::from_usize(0));
+        assert!(
+            parsed
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == Some("E0135")),
+            "expected E0135 for {source:?}, got {:?}",
+            parsed
+                .diagnostics()
+                .iter()
+                .map(|diagnostic| diagnostic.code)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(parsed.syntax().text().to_string(), source);
+    }
+}
+
+#[test]
+fn polymorphic_interfaces_are_refused_outside_procedure_parameters() {
+    for source in [
+        "Box :: struct($T/interface Shape) { value: T; }\n",
+        "bad :: () -> $T/interface Shape { todo; }\n",
+    ] {
+        let parsed = parse(source, FileId::from_usize(0));
+        assert!(
+            parsed
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == Some("E0135")),
+            "expected E0135 for {source:?}, got {:?}",
+            parsed.diagnostics()
+        );
+        assert_eq!(parsed.syntax().text().to_string(), source);
+    }
 }
 
 // ---------------------------------------------------------------------------

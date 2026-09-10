@@ -166,6 +166,10 @@
 ; are an ordinary expression and an ordinary type, and are left to their own rules.
 (vector_type "#simd" @keyword)
 
+; `interface` is contextual inside `$T/interface Shape` (ADR-0233 §1). It remains an ordinary
+; identifier everywhere else, so capture the marker field rather than matching its text globally.
+(poly_type marker: (identifier) @keyword)
+
 ; `#complete` is a literal token inside the switch-shaped sugar rather than a generic `(directive)`
 ; node, so it needs the same explicit capture as the attribute directives above.
 (switch_stmt "#complete" @keyword)

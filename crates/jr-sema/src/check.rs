@@ -34,14 +34,14 @@ use jr_hir::{
     AssignOp, BinOp, BodyId, Expr, ExprId, ExprScope, FileHir, ItemKind, Literal, ProcId, Res,
     ResolveMap, Stmt, StmtId, TypeRef, TypeRefId, UnOp,
 };
-use jr_pool::{Item, Pool, PoolId};
+use jr_pool::{FieldLookup, Item, Pool, PoolId};
 use rustc_hash::FxHashMap;
 
 use crate::code::{
     E0204, E0214, E0215, E0216, E0217, E0218, E0219, E0220, E0221, E0222, E0223, E0224, E0225,
     E0232, E0234, E0235, E0236, E0238, E0239, E0241, E0242, E0243, E0244, E0247, E0251, E0252,
     E0254, E0256, E0257, E0258, E0259, E0260, E0261, E0265, E0266, E0267, E0268, E0272, E0277,
-    E0278, E0279, E0284, E0285, E0286, E0287, E0288, E0289, E0291, E0293, E0295, E0297,
+    E0278, E0279, E0284, E0285, E0286, E0287, E0288, E0289, E0291, E0293, E0295, E0297, E0299,
 };
 use crate::ctx::{BodyEnv, Ctx, Mode};
 use crate::map::TypeMap;
@@ -530,6 +530,7 @@ pub fn check_file(
         ctx.comptime_param_names.clear();
         ctx.type_bindings.clear();
         ctx.poly_var_names.clear();
+        ctx.interface_witnesses.clear();
         if let Some(proc) = owner.get(&body) {
             for (p, name, value) in &hir.param_values {
                 if p == proc {
@@ -552,7 +553,15 @@ pub fn check_file(
             if let Some(sig) = ctx.sigs.proc_sig(*proc) {
                 let vars = sig.poly_vars.clone();
                 for var in vars {
-                    ctx.poly_var_names.insert(var);
+                    ctx.poly_var_names.insert(var.name);
+                    if let Some(interface) = var.interface {
+                        // A constrained template's own body checks against the declared shape, so it
+                        // may use required fields but cannot depend on a caller-specific extra field
+                        // (ADR-0233 §5). The signature remains a template because `poly_vars` is
+                        // non-empty; concrete clones instead receive their real binding above.
+                        ctx.type_bindings.insert(var.name, interface);
+                        ctx.interface_witnesses.insert(var.name);
+                    }
                 }
             }
             // **A `#modify` predicate names its guarded template's `$T`** (ADR-0094 §1). The predicate is a
@@ -590,6 +599,7 @@ pub fn check_file(
         ctx.comptime_param_names.clear();
         ctx.type_bindings.clear();
         ctx.poly_var_names.clear();
+        ctx.interface_witnesses.clear();
     }
 
     // Collected before `ctx.sigs` is dropped. It started as a clone of the file's
@@ -1106,10 +1116,9 @@ impl<'a> Ctx<'a> {
             // arity diagnostic until that clone has a concrete result type. Without this exception,
             // every generic `pop :: (*[..]$T) -> (T, bool)` was rejected before it could specialize.
             let in_unbound_template = ret == PoolId::ERROR
-                && self
-                    .poly_var_names
-                    .iter()
-                    .any(|v| !self.type_bindings.contains_key(v));
+                && self.poly_var_names.iter().any(|v| {
+                    !self.type_bindings.contains_key(v) || self.interface_witnesses.contains(v)
+                });
             if in_unbound_template {
                 for expr in exprs {
                     self.check_expr(scope, *expr, None);
@@ -2390,59 +2399,6 @@ impl<'a> Ctx<'a> {
             }
             Res::Error => PoolId::ERROR,
         }
-    }
-
-    /// The type of `name` found through a `using`-embedded field of the struct `decl`.
-    ///
-    /// Searches breadth-first over the embedded bases, so a shallower embedding wins — which
-    /// matters when two levels both provide a name and is the same "nearer declaration shadows"
-    /// rule the direct-field check above uses.
-    ///
-    /// Returns `None` when nothing provides it, leaving the caller to raise E0218 with its
-    /// near-name suggestion (ADR-0031 §1) rather than duplicating that diagnostic here.
-    fn embedded_field_type(&mut self, decl: jr_pool::DeclId, name: Symbol) -> Option<PoolId> {
-        // A cycle is impossible — a struct cannot contain itself by value, and the recursive-type
-        // refusal already covers it (ADR-0050 §4) — but the depth bound is kept anyway, because a
-        // malformed pool would otherwise loop forever inside the compiler rather than report.
-        let mut frontier: Vec<jr_pool::DeclId> = vec![decl];
-        for _ in 0..16u32 {
-            let mut next = Vec::new();
-            for current in frontier.drain(..) {
-                let fields = match self.pool.struct_fields(current) {
-                    Some(fields) => fields.to_vec(),
-                    None => continue,
-                };
-                for field in &fields {
-                    if !field.using {
-                        continue;
-                    }
-                    let mut base_ty = field.ty;
-                    while let Some(inner) = self.pointee(base_ty) {
-                        base_ty = inner;
-                    }
-                    let Item::StructType {
-                        decl: inner_decl, ..
-                    } = self.pool.item(base_ty)
-                    else {
-                        continue;
-                    };
-                    let inner_decl = *inner_decl;
-                    if let Some(found) = self
-                        .pool
-                        .struct_fields(inner_decl)
-                        .and_then(|fs| fs.iter().find(|f| f.name == name).map(|f| f.ty))
-                    {
-                        return Some(found);
-                    }
-                    next.push(inner_decl);
-                }
-            }
-            if next.is_empty() {
-                return None;
-            }
-            frontier = next;
-        }
-        None
     }
 
     /// The type of `field` within `base_ty`, for a `using`-promoted name.
@@ -5607,7 +5563,8 @@ impl<'a> Ctx<'a> {
         // perfectly reasonable `type_info(T)` inside a `$T` body was E0261 "needs a type" — reflection over
         // the very thing polymorphism binds. Empty outside a polymorphic context, so an ordinary program
         // costs one hash probe.
-        if let Some(&bound) = self.type_bindings.get(&name)
+        if !self.interface_witnesses.contains(&name)
+            && let Some(&bound) = self.type_bindings.get(&name)
             && bound != PoolId::ERROR
         {
             return Some(bound);
@@ -6196,7 +6153,7 @@ impl<'a> Ctx<'a> {
         if sig
             .poly_vars
             .iter()
-            .any(|v| !bindings.iter().any(|(b, _)| b == v))
+            .any(|v| !bindings.iter().any(|(b, _)| *b == v.name))
         {
             // **Withheld when the caller is a template's own copy** (ADR-0155 §4), the way `size_of`'s and
             // `type_info`'s E0261 already is. Inside `stable_sort :: (xs: []$T, ...)` the argument `xs` has
@@ -6209,10 +6166,9 @@ impl<'a> Ctx<'a> {
             // *names* and no *bindings* for them. A clone has both, so a genuinely uninferable call inside
             // an instantiation is still refused — which is where a real mistake shows up, with the
             // instantiation backtrace attached.
-            let in_unbound_template = self
-                .poly_var_names
-                .iter()
-                .any(|v| !self.type_bindings.contains_key(v));
+            let in_unbound_template = self.poly_var_names.iter().any(|v| {
+                !self.type_bindings.contains_key(v) || self.interface_witnesses.contains(v)
+            });
             if !in_unbound_template {
                 self.diags.push(
                     Diagnostic::error(span, "cannot infer every `$T` from the arguments of this call")
@@ -6222,6 +6178,14 @@ impl<'a> Ctx<'a> {
                         ),
                 );
             }
+            return PoolId::ERROR;
+        }
+
+        // A data interface constrains the type inferred above; it does not participate in inference
+        // and it does not change the structural instantiation key (ADR-0233 §4). Validate before
+        // concrete re-resolution or clone recording, so a refused type creates no half-valid
+        // instantiation.
+        if !self.check_data_interfaces(sig, &bindings, span) {
             return PoolId::ERROR;
         }
 
@@ -6305,7 +6269,7 @@ impl<'a> Ctx<'a> {
             .map(|v| {
                 bindings
                     .iter()
-                    .find(|(b, _)| b == v)
+                    .find(|(b, _)| *b == v.name)
                     .map_or(PoolId::ERROR, |(_, t)| *t)
             })
             .collect();
@@ -6334,6 +6298,110 @@ impl<'a> Ctx<'a> {
         ret
     }
 
+    /// Validates every `$T/interface Shape` against the concrete type inferred for `T`
+    /// (ADR-0233).
+    ///
+    /// `Shape` contributes its directly declared fields. The candidate is queried through
+    /// [`Pool::visible_field`], which owns direct-field precedence, breadth-first `using`
+    /// promotion, pointer auto-dereference and ambiguity — the same lookup ordinary field access and
+    /// MIR use.
+    fn check_data_interfaces(
+        &mut self,
+        sig: &ProcSig,
+        bindings: &[(Symbol, PoolId)],
+        span: Span,
+    ) -> bool {
+        for var in &sig.poly_vars {
+            let Some(interface) = var.interface else {
+                continue;
+            };
+            let Some((_, candidate)) = bindings.iter().find(|(name, _)| *name == var.name) else {
+                continue;
+            };
+            let candidate = *candidate;
+            let variable = self.interner.resolve(var.name);
+            let shape_name = self.describe(interface);
+            let candidate_name = self.describe(candidate);
+
+            if !matches!(self.pool.item(candidate), Item::StructType { .. }) {
+                self.diags.push(
+                    Diagnostic::error(
+                        span,
+                        format!(
+                            "type `{candidate_name}` does not satisfy interface `{shape_name}`"
+                        ),
+                    )
+                    .with_code(E0299)
+                    .with_note(format!(
+                        "`${variable}` must be bound to a struct; `{candidate_name}` is not one"
+                    )),
+                );
+                return false;
+            }
+
+            let Some(requirements) = self.pool.fields_of(interface).map(<[_]>::to_vec) else {
+                // The declaration phase already diagnoses a non-struct or unresolved interface.
+                // Keep poison quiet here rather than reporting a second failure at every call.
+                continue;
+            };
+            for required in requirements {
+                if required.ty == PoolId::ERROR {
+                    continue;
+                }
+                let field = self.interner.resolve(required.name);
+                match self.pool.visible_field(candidate, required.name) {
+                    FieldLookup::Unique { ty, .. } if ty == required.ty => {}
+                    FieldLookup::Unique { ty, .. } => {
+                        let got = self.describe(ty);
+                        let expected = self.describe(required.ty);
+                        self.diags.push(
+                            Diagnostic::error(
+                                span,
+                                format!(
+                                    "type `{candidate_name}` does not satisfy interface `{shape_name}`"
+                                ),
+                            )
+                            .with_code(E0299)
+                            .with_note(format!(
+                                "field `{field}` has type `{got}`, expected `{expected}`"
+                            )),
+                        );
+                        return false;
+                    }
+                    FieldLookup::Missing => {
+                        self.diags.push(
+                            Diagnostic::error(
+                                span,
+                                format!(
+                                    "type `{candidate_name}` does not satisfy interface `{shape_name}`"
+                                ),
+                            )
+                            .with_code(E0299)
+                            .with_note(format!("required field `{field}` is missing")),
+                        );
+                        return false;
+                    }
+                    FieldLookup::Ambiguous { .. } => {
+                        self.diags.push(
+                            Diagnostic::error(
+                                span,
+                                format!(
+                                    "type `{candidate_name}` does not satisfy interface `{shape_name}`"
+                                ),
+                            )
+                            .with_code(E0299)
+                            .with_note(format!(
+                                "required field `{field}` is ambiguous through multiple `using` paths"
+                            )),
+                        );
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
     /// Binds a type variable by matching a parameter's `TypeRef` structure against an argument's resolved
     /// type (ADR-0084 §1, ADR-0148 §1, ADR-0229).
     ///
@@ -6352,7 +6420,7 @@ impl<'a> Ctx<'a> {
         bindings: &mut Vec<(Symbol, PoolId)>,
     ) {
         match self.type_ref(ExprScope::TopLevel, param_ty) {
-            TypeRef::Poly(var) => {
+            TypeRef::Poly { name: var, .. } => {
                 if !bindings.iter().any(|(v, _)| *v == var) {
                     bindings.push((var, arg_ty));
                 }
@@ -6749,21 +6817,25 @@ impl<'a> Ctx<'a> {
                 // `s64` (ADR-0085 §2); `using`-promotion stays keyed on the `DeclId`, since a
                 // parameterised struct with a `using` field is out of this sub-wave's scope
                 // (ADR-0085 §5) and an ordinary struct's instance carries its own `DeclId`.
-                let embed_decl = match self.pool.item(instance) {
-                    Item::StructType { decl, .. }
-                    | Item::UnionType { decl, .. }
-                    | Item::VariantType { decl, .. } => *decl,
-                    _ => unreachable!("ReceiverKind::Struct holds a struct/union/variant instance"),
-                };
-                let found = self
-                    .pool
-                    .fields_of(instance)
-                    .and_then(|fields| fields.iter().find(|f| f.name == name).map(|f| f.ty))
-                    .or_else(|| self.embedded_field_type(embed_decl, name));
-                match found {
-                    Some(field_ty) => field_ty,
-                    None => {
+                match self.pool.visible_field(instance, name) {
+                    FieldLookup::Unique { ty, .. } => ty,
+                    FieldLookup::Missing => {
                         self.no_such_field(ty, field, name_span);
+                        PoolId::ERROR
+                    }
+                    FieldLookup::Ambiguous { .. } => {
+                        self.diags.push(
+                            Diagnostic::error(
+                                name_span,
+                                format!(
+                                    "field `{field}` is ambiguous through multiple `using` paths"
+                                ),
+                            )
+                            .with_code(E0218)
+                            .with_note(
+                                "a direct field would shadow the promoted fields; otherwise rename or remove one embedding",
+                            ),
+                        );
                         PoolId::ERROR
                     }
                 }
