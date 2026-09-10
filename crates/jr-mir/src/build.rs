@@ -2272,9 +2272,9 @@ impl Lower<'_> {
                 }
 
                 let zero = Operand::Constant(self.pool.int_value(PoolId::S64, 0));
-                // The length: an array's is a constant from its type; a view's and a string's are
-                // loads of their `.count`. Strings use their own projections rather than an
-                // implicit conversion to `[]u8`.
+                // The length: an array's is a constant from its type; a view's, dynamic array's,
+                // and string's are loads of their `.count`. Each aggregate uses its own
+                // projections rather than an implicit conversion to another sequence type.
                 if let Some(len) = self.array_len(ty) {
                     let end = Operand::Constant(self.pool.int_value(PoolId::S64, len));
                     Some(ForBounds {
@@ -2292,6 +2292,17 @@ impl Lower<'_> {
                         start: zero,
                         end: count,
                         element: Some(place.project(Projection::StringData)),
+                    })
+                } else if self.dynamic_array_elem(ty).is_some() {
+                    let count = self.define(
+                        PoolId::S64,
+                        Rvalue::Load(place.clone().project(Projection::DynamicArrayCount)),
+                        span,
+                    );
+                    Some(ForBounds {
+                        start: zero,
+                        end: count,
+                        element: Some(place.project(Projection::DynamicArrayData)),
                     })
                 } else {
                     self.view_elem(ty)?;
@@ -3444,15 +3455,16 @@ impl Lower<'_> {
         let base_ty = self.ty(base);
 
         // Preserve the established pointer-to-container meaning first: `p: *[4]u8; p[i]` indexes
-        // the pointee array with its bound. If peeling the chain does not reach an array, vector or
-        // view, the *outer* pointer is the raw sequence and `p[i]` is its unchecked element place
-        // (ADR-0238 §1–2).
+        // the pointee array with its bound. If peeling the chain does not reach an array, vector,
+        // view or dynamic array, the *outer* pointer is the raw sequence and `p[i]` is its
+        // unchecked element place (ADR-0238 §1–2).
         let mut peeled = base_ty;
         while let Some(pointee) = self.pointee(peeled) {
             peeled = pointee;
         }
-        let bounded_container =
-            self.array_elem(peeled).is_some() || self.view_elem(peeled).is_some();
+        let bounded_container = self.array_elem(peeled).is_some()
+            || self.view_elem(peeled).is_some()
+            || self.dynamic_array_elem(peeled).is_some();
         if !bounded_container && let Some(elem) = self.pointee(base_ty) {
             let pointer = self.expr(base);
             let index = self.expr(index);
@@ -3477,15 +3489,16 @@ impl Lower<'_> {
 
         let span = self.span(index);
 
-        // Two indexable types, differing in *where the length comes from* and in nothing else.
+        // Three indexable shapes, differing in *where the length and data come from* and in
+        // nothing else.
         // This is the shape ADR-0039 §1 paid for in advance by making `BoundsCheck`'s `len` an
         // `Operand`: a view needs no new statement and no second checking path, so `buf[i]` and
         // `xs[i]` cannot disagree about whether an index was checked.
         //
         // The element place also differs. An array's is a projection *of the array's own
-        // storage*; a view's is its `data` word indexed directly, and `Projection::Index` on a
-        // pointer place reads through it — the same type-directed rule that makes `p: *[4]u8`
-        // indexable at the source level.
+        // storage*; a view's or dynamic array's is its `data` word indexed directly, and
+        // `Projection::Index` on a pointer place reads through it — the same type-directed rule
+        // that makes `p: *[4]u8` indexable at the source level.
         let (mut place, elem, len) = if let Some(elem) = self.array_elem(ty) {
             let len = self.array_len(ty)?;
             // `int_value` takes the raw bit pattern, so the length goes in as-is: a `u64`
@@ -3493,6 +3506,13 @@ impl Lower<'_> {
             // length above `i64::MAX` cannot occur — `layout_of` refuses an array that large.
             let constant = self.pool.int_value(PoolId::S64, len);
             (place, elem, Operand::Constant(constant))
+        } else if let Some(elem) = self.dynamic_array_elem(ty) {
+            let count = self.define(
+                PoolId::S64,
+                Rvalue::Load(place.clone().project(Projection::DynamicArrayCount)),
+                span,
+            );
+            (place.project(Projection::DynamicArrayData), elem, count)
         } else {
             let elem = self.view_elem(ty)?;
             let count = self.define(
@@ -4617,6 +4637,20 @@ impl Lower<'_> {
         }
         match self.pool.item(ty) {
             Item::ViewType { elem } => Some(*elem),
+            _ => None,
+        }
+    }
+
+    /// The element type of `ty` when it is a native dynamic array.
+    ///
+    /// Kept separate from [`Lower::view_elem`] because the two have distinct MIR projections:
+    /// both carry a runtime count and data pointer, but only a dynamic array owns capacity.
+    fn dynamic_array_elem(&self, ty: PoolId) -> Option<PoolId> {
+        if ty.index() >= self.pool.len() {
+            return None;
+        }
+        match self.pool.item(ty) {
+            Item::DynamicArrayType { elem } => Some(*elem),
             _ => None,
         }
     }

@@ -58,7 +58,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0241.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0242.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -151,6 +151,12 @@ default-initialised pointer local is now correctly the typed null value rather t
 the language server, completing `stack.` offers the same public `data`, `count`, and `capacity`
 pseudo-fields that sema accepts, with `data` preserving the concrete element type.
 
+The language surface now treats that native dynamic array as a bounded sequence too. `stack[i]`
+reads or writes the used prefix directly, `*stack[i]` takes an element address, and
+`for node, index: stack` iterates from zero to the captured `count`. Bounds checks use `count`, not
+spare `capacity`; `#no_abc` keeps its existing opt-out, and `*[..]T` auto-dereferences to this
+bounded meaning before raw-pointer indexing is considered.
+
 `Hash_Table` now supplies the other requested generic container. `Table(K, V)` is zero-ready,
 including as `properties: Table(string, string)` inside `New(Node)`. Strings compare by content;
 integer, enum, bool and pointer keys have built-in value policy; arbitrary keys install borrowed
@@ -179,9 +185,9 @@ still needs an explicit pointer type and non-literal defaults remain deferred.
 Ordinary local/imported calls to a pure `$T` procedure now use that binder too. A fixed explicitly
 typed or inferred literal default may be omitted, names are reordered before inference, and only
 caller-supplied expressions bind each type variable. A default whose type is `$T` or a later bare
-`T` is E0252; defaults and local named calls on `$N` or mixed templates remain E0252, while imported
-comptime templates remain E0268. Calling a pure template inside `#run` is still a separate
-specialization gap.
+`T` is E0252. Local `$N` and mixed templates now accept named arguments and literal defaults,
+including a default on `$N` itself; imported comptime templates remain E0268. Calling a pure
+template inside `#run` is still a separate specialization gap.
 
 Every fresh Jairs context now has a working allocator/free pair in the VM, Cranelift and LLVM;
 assigning a custom pair and copying one through `push_context` remain unchanged. Whole-file
@@ -274,9 +280,8 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1433** workspace tests (**1446** under gate 7), with all six ordinary gates green for
-  ADR-0241. Gate 7 was not rerun because no MIR, layout, codegen, or back-end implementation changed.
-- **324** `.jr` corpus files outside the fixture-module directory, **241** accepted ADRs, **26** standard library
+- **1436** workspace tests (**1449** under gate 7), with all seven gates green for ADR-0242.
+- **325** `.jr` corpus files outside the fixture-module directory, **242** accepted ADRs, **26** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative
@@ -392,7 +397,7 @@ before: two gates run at once and race a shared binary.
 - **[`docs/jai-game-development-audit.md`](docs/jai-game-development-audit.md)** —
   the primary-source games audit, language/library gaps, and the staged `Game`
   facade plan whose foundation is now implemented.
-- **[`docs/adr/README.md`](docs/adr/README.md)** — all 241 accepted decision
+- **[`docs/adr/README.md`](docs/adr/README.md)** — all 242 accepted decision
   records.
 - **[`docs/spec/`](docs/spec/)** — the language specification chapters.
 - **[`examples/`](examples/)** — runnable programs, each verified.

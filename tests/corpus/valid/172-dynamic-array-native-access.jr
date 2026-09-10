@@ -1,0 +1,60 @@
+// Native indexing and iteration over `[..]T`.
+//
+// Three pushes leave `count == 3` and `capacity == 4`, so both loop forms distinguish the used
+// prefix from the backing allocation. The program also exercises direct reads and writes,
+// address-taking, `*[..]T` auto-dereference, a named index, reverse iteration, and an in-range
+// `#no_abc` access. The differential trap test separately proves index == count traps.
+
+#import "Basic";
+#import "List";
+
+unchecked_at :: (xs: *[..]s64, index: s64) -> s64 #no_abc {
+  return xs[index];
+}
+
+main :: () {
+  xs: [..]s64;
+  if !push(*xs, 10) || !push(*xs, 20) || !push(*xs, 30) {
+    exit(1);
+  }
+  if xs.count != 3 || xs.capacity <= xs.count || xs[0] != 10 || xs[2] != 30 {
+    exit(2);
+  }
+
+  xs[1] = 21;
+  address := *xs[2];
+  address.* = 31;
+
+  owner := *xs;
+  owner[0] = 11;
+  if owner[0] != 11 || xs[1] != 21 || xs[2] != 31 {
+    exit(3);
+  }
+
+  total := 0;
+  index_total := 0;
+  for value, index: xs {
+    total = total + value;
+    index_total = index_total + index;
+  }
+  if total != 63 || index_total != 3 {
+    exit(4);
+  }
+
+  reversed := 0;
+  reverse_index_total := 0;
+  for < value, index: owner {
+    reversed = reversed * 100 + value;
+    reverse_index_total = reverse_index_total + index;
+  }
+  if reversed != 312111 || reverse_index_total != 3 {
+    exit(5);
+  }
+
+  if unchecked_at(owner, 1) != 21 {
+    exit(6);
+  }
+
+  free_data(owner);
+  exit(42);
+}

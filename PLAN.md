@@ -459,6 +459,15 @@ Status of each slice component, so this is answerable without reading the tree.
 > | `jr-db` | Comptime call evidence carries one `ArgSlot` per declared parameter. Only supplied expressions at comptime positions become const-eval targets; omitted literal defaults contribute their already-interned values directly to the specialization key. |
 > | Tests / boundary | `valid/171` executes named reordering and omitted defaults on pure `$N` and mixed templates, while a database test proves omitted, named-explicit and positional-explicit `N = 4` share one clone. Imported `$N`/mixed calls remain E0268, non-literal defaults remain later, and pure-template calls inside `#run` still need an instantiated routine in the comptime VM. |
 
+> **ADR-0242 component delta.**
+>
+> | Component | Current delta |
+> |---|---|
+> | `jr-sema` | `[..]T` joins the indexable and iterable sequence shapes. `xs[i]` has element type `T`; pointer chains ending in a dynamic array retain bounded-container precedence over ADR-0238's raw-pointer fallback. |
+> | `jr-mir` | Index lowering loads the bound from `DynamicArrayCount`, indexes through `DynamicArrayData`, and reuses the existing `BoundsCheck`; `for` lowers the same data/count pair into its shared sequence bounds. No MIR node or engine primitive is added. |
+> | Policy | The logical length is `count`, never `capacity`; the existing procedure/build bounds-check policy and `#no_abc` apply unchanged. Iteration captures the header once before entering the loop. |
+> | Tests / boundary | `valid/172` exercises direct reads, writes, address-taking, pointer auto-dereference, forward/reverse/index iteration, and `#no_abc`. A differential trap keeps `count < capacity` and indexes the first spare slot, proving all engines reject capacity as a length. Dynamic-array slicing remains separate. |
+
 | Component | Status | Notes |
 |---|---|---|
 | `modules/Game` | **Foundation done** | **ADR-0210 decides ADR-0208's six forks and lands the first slice.** A caller owns `App`; `open(width, height, title)` starts SDL, creates the window, selects top-left/y-down Simp coordinates and unwinds every completed step if GL setup fails. `begin_frame` drains once, latches close, and records an unclamped non-negative delta; `end_frame` presents; `close` is idempotent and destroys Simp before the window and SDL. A private guard refuses a second simultaneous App because Simp has one process-global renderer; the lifecycle stays on one thread. Two native integration tests cover a real synthetic-quit/reopen lifecycle and the dummy driver's no-GL unwind. **Not game-ready v1:** held input, primitive helpers, generation-tagged resources, PNG, text and audio are later slices. |
@@ -793,35 +802,23 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0241 gives local comptime templates the ordinary named/default binder.**
-> `width :: ($N: s64 = 4) -> s64` may now be called as `width()`, `width(4)`, or
-> `width(N = 4)`, and all three demand one specialization.
+> **ADR-0242 makes `[..]T` an ordinary bounded sequence.**
+> `xs[i]` is a read/write/addressable place and `for value, index: xs` walks the
+> used prefix; both take their bound from `count`, never spare `capacity`.
 
-**1433 workspace tests (1446 under gate 7), 324 corpus files outside fixture modules, 241 ADRs and
-26 modules.** `valid/171` executes pure `$N` and mixed-template named/default calls; a database
-integration test proves equivalent spellings deduplicate to one clone. All six ordinary gates are
-green; gate 7 was not rerun because no MIR, layout, codegen, or back-end implementation changed. Its
-enumerated count moves by the same one new default-gate test to 1446.
+**1436 workspace tests (1449 under gate 7), 325 corpus files outside fixture modules, 242 ADRs and
+26 modules.** `valid/172` executes direct reads, writes, address-taking, pointer-to-container
+auto-dereference, forward/reverse/index iteration, and an in-range `#no_abc` access. A differential
+test leaves `count == 1` and `capacity > 1`, then indexes exactly `count`; VM, Cranelift and LLVM all
+trap, proving no engine mistakes allocation capacity for logical length. All seven gates are green.
 
-The call record is now the binder's full declaration-ordered `ArgSlot` vector rather than a compressed
-list of source expressions. The signature supplies the comptime mask. `jr-db` evaluates only
-`Given(expr)` slots at `$N` positions and consumes `Default(value)` directly, so an omitted literal
-does not need a fabricated expression or caller scope. Defaults still do not infer `$T`; imported
-`$N`/mixed specialization remains E0268.
+Sema adds the dynamic-array element type to its existing indexable and iterable shapes. MIR loads
+`DynamicArrayCount`, indexes through `DynamicArrayData`, and reuses the same `BoundsCheck` and
+`ForBounds` paths as views. No MIR node, bytecode instruction, or native-back-end primitive was
+added. Pointer chains ending in `[..]T` keep bounded auto-dereference precedence over ADR-0238's
+unchecked raw-pointer fallback.
 
-### Next wave: native dynamic-array access
-
-`[..]T` should become an ordinary bounded sequence at the language surface:
-
-- `xs[i]` reads, writes, and supports address-taking;
-- `for value, index: xs` iterates the used prefix;
-- bounds use `count`, never `capacity`, and compose with `#no_abc`;
-- `*[..]T` keeps bounded-container auto-dereference precedence over raw-pointer indexing.
-
-The existing MIR already has `DynamicArrayData` and `DynamicArrayCount` projections, so the wave
-should add no engine primitive. It does touch MIR lowering and therefore requires gate 7.
-
-### Following parity wave: `Pool` and `Flat_Pool`
+### Next wave: `Pool` and `Flat_Pool`
 
 The allocator decision is closed on captured ownership. Both pools capture one backing allocator
 triple before installation and replay it through `push_context`; consulting the ambient allocator
@@ -829,8 +826,15 @@ after installation would recurse. `Pool` is a stable-address multi-block arena w
 blocks, reset/reuse, large dedicated blocks and bulk release. `Flat_Pool` is one contiguous slab and
 may grow only while empty, because relocating live allocator results would be a false promise.
 Private unions bridge `*Pool`/`*Flat_Pool` through the current `allocator_data: s64` protocol, and
-allocation cursors use the protocol's established 16-byte alignment. The acceptance program should
-exercise `New(Node)`, `[..]*Node`, `Table(string, string)`, reset/reuse and a request above 64 KiB.
+allocation cursors use the protocol's established 16-byte alignment.
+
+The guide-evidenced `Pool` surface is `get`, `set_allocators`, `reset`, `release`,
+`pool_allocator_proc`, `memblock_size`, `bytes_left`, and `overwrite_memory`.
+`Flat_Pool` adds the project-owned `reserve`, uses `reset`/`fini`, and returns null instead of
+relocating live allocations. Because `List` deliberately still calls `malloc/free`, the acceptance
+program must allocate a `[..]*Node` backing store through the pool directly rather than claiming
+ordinary `push` is pool-backed. It should also exercise `New(Node)`, `Table(string, string)`,
+reset/reuse, idempotent release/fini, and a request above 64 KiB.
 
 Pure-template calls inside `#run` remain the next specialization/lowering follow-up after these three
 selected waves. Non-literal defaults remain later: constants, calls, aggregates, `context` values and

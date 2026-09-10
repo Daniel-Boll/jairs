@@ -17,7 +17,8 @@ mod harness;
 use harness::Program;
 use jr_hir::{Expr, ExprId, ExprScope};
 use jr_mir::{
-    ConstValues, ImportedProcs, Operand, Poisoned, Rvalue, SlotId, Statement, Terminator,
+    ConstValues, ImportedProcs, Operand, Poisoned, Projection, Rvalue, SlotId, Statement,
+    Terminator,
 };
 use jr_pool::PoolId;
 
@@ -331,6 +332,92 @@ fn break_and_continue_reach_the_loop_exit_and_header() {
     assert!(
         body.facts().stray_jumps.is_empty(),
         "both jumps are inside the loop"
+    );
+}
+
+#[test]
+fn dynamic_array_access_uses_count_and_data_for_reads_writes_and_addresses() {
+    let mut program = Program::new();
+    let lowered = program.lower_clean(
+        "checked :: (xs: *[..]s64, i: s64) -> s64 {\n\
+             xs[i] = 1;\n\
+             address := *xs[i];\n\
+             address.* = 2;\n\
+             return xs[i];\n\
+         }\n\
+         unchecked :: (xs: *[..]s64, i: s64) -> s64 #no_abc {\n\
+             return xs[i];\n\
+         }\n",
+    );
+
+    let checked = lowered.body(&program.interner, "checked");
+    let mut count_values = Vec::new();
+    let mut bounds_lens = Vec::new();
+    let mut data_indices = 0;
+    let mut capacity_uses = 0;
+    for block in checked.blocks() {
+        for stmt in &block.stmts {
+            match stmt {
+                Statement::Assign {
+                    dest,
+                    rvalue: Rvalue::Load(place),
+                    ..
+                } if place.projection.contains(&Projection::DynamicArrayCount) => {
+                    count_values.push(Operand::Value(*dest));
+                }
+                Statement::BoundsCheck { len, .. } => bounds_lens.push(*len),
+                Statement::Assign {
+                    rvalue: Rvalue::Load(place) | Rvalue::Address(place),
+                    ..
+                }
+                | Statement::Store { place, .. }
+                    if place.projection.contains(&Projection::DynamicArrayData)
+                        && place
+                            .projection
+                            .iter()
+                            .any(|step| matches!(step, Projection::Index(_))) =>
+                {
+                    data_indices += 1;
+                }
+                Statement::Assign {
+                    rvalue: Rvalue::Load(place) | Rvalue::Address(place),
+                    ..
+                }
+                | Statement::Store { place, .. }
+                    if place.projection.contains(&Projection::DynamicArrayCapacity) =>
+                {
+                    capacity_uses += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        !bounds_lens.is_empty() && bounds_lens.iter().all(|len| count_values.contains(len)),
+        "every bounds check must consume a loaded dynamic-array count: {}",
+        program.dump(&lowered)
+    );
+    assert!(
+        data_indices >= 3,
+        "read, write and address-taking must all index dynamic-array data: {}",
+        program.dump(&lowered)
+    );
+    assert_eq!(
+        capacity_uses,
+        0,
+        "native indexing must never consult capacity: {}",
+        program.dump(&lowered)
+    );
+
+    let unchecked = lowered.body(&program.interner, "unchecked");
+    assert!(
+        unchecked
+            .blocks()
+            .iter()
+            .flat_map(|block| &block.stmts)
+            .all(|stmt| !matches!(stmt, Statement::BoundsCheck { .. })),
+        "`#no_abc` must suppress the dynamic-array bounds check: {}",
+        program.dump(&lowered)
     );
 }
 

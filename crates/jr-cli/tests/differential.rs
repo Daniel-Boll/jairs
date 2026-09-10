@@ -1009,6 +1009,39 @@ fn both_engines_trap_on_an_index_out_of_bounds() {
 }
 
 #[test]
+fn dynamic_array_bounds_use_count_rather_than_capacity() {
+    let dir = TempDir::new().expect("a temporary directory");
+    // One push allocates FIRST_CAPACITY slots but marks only one as used. Indexing exactly
+    // `count` therefore distinguishes the language bound from the backing allocation's capacity:
+    // a capacity-based check would allow the store and exit 0.
+    let source = concat!(
+        "#import \"Basic\";\n",
+        "#import \"List\";\n\n",
+        "main :: () {\n",
+        "    xs: [..]s64;\n",
+        "    if !push(*xs, 7) {\n",
+        "        exit(2);\n",
+        "    }\n",
+        "    i := xs.count;\n",
+        "    xs[i] = 9;\n",
+        "    exit(0);\n",
+        "}\n",
+    );
+    let (vm, native) = both_engines(source, dir.path(), "dynamic-array-count-bound");
+    assert_eq!(vm.status, 4, "the VM must trap at index == count");
+    assert_eq!(native.status, 4, "native code must trap at index == count");
+    assert!(
+        vm.stderr.contains("index out of bounds"),
+        "the trap must name the failed bounds check, got {:?}",
+        vm.stderr
+    );
+    assert_eq!(
+        vm, native,
+        "the engines disagree about the dynamic-array count bound"
+    );
+}
+
+#[test]
 fn a_declared_aggregate_is_zeroed_in_both_engines() {
     let dir = TempDir::new().expect("a temporary directory");
     // ADR-0039 §4a, and this is a *regression* test rather than a new feature's test.

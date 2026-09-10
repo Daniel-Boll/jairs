@@ -22386,3 +22386,214 @@ proc $inst3 -> s64 {
     v4: s64 = v3 + 8_s64
     return v4
 }
+
+========================================
+172-dynamic-array-native-access.jr
+========================================
+proc unchecked_at -> s64 {
+  params: v0: *Context, v1: *[..]s64, v2: s64
+  bb0(v0: *Context, v1: *[..]s64, v2: s64):
+    v3: s64 = load (v1).*.dyn_count
+    v4: s64 = load (v1).*.dyn_data[v2]
+    return v4
+}
+proc main -> void {
+  params: v0: *Context
+  slots:
+    s0: [..]s64  // local 0
+    s1: *[..]s64  // local 2
+  bb0(v0: *Context):
+    zero s0
+    v1: *[..]s64 = addr s0
+    v2: bool = call extern proc0(v0, v1, 10_s64)
+    v3: bool = !v2
+    branch v3 ? bb2() : bb1()
+  bb2():
+    goto bb3(true)
+  bb1():
+    v5: *[..]s64 = addr s0
+    v6: bool = call extern proc0(v0, v5, 20_s64)
+    v7: bool = !v6
+    goto bb3(v7)
+  bb3(v4: bool):
+    branch v4 ? bb5() : bb4()
+  bb5():
+    goto bb6(true)
+  bb4():
+    v9: *[..]s64 = addr s0
+    v10: bool = call extern proc0(v0, v9, 30_s64)
+    v11: bool = !v10
+    goto bb6(v11)
+  bb6(v8: bool):
+    branch v8 ? bb7() : bb8()
+  bb7():
+    discard call extern proc1(1_s64)
+    goto bb9()
+  bb8():
+    goto bb9()
+  bb9():
+    v12: s64 = load s0.dyn_count
+    v13: bool = v12 != 3_s64
+    branch v13 ? bb11() : bb10()
+  bb11():
+    goto bb12(true)
+  bb10():
+    v15: s64 = load s0.dyn_capacity
+    v16: s64 = load s0.dyn_count
+    v17: bool = v15 <= v16
+    goto bb12(v17)
+  bb12(v14: bool):
+    branch v14 ? bb14() : bb13()
+  bb14():
+    goto bb15(true)
+  bb13():
+    v19: s64 = load s0.dyn_count
+    bounds_check 0_s64 < v19
+    v20: s64 = load s0.dyn_data[0_s64]
+    v21: bool = v20 != 10_s64
+    goto bb15(v21)
+  bb15(v18: bool):
+    branch v18 ? bb17() : bb16()
+  bb17():
+    goto bb18(true)
+  bb16():
+    v23: s64 = load s0.dyn_count
+    bounds_check 2_s64 < v23
+    v24: s64 = load s0.dyn_data[2_s64]
+    v25: bool = v24 != 30_s64
+    goto bb18(v25)
+  bb18(v22: bool):
+    branch v22 ? bb19() : bb20()
+  bb19():
+    discard call extern proc1(2_s64)
+    goto bb21()
+  bb20():
+    goto bb21()
+  bb21():
+    v26: s64 = load s0.dyn_count
+    bounds_check 1_s64 < v26
+    store s0.dyn_data[1_s64] <- 21_s64
+    v27: s64 = load s0.dyn_count
+    bounds_check 2_s64 < v27
+    v28: *s64 = addr s0.dyn_data[2_s64]
+    store (v28).* <- 31_s64
+    v29: *[..]s64 = addr s0
+    store s1 <- v29
+    v30: *[..]s64 = load s1
+    v31: s64 = load (v30).*.dyn_count
+    bounds_check 0_s64 < v31
+    store (v30).*.dyn_data[0_s64] <- 11_s64
+    v32: *[..]s64 = load s1
+    v33: s64 = load (v32).*.dyn_count
+    bounds_check 0_s64 < v33
+    v34: s64 = load (v32).*.dyn_data[0_s64]
+    v35: bool = v34 != 11_s64
+    branch v35 ? bb23() : bb22()
+  bb23():
+    goto bb24(true)
+  bb22():
+    v37: s64 = load s0.dyn_count
+    bounds_check 1_s64 < v37
+    v38: s64 = load s0.dyn_data[1_s64]
+    v39: bool = v38 != 21_s64
+    goto bb24(v39)
+  bb24(v36: bool):
+    branch v36 ? bb26() : bb25()
+  bb26():
+    goto bb27(true)
+  bb25():
+    v41: s64 = load s0.dyn_count
+    bounds_check 2_s64 < v41
+    v42: s64 = load s0.dyn_data[2_s64]
+    v43: bool = v42 != 31_s64
+    goto bb27(v43)
+  bb27(v40: bool):
+    branch v40 ? bb28() : bb29()
+  bb28():
+    discard call extern proc1(3_s64)
+    goto bb30()
+  bb29():
+    goto bb30()
+  bb30():
+    v44: s64 = load s0.dyn_count
+    goto bb31(0_s64, 0_s64, 0_s64)
+  bb31(v45: s64, v48: s64, v50: s64):
+    v46: bool = v45 < v44
+    branch v46 ? bb32() : bb34()
+  bb32():
+    bounds_check v45 < v44
+    v47: s64 = load s0.dyn_data[v45]
+    v49: s64 = v48 + v47
+    v51: s64 = v50 + v45
+    goto bb33()
+  bb33():
+    v53: s64 = v45 + 1_s64
+    goto bb31(v53, v49, v51)
+  bb34():
+    goto bb35()
+  bb35():
+    v54: bool = v48 != 63_s64
+    branch v54 ? bb37() : bb36()
+  bb37():
+    goto bb38(true)
+  bb36():
+    v56: bool = v50 != 3_s64
+    goto bb38(v56)
+  bb38(v55: bool):
+    branch v55 ? bb39() : bb40()
+  bb39():
+    discard call extern proc1(4_s64)
+    goto bb41()
+  bb40():
+    goto bb41()
+  bb41():
+    v57: *[..]s64 = load s1
+    v58: s64 = load (v57).*.dyn_count
+    v59: s64 = v58 - 1_s64
+    goto bb42(v59, 0_s64, 0_s64)
+  bb42(v60: s64, v63: s64, v66: s64):
+    v61: bool = v60 >= 0_s64
+    branch v61 ? bb43() : bb45()
+  bb43():
+    bounds_check v60 < v58
+    v62: s64 = load (v57).*.dyn_data[v60]
+    v64: s64 = v63 * 100_s64
+    v65: s64 = v64 + v62
+    v67: s64 = v66 + v60
+    goto bb44()
+  bb44():
+    v69: s64 = v60 - 1_s64
+    goto bb42(v69, v65, v67)
+  bb45():
+    goto bb46()
+  bb46():
+    v70: bool = v63 != 312111_s64
+    branch v70 ? bb48() : bb47()
+  bb48():
+    goto bb49(true)
+  bb47():
+    v72: bool = v66 != 3_s64
+    goto bb49(v72)
+  bb49(v71: bool):
+    branch v71 ? bb50() : bb51()
+  bb50():
+    discard call extern proc1(5_s64)
+    goto bb52()
+  bb51():
+    goto bb52()
+  bb52():
+    v73: *[..]s64 = load s1
+    v74: s64 = call proc0(v0, v73, 1_s64)
+    v75: bool = v74 != 21_s64
+    branch v75 ? bb53() : bb54()
+  bb53():
+    discard call extern proc1(6_s64)
+    goto bb55()
+  bb54():
+    goto bb55()
+  bb55():
+    v76: *[..]s64 = load s1
+    discard call extern proc6(v0, v76)
+    discard call extern proc1(42_s64)
+    return
+}

@@ -9,11 +9,10 @@ if a table and the code disagree, the code is right and the table is a bug.
 the current handoff, and [`AGENTS.md`](../AGENTS.md) for the wave-by-wave narrative
 behind them — that narrative is not duplicated here):
 
-- **1433** workspace tests (**1446** under gate 7), with all six ordinary gates green for
-  ADR-0241. Gate 7 was not rerun because no MIR, layout, codegen, or back-end implementation changed.
-- **324** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
-  (**338** counting those).
-- **241** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
+- **1436** workspace tests (**1449** under gate 7), with all seven gates green for ADR-0242.
+- **325** `.jr` corpus files under `tests/corpus/` outside `tests/corpus/modules/`
+  (**339** counting those).
+- **242** accepted ADRs — see [`docs/adr/README.md`](adr/README.md).
 - **26** standard library modules under `modules/`.
 - Diagnostic codes run **E0001–E0300**; **E0301** is the first free one
   (`AGENTS.md`'s "Diagnostic codes" section is the authoritative ownership
@@ -84,7 +83,7 @@ The authoritative version of this list is
 | `::` constant, `:=` inferred, `: T = v` typed, `---` uninit | |
 | `if` / `else if` / `else`, `while`, `return`; a single braceless `if` statement may optionally use Jai's `then` (ADR-0215) | `then` before a block or on `while` |
 | `switch e { case v; … else; … }` or Jai's equivalent `if #complete e == { case v; … }` over an enum or an integer, **exhaustiveness-checked by distinct runtime value** for an enum, no fallthrough, `else` final (ADR-0067, ADR-0215) | patterns, ranges, guards; a multi-value `case`; `switch` as an expression |
-| `for x: buf`, `for x, i: buf`, `for i: 0..n`, `for < x: buf`; over arrays, views, **string bytes**, and ranges. The nameless `for buf` injects `it` and `it_index`; a string element is `u8` and its index is an `s64` byte offset (ADR-0214) | iterate-by-reference `for *x`, Unicode-scalar iteration, a range as a value, `for` over a user type |
+| `for x: buf`, `for x, i: buf`, `for i: 0..n`, `for < x: buf`; over arrays, views, native dynamic arrays, **string bytes**, and ranges. A dynamic array visits its used `count`, never spare capacity. The nameless `for buf` injects `it` and `it_index`; a string element is `u8` and its index is an `s64` byte offset (ADR-0214, ADR-0242) | iterate-by-reference `for *x`, Unicode-scalar iteration, a range as a value, `for` over a user type |
 | `break` / `continue`, labelled (`break outer`) or not; `defer` at every scope exit | |
 | `using p: Point` promotes a struct's fields; `using base: Point;` embeds them, transitively | `using` on an enum, a module, or an **imported** struct |
 | blocks and block scope, shadowing | |
@@ -101,7 +100,7 @@ The authoritative version of this list is
 | `Point.{x = 1, y = 2}` and context-inferred `.{x = 1, y = 2}` struct literals — named in any order or positional in declaration order, with omitted fields zeroed; parameterised structs and `string` participate (ADR-0239) | unions, variants, views, dynamic arrays and `Context`; a direct file-scope aggregate literal |
 | `[]T` views: `buf[]`, `xs[i]`, `xs.count`, writes through to the array, **returned from a procedure** | |
 | `[N]T` fixed arrays: `a[i]`, `.count`, zeroed by default, bounds-checked — and `#no_abc` or `--no-bounds-check` to stop checking. `N` may be a literal, a **named constant** (ADR-0070), or a `$N` parameter; typed literals use `T.[1, 2, 3]` (ADR-0194) | a length needing evaluation — arithmetic, `#run`, a chain, or another file's constant; an **inferred** literal `.[1, 2, 3]`; a per-*index* `#no_abc` |
-| `[..]T` dynamic arrays — surface and layout (ADR-0136); `modules/List` provides generic `push`, `pop`, `last`, `get`, `set`, `clear`, `is_empty`, `elements` and `free_data` over `*[..]$T`, including `[..]*Node` stacks (ADR-0231); LSP completion on `xs.` offers the public `data`, `count`, and `capacity` pseudo-fields with the concrete `.data` pointer type (ADR-0240) | direct `xs[i]` indexing; growth operations beyond what `List` provides |
+| `[..]T` dynamic arrays — surface and layout (ADR-0136); direct bounded `xs[i]` reads/writes/address-taking and ordinary iteration over the used `count` (ADR-0242); `modules/List` provides generic `push`, `pop`, `last`, `get`, `set`, `clear`, `is_empty`, `elements` and `free_data` over `*[..]$T`, including `[..]*Node` stacks (ADR-0231); LSP completion on `xs.` offers the public `data`, `count`, and `capacity` pseudo-fields with the concrete `.data` pointer type (ADR-0240) | dynamic-array slicing; growth operations beyond what `List` provides |
 | calls, nested; a discarded call is a statement | |
 | integer literals (dec/hex/bin/oct, `_`), string literals + escapes, and `#char "A"` / `#char "\n"` as one decoded ASCII byte represented by a context-typed integer (ADR-0214) | a character type; non-ASCII `#char`; Unicode-scalar literals |
 | float literals: `1.5`, `1e9`, `1.5e-3`, `1_000.5`; float **printing** via `print("%", x)` (ADR-0189); a **typed** float constant `X : float32 : 1.5` (ADR-0190) | a chosen precision or field width — `%` renders shortest-ish and takes no modifiers |
