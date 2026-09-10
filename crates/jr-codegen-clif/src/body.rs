@@ -471,6 +471,7 @@ impl Translator<'_, '_> {
                 self.operand(*operand)
             }
             Rvalue::Binary { op, lhs, rhs } => self.binary(*op, *lhs, *rhs),
+            Rvalue::PointerDifference { lhs, rhs } => self.pointer_difference(*lhs, *rhs),
             Rvalue::Unary { op, operand } => self.unary(*op, *operand),
             Rvalue::Convert { operand, from } => self.convert(*operand, *from, dest),
             Rvalue::Call { callee, args } => self.call(callee, args, dest),
@@ -981,6 +982,47 @@ impl Translator<'_, '_> {
             }
         };
         Ok(Some(value))
+    }
+
+    /// Subtracts two same-typed pointer addresses and scales the signed byte distance by the
+    /// pointee stride (ADR-0237).
+    fn pointer_difference(&mut self, lhs: Operand, rhs: Operand) -> Result<Slot, CodegenError> {
+        let left = self.read_scalar(lhs)?;
+        let right = self.read_scalar(rhs)?;
+        let pointee = self.pointee(self.operand_type(lhs))?;
+        let layout = layout_of(self.ctx.pool, self.ctx.target, pointee).map_err(|reason| {
+            CodegenError::Internal(format!("pointer difference layout: {reason}"))
+        })?;
+        let stride = layout.size.next_multiple_of(u64::from(layout.align));
+        let stride = i64::try_from(stride).map_err(|_| {
+            CodegenError::Internal("pointer-difference stride does not fit in s64".to_owned())
+        })?;
+        if stride == 0 {
+            return Err(CodegenError::Internal(
+                "pointer difference reached Cranelift with a zero-sized pointee".to_owned(),
+            ));
+        }
+
+        // The subtraction itself wraps at pointer width. Interpreting those bits as signed is what
+        // permits `base - (base + n)` to produce a negative distance without ADR-0002's overflow
+        // trap. Extend only after the pointer-width subtraction so a future 32-bit target keeps the
+        // same rule while still returning the language's fixed-width `s64`.
+        let bytes = self.builder.ins().isub(left, right);
+        let bytes = if pointer_type(self.ctx.target) == cranelift_codegen::ir::types::I64 {
+            bytes
+        } else {
+            self.builder
+                .ins()
+                .sextend(cranelift_codegen::ir::types::I64, bytes)
+        };
+        if stride == 1 {
+            return Ok(Some(bytes));
+        }
+        let divisor = self
+            .builder
+            .ins()
+            .iconst(cranelift_codegen::ir::types::I64, stride);
+        Ok(Some(self.builder.ins().sdiv(bytes, divisor)))
     }
 
     /// Emits a shift, checking the count first (ADR-0042 §3).

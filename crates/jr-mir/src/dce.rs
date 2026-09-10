@@ -61,7 +61,9 @@ pub fn is_pure(rvalue: &Rvalue) -> bool {
     match rvalue {
         // A copy, an address and an undefined value do nothing. `Address` of a
         // `Deref` place is still nothing: taking an address does not read through it.
-        Rvalue::Use(_) | Rvalue::Address(_) | Rvalue::Undef => true,
+        Rvalue::Use(_) | Rvalue::PointerDifference { .. } | Rvalue::Address(_) | Rvalue::Undef => {
+            true
+        }
         Rvalue::Binary { op, .. } => !op.can_trap(),
         Rvalue::Unary { op, .. } => !op.can_trap(),
         // A conversion **cannot trap**: ADR-0037 §2 makes a narrowing cast truncate rather
@@ -265,7 +267,7 @@ fn note_rvalue(rvalue: &Rvalue, used: &mut FxHashSet<ValueId>) {
             }
         }
         Rvalue::Use(operand) => note_operand(operand, used),
-        Rvalue::Binary { op: _, lhs, rhs } => {
+        Rvalue::Binary { op: _, lhs, rhs } | Rvalue::PointerDifference { lhs, rhs } => {
             note_operand(lhs, used);
             note_operand(rhs, used);
         }
@@ -441,6 +443,7 @@ fn note_rvalue_slots(rvalue: &Rvalue, used: &mut FxHashSet<SlotId>) {
         // an `Address` and is already handled above.
         Rvalue::Use(_)
         | Rvalue::Binary { .. }
+        | Rvalue::PointerDifference { .. }
         | Rvalue::Unary { .. }
         | Rvalue::Convert { .. }
         | Rvalue::Call { .. }

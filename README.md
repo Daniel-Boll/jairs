@@ -57,7 +57,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0236.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0237.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -75,6 +75,12 @@ disagree, the code is right and the table has a bug.
 Byte-oriented source scanning now has the Jai-shaped pieces it needs: a `for` can walk a
 `string` directly as `u8` bytes with `s64` byte offsets, and `#char "A"` supplies a
 context-typed ASCII byte for comparisons. Unicode decoding remains explicit.
+
+Same-type pointers can now be subtracted: `end - start` yields the signed `s64` number of
+pointee elements between them, so `*u8 - *u8` is a byte count while `*T - *T` is scaled by
+`size_of(T)`. Different pointer types and zero-sized pointees are rejected. As with the existing
+raw-pointer offset operation, both pointers must describe one allocation; exact divisibility and
+the `s64` range are the program's responsibility.
 
 Jai-shaped control flow can now be written without a parallel implementation: `then` optionally
 marks one braceless `if` statement, and `if #complete value == { case ... }` uses the same
@@ -242,9 +248,9 @@ observed no-state family does not have.
 Removing that argument needed a language feature first — a variable at the top
 level of a file, which the compiler could parse and could not compile.
 
-- **1415** workspace tests (**1428** under gate 7), with all six ordinary gates green for ADR-0236.
-  Gate 7 was not required because this wave changed no MIR, layout or back end.
-- **316** `.jr` corpus files outside the fixture-module directory, **236** accepted ADRs, **26** standard library
+- **1415** workspace tests (**1428** under gate 7), with all six ordinary gates and the LLVM gate
+  green for ADR-0237.
+- **317** `.jr` corpus files outside the fixture-module directory, **237** accepted ADRs, **26** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` runs in about 13 seconds
   and `scripts/check pre-commit` in about 36 seconds on the development machine. The authoritative

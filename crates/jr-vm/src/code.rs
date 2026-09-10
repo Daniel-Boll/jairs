@@ -199,6 +199,18 @@ pub enum Instr {
         /// Right operand.
         rhs: Operand,
     },
+    /// `dest <- (lhs - rhs) / stride`, with the wrapping address difference interpreted as signed
+    /// (ADR-0237).
+    PointerDifference {
+        /// The destination `s64` register.
+        dest: Reg,
+        /// The minuend pointer.
+        lhs: Operand,
+        /// The subtrahend pointer.
+        rhs: Operand,
+        /// The target-layout stride of the shared pointee type.
+        stride: u64,
+    },
     /// `dest <- op operand`.
     Unary {
         /// The destination register.

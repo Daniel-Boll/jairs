@@ -673,6 +673,26 @@ impl<'a> Vm<'a> {
                     let value = self.binary(code, frame, *dest, *op, *lhs, *rhs)?;
                     frame.regs[dest.index()] = value;
                 }
+                Instr::PointerDifference {
+                    dest,
+                    lhs,
+                    rhs,
+                    stride,
+                } => {
+                    let lhs = self.operand(frame, *lhs)?.scalar()?;
+                    let rhs = self.operand(frame, *rhs)?.scalar()?;
+                    let bytes = lhs.wrapping_sub(rhs) as i64;
+                    let stride = i64::try_from(*stride).map_err(|_| {
+                        VmError::internal("pointer-difference stride does not fit in s64")
+                    })?;
+                    if stride == 0 {
+                        return Err(VmError::internal(
+                            "pointer difference has a zero-sized pointee",
+                        ));
+                    }
+                    let elements = bytes / stride;
+                    frame.regs[dest.index()] = Value::Scalar(elements as u64);
+                }
                 Instr::Unary { dest, op, operand } => {
                     let value = self.unary(code, frame, *dest, *op, *operand)?;
                     frame.regs[dest.index()] = value;

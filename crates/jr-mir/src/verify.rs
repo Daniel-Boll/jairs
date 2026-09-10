@@ -341,7 +341,7 @@ impl Verifier<'_> {
                 }
             }
             Rvalue::Use(operand) => self.check_operand_ids(at, *operand),
-            Rvalue::Binary { op: _, lhs, rhs } => {
+            Rvalue::Binary { op: _, lhs, rhs } | Rvalue::PointerDifference { lhs, rhs } => {
                 self.check_operand_ids(at, *lhs);
                 self.check_operand_ids(at, *rhs);
             }
@@ -888,6 +888,28 @@ impl Verifier<'_> {
                     );
                 }
             }
+            Rvalue::PointerDifference { lhs, rhs } => {
+                let lhs_ty = self.operand_type(*lhs);
+                let rhs_ty = self.operand_type(*rhs);
+                if let (Some(lhs_ty), Some(rhs_ty)) = (lhs_ty, rhs_ty)
+                    && (lhs_ty != rhs_ty || !self.is_pointer(lhs_ty))
+                {
+                    self.report(
+                        Some(at),
+                        "pointer difference with invalid operands",
+                        "both operands must have one identical pointer type".to_owned(),
+                    );
+                }
+                if let Some(dest) = dest
+                    && dest != PoolId::S64
+                {
+                    self.report(
+                        Some(at),
+                        "pointer difference result is not s64",
+                        "a pointer difference must produce an `s64` element count".to_owned(),
+                    );
+                }
+            }
             Rvalue::Binary { op, lhs, rhs } => {
                 // A **shift** is the one binary form whose operands need not share a type: the
                 // count is a separate integer, so `x << 1` has an `s8` value and an `s64`
@@ -1126,7 +1148,7 @@ fn mark_rvalue(rvalue: &Rvalue, used: &mut [bool]) {
             }
         }
         Rvalue::Use(operand) => mark_operand(*operand, used),
-        Rvalue::Binary { op: _, lhs, rhs } => {
+        Rvalue::Binary { op: _, lhs, rhs } | Rvalue::PointerDifference { lhs, rhs } => {
             mark_operand(*lhs, used);
             mark_operand(*rhs, used);
         }

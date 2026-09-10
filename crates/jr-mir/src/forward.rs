@@ -374,6 +374,7 @@ fn kills(rvalue: &Rvalue, slot: SlotId, escapes: bool) -> bool {
         Rvalue::Load(_)
         | Rvalue::Use(_)
         | Rvalue::Binary { .. }
+        | Rvalue::PointerDifference { .. }
         | Rvalue::Unary { .. }
         | Rvalue::Convert { .. }
         | Rvalue::Undef => false,

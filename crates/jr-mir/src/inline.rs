@@ -611,6 +611,10 @@ impl Splice {
                 lhs: self.operand(lhs),
                 rhs: self.operand(rhs),
             },
+            Rvalue::PointerDifference { lhs, rhs } => Rvalue::PointerDifference {
+                lhs: self.operand(lhs),
+                rhs: self.operand(rhs),
+            },
             Rvalue::Convert { operand, from } => Rvalue::Convert {
                 operand: self.operand(operand),
                 from: *from,

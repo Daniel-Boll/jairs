@@ -470,6 +470,9 @@ impl Dumper<'_> {
                     self.operand(*rhs)
                 )
             }
+            Rvalue::PointerDifference { lhs, rhs } => {
+                format!("ptrdiff {}, {}", self.operand(*lhs), self.operand(*rhs))
+            }
             Rvalue::Unary { op, operand } => format!("{}{}", un_op(*op), self.operand(*operand)),
             Rvalue::Call { callee, args } => {
                 let args: Vec<String> = args.iter().map(|arg| self.operand(*arg)).collect();

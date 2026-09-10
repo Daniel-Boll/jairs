@@ -2638,15 +2638,19 @@ impl<'a> Ctx<'a> {
                 // apply; `*`, `/`, `%` and the wrapping forms on a pointer fall through to the
                 // rejection below, which is what E0223 means for them.
                 //
-                // **Skipped when a concrete numeric type is expected**, because then the expression
-                // *is* numeric — `sum: s64 = xx tiny + 1;` must push `s64` inward so the autocast has
-                // a context (E0242 otherwise), and a pointer result could never satisfy an `s64`
-                // annotation anyway. So the speculative untyped probe below only runs when the result
-                // could actually be a pointer: no expectation, or a pointer expectation.
+                // **Skipped when a concrete numeric type is expected and an operand is an
+                // autocast**, because `sum: s64 = xx tiny + 1;` must push `s64` inward so the
+                // autocast has a context (E0242 otherwise). Pointer *difference* is numeric too,
+                // though, so a blanket numeric-context skip would make `distance: s64 = p - q`
+                // fall into ordinary numeric unification and reject two perfectly good pointers.
+                // Every other expression can be probed without losing a required context: literals
+                // are re-typed by the numeric path and named values already have their declared type.
                 let numeric_context =
                     expected.is_some_and(|ty| self.is_numeric(ty) && self.pointee(ty).is_none());
+                let contextual_autocast = matches!(self.expr_of(scope, lhs), Expr::Autocast { .. })
+                    || matches!(self.expr_of(scope, rhs), Expr::Autocast { .. });
                 if matches!(op, BinOp::Add | BinOp::Sub)
-                    && !numeric_context
+                    && !(numeric_context && contextual_autocast)
                     && let Some(result) = self.check_pointer_arithmetic(scope, op, lhs, rhs, span)
                 {
                     return self.expect(expected, result, span);
@@ -3123,12 +3127,56 @@ impl<'a> Ctx<'a> {
             // typed, and re-typing them there with a numeric expectation is harmless — `check_expr`
             // overwrites the same `TypeMap` entry with the same or a more specific type.
             (None, None) => None,
-            // Both pointers. `p + q` is meaningless; `p - q` (the pointer difference) is deferred to
-            // its own wave (ADR-0064 §5), because its element-count result needs the stride, which is
-            // layout `jr-mir` does not carry. Both are E0223 — the operator does not fit here.
-            (Some(_), Some(_)) => {
-                let text = self.describe(left);
-                self.reject_operator(op, &text, span);
+            // Both pointers. Addition is meaningless. Subtraction is an element distance only when
+            // both operands have one identical pointer type (ADR-0237 §1); choosing either stride for
+            // different pointees would make the result depend on operand order.
+            (Some(left_pointee), Some(_right_pointee)) => {
+                if op == BinOp::Sub && left == right {
+                    let Ok(layout) =
+                        jr_pool::layout_of(self.pool, jr_pool::TargetLayout::LP64, left_pointee)
+                    else {
+                        let text = self.describe(left);
+                        self.reject_operator(op, &text, span);
+                        return Some(PoolId::ERROR);
+                    };
+                    if layout.size == 0 {
+                        let text = self.describe(left_pointee);
+                        self.diags.push(
+                            Diagnostic::error(
+                                span,
+                                format!(
+                                    "cannot take an element distance between pointers to zero-sized `{text}`"
+                                ),
+                            )
+                            .with_code(E0223)
+                            .with_note(
+                                "a zero-sized element has no nonzero stride to divide the address distance by",
+                            ),
+                        );
+                        return Some(PoolId::ERROR);
+                    }
+                    return Some(PoolId::S64);
+                }
+
+                if op == BinOp::Sub {
+                    let left_text = self.describe(left);
+                    let right_text = self.describe(right);
+                    self.diags.push(
+                        Diagnostic::error(
+                            span,
+                            format!(
+                                "pointer difference requires one pointer type, found `{left_text}` and `{right_text}`"
+                            ),
+                        )
+                        .with_code(E0223)
+                        .with_note(
+                            "use `untyped` on both operands when an explicit byte distance is intended",
+                        ),
+                    );
+                } else {
+                    let text = self.describe(left);
+                    self.reject_operator(op, &text, span);
+                }
                 Some(PoolId::ERROR)
             }
             // `p + n` or `p - n`: pointer on the left, integer on the right. Result is the pointer.

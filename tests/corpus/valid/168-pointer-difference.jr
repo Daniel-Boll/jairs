@@ -1,0 +1,46 @@
+// Pointer difference (ADR-0237): two pointers of one type subtract to a signed `s64` element count.
+//
+// `*u8` naturally measures bytes. Wider pointees prove this is element-scaled rather than a raw
+// address subtraction, and the reverse order proves ordinary unsigned overflow checking is not used.
+#import "Basic";
+
+main :: () {
+  values: [4]s64;
+  base := *values[0];
+  one_past := base + 4;
+
+  bytes: [8]u8;
+  byte_base := *bytes[0];
+
+  mask := 0;
+
+  // The explicit annotation is the regression for pointer arithmetic's numeric-context dispatch.
+  distance: s64 = (base + 3) - base;
+  if distance == 3 {
+    mask = mask + 1;
+  }
+  if base - (base + 3) == -3 {
+    mask = mask + 2;
+  }
+  if one_past - base == 4 {
+    mask = mask + 4;
+  }
+  if base - base == 0 {
+    mask = mask + 8;
+  }
+
+  // On `*u8`, elements are bytes: this is the XML-parser diagnostic-offset use case.
+  if (byte_base + 7) - byte_base == 7 {
+    mask = mask + 16;
+  }
+
+  // An explicit untyped view asks for byte distance between wider elements.
+  if untyped(base + 2) - untyped(base) == 16 {
+    mask = mask + 32;
+  }
+
+  if mask == 63 {
+    exit(0);
+  }
+  exit(1);
+}
