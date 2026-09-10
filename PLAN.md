@@ -413,6 +413,16 @@ Status of each slice component, so this is answerable without reading the tree.
 > | `jr-mir` / engines | No implementation change: template redirects already consume `FilledArgs`, so the aligned slots reach the VM and both native back ends through the existing channel. |
 > | Tests / documentation | `valid/167` executes omitted, supplied and reversed template arguments; `type-errors/096` pins four default/comptime boundaries; the imported Defaults fixture exercises the same calls across a module boundary. Documentation explicitly keeps pure-template calls inside `#run` as a separate E0230/E0268 specialization gap. |
 
+> **ADR-0237 component delta.**
+>
+> | Component | Current delta |
+> |---|---|
+> | `jr-sema` | Same-type `*T - *T` yields a signed `s64` element count. Different pointer types and zero-sized pointees are E0223; an `s64` result annotation no longer routes the expression around pointer handling. |
+> | `jr-mir` | `Rvalue::PointerDifference` keeps layout out of MIR. Verification requires identical pointer operands and an `s64` destination; every optimizer explicitly walks or classifies the new node. |
+> | `jr-vm` / `jr-codegen-clif` / `jr-codegen-llvm` | Each engine subtracts at pointer width without ADR-0002 overflow trapping, interprets the byte difference as signed, and divides by the shared pointee stride. VM bytecode records that stride at lowering. |
+> | `tests/corpus` | `valid/168` executes forward, reverse, one-past, byte and wider-pointee differences; `type-errors/058` now pins mismatched and zero-sized pointees. The MIR snapshot exposes every `ptrdiff` node. |
+> | Documentation | Pointer difference moved from the absent lists into the memory guide and compatibility matrix; raw-pointer indexing and ordering remain absent. |
+
 | Component | Status | Notes |
 |---|---|---|
 | `modules/Game` | **Foundation done** | **ADR-0210 decides ADR-0208's six forks and lands the first slice.** A caller owns `App`; `open(width, height, title)` starts SDL, creates the window, selects top-left/y-down Simp coordinates and unwinds every completed step if GL setup fails. `begin_frame` drains once, latches close, and records an unclamped non-negative delta; `end_frame` presents; `close` is idempotent and destroys Simp before the window and SDL. A private guard refuses a second simultaneous App because Simp has one process-global renderer; the lifecycle stays on one thread. Two native integration tests cover a real synthetic-quit/reopen lifecycle and the dummy driver's no-GL unwind. **Not game-ready v1:** held input, primitive helpers, generation-tagged resources, PNG, text and audio are later slices. |
@@ -747,26 +757,26 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0236 closes ordinary named/default binding for pure `$T` calls.**
-> A template call now resolves source names and omitted fixed defaults into declaration order before
-> type inference. Only supplied expressions bind `$T`; an omitted default cannot silently choose a
-> specialization.
+> **ADR-0237 adds element-scaled pointer difference.**
+> `end - start` now yields a signed `s64` when both operands have the same `*T` type. The byte
+> difference is divided by `size_of(T)`, so `*u8` naturally reports bytes without making byte
+> arithmetic the rule for every pointee.
 
-**1415 workspace tests (1428 under gate 7), 316 corpus files outside fixture modules, 236 ADRs and
-26 modules.** One former template-default refusal test became four focused tests, moving the
-workspace count by three; `valid/167` and `type-errors/096` move the corpus count by two. All six
-ordinary gates are green. Gate 7 was not required because this wave changes no MIR, layout, pool
-layout or back end.
+**1415 workspace tests (1428 under gate 7), 317 corpus files outside fixture modules, 237 ADRs and
+26 modules.** The Rust test count holds while `valid/168` adds one corpus file; `type-errors/058`
+was repurposed from the deferred pointer-difference refusal. All six ordinary gates and gate 7 are
+green.
 
-Fixed explicitly typed and inferred literal defaults work on ordinary local/imported pure `$T`
-calls, including reversed names. A default whose own type is `$T` or a later bare `T` is E0252.
-Defaults and local named calls on `$N` or mixed `$T`+`$N` templates remain E0252, while imported
-comptime templates retain E0268.
+Sema rejects mixed pointer types and zero-sized pointees with E0223. MIR carries a dedicated pure
+`PointerDifference` rvalue rather than encoding layout in an ordinary integer subtraction; the VM
+records the stride in bytecode while Cranelift and LLVM derive it from the shared pool layout.
+All three engines subtract at pointer width, interpret the result as signed and divide by the
+pointee stride. The original `ora_to_atlas_test/src/main.jr` probe checks with zero errors.
 
-One direct probe prevented an overclaim: a pure `$T` call inside `#run` has correctly filled slots
-but the compile-time program still has no instantiated routine, so local calls report E0230 and
-imported calls retain E0268. Ordinary non-template `#run` named/default calls remain delivered by
-ADR-0234. **E0300** is the first free global diagnostic code; **E0136** is the first free parser code.
+The operation follows the existing raw-pointer contract: both pointers must describe one
+allocation, the byte distance must be an exact multiple of the pointee size, and the element
+distance must fit `s64`. These conditions are not dynamically checked. **E0300** is the first free
+global diagnostic code; **E0136** is the first free parser code.
 
 ### Next wave: declaration-ordered evidence for comptime templates
 

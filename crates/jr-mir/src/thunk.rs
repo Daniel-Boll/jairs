@@ -386,6 +386,17 @@ impl Thunk<'_> {
                 rhs,
                 span: _,
             } => {
+                if op == jr_hir::BinOp::Sub {
+                    let lhs_ty = expr_type(self.types, self.scope, lhs)?;
+                    let rhs_ty = expr_type(self.types, self.scope, rhs)?;
+                    if lhs_ty == rhs_ty
+                        && matches!(self.pool.item(lhs_ty), jr_pool::Item::PointerType(_))
+                    {
+                        let lhs = self.expr(lhs)?;
+                        let rhs = self.expr(rhs)?;
+                        return Ok(self.define(ty, Rvalue::PointerDifference { lhs, rhs }, id));
+                    }
+                }
                 let op = bin_op(op)?;
                 let lhs = self.expr(lhs)?;
                 let rhs = self.expr(rhs)?;

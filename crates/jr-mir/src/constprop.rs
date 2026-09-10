@@ -281,6 +281,7 @@ fn fold(pool: &mut Pool, rvalue: &Rvalue, ty: PoolId) -> Option<PoolId> {
         // that is correct alone and wrong in company — the failure mode that made these operations a MIR
         // variant rather than a library call.
         Rvalue::Use(_)
+        | Rvalue::PointerDifference { .. }
         | Rvalue::Call { .. }
         | Rvalue::Load(_)
         | Rvalue::Address(_)
@@ -543,7 +544,7 @@ fn substitute_place(place: &mut Place, subst: &impl Fn(&mut Operand)) {
 fn substitute_rvalue(rvalue: &mut Rvalue, subst: &impl Fn(&mut Operand)) {
     match rvalue {
         Rvalue::Use(operand) => subst(operand),
-        Rvalue::Binary { op: _, lhs, rhs } => {
+        Rvalue::Binary { op: _, lhs, rhs } | Rvalue::PointerDifference { lhs, rhs } => {
             subst(lhs);
             subst(rhs);
         }

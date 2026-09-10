@@ -435,6 +435,7 @@ fn write_only_slots(body: &jr_mir::MirBody) -> usize {
                     // no slot here — the slot it points into escaped through an `Address` above.
                     jr_mir::Rvalue::Use(_)
                     | jr_mir::Rvalue::Binary { .. }
+                    | jr_mir::Rvalue::PointerDifference { .. }
                     | jr_mir::Rvalue::Unary { .. }
                     | jr_mir::Rvalue::Convert { .. }
                     | jr_mir::Rvalue::Call { .. }

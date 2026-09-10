@@ -431,6 +431,24 @@ impl Compiler<'_> {
                     rhs: *rhs,
                 });
             }
+            Rvalue::PointerDifference { lhs, rhs } => {
+                let pointee = self.pointee(self.operand_ty(*lhs))?;
+                let layout = layout_of(self.pool, self.target, pointee).map_err(|reason| {
+                    VmError::internal(format!("pointer difference layout: {reason}"))
+                })?;
+                let stride = layout.size.next_multiple_of(layout.align.into());
+                if stride == 0 {
+                    return Err(VmError::internal(
+                        "pointer difference reached bytecode lowering with a zero-sized pointee",
+                    ));
+                }
+                self.emit(Instr::PointerDifference {
+                    dest,
+                    lhs: *lhs,
+                    rhs: *rhs,
+                    stride,
+                });
+            }
             Rvalue::Unary { op, operand } => {
                 self.emit(Instr::Unary {
                     dest,
@@ -582,6 +600,7 @@ impl Compiler<'_> {
         match rvalue {
             Rvalue::Use(operand) => self.operand_ty(*operand),
             Rvalue::Binary { lhs, .. } => self.operand_ty(*lhs),
+            Rvalue::PointerDifference { .. } => PoolId::S64,
             Rvalue::Unary { operand, .. } => self.operand_ty(*operand),
             // Deliberately *not* the operand's type: a conversion's whole point is that the
             // destination differs from the source, and the destination's width is what the

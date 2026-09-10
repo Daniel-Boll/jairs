@@ -648,6 +648,18 @@ pub enum Rvalue {
         /// The right operand.
         rhs: Operand,
     },
+    /// The signed distance between two pointers of one type, measured in pointee elements
+    /// (ADR-0237).
+    ///
+    /// This cannot be an ordinary [`Rvalue::Binary`]: its operands are pointers, its result is
+    /// [`PoolId::S64`], negative results are valid, and each engine must divide the wrapping byte
+    /// difference by the target-layout stride of the pointee.
+    PointerDifference {
+        /// The pointer whose address is the minuend.
+        lhs: Operand,
+        /// The pointer whose address is the subtrahend.
+        rhs: Operand,
+    },
     /// A unary operation. Never address-of — see [`UnOp`].
     Unary {
         /// The operator.
@@ -1741,7 +1753,7 @@ fn remap_rvalue_slots(rvalue: &mut Rvalue, remap: &[Option<SlotId>]) {
             }
         }
         Rvalue::Use(operand) => remap_operand_slots(operand, remap),
-        Rvalue::Binary { op: _, lhs, rhs } => {
+        Rvalue::Binary { op: _, lhs, rhs } | Rvalue::PointerDifference { lhs, rhs } => {
             remap_operand_slots(lhs, remap);
             remap_operand_slots(rhs, remap);
         }

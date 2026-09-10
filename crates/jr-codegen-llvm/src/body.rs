@@ -658,6 +658,7 @@ impl<'ctx> Translator<'ctx, '_> {
                 self.operand(*operand)
             }
             Rvalue::Binary { op, lhs, rhs } => self.binary(*op, *lhs, *rhs),
+            Rvalue::PointerDifference { lhs, rhs } => self.pointer_difference(*lhs, *rhs),
             Rvalue::Unary { op, operand } => self.unary(*op, *operand),
             Rvalue::Convert { operand, from } => self.convert(*operand, *from, dest),
             Rvalue::Call { callee, args } => self.call(callee, args, dest),
@@ -1102,6 +1103,55 @@ impl<'ctx> Translator<'ctx, '_> {
             }
         };
         Ok(Some(value))
+    }
+
+    /// Subtracts two same-typed pointer addresses and scales the signed byte distance by the
+    /// pointee stride (ADR-0237).
+    fn pointer_difference(
+        &mut self,
+        lhs: Operand,
+        rhs: Operand,
+    ) -> Result<Slot<'ctx>, CodegenError> {
+        let left = self.read_scalar(lhs)?.into_int_value();
+        let right = self.read_scalar(rhs)?.into_int_value();
+        let pointee = self.pointee(self.operand_type(lhs))?;
+        let layout =
+            layout_of(self.shared.pool, self.shared.target, pointee).map_err(|reason| {
+                CodegenError::Internal(format!("pointer difference layout: {reason}"))
+            })?;
+        let stride = layout.size.next_multiple_of(u64::from(layout.align));
+        let stride = i64::try_from(stride).map_err(|_| {
+            CodegenError::Internal("pointer-difference stride does not fit in s64".to_owned())
+        })?;
+        if stride == 0 {
+            return Err(CodegenError::Internal(
+                "pointer difference reached LLVM with a zero-sized pointee".to_owned(),
+            ));
+        }
+
+        // Subtract at pointer width, with no `nsw`/`nuw` promise: the wrapped bit pattern is then
+        // interpreted as signed. Sign-extension happens only after that subtraction so a future
+        // 32-bit target still yields the fixed-width `s64` result.
+        let bytes = built(self.builder.build_int_sub(left, right, "ptrdiff.bytes"))?;
+        let i64_ty = self.context.i64_type();
+        let bytes = if bytes.get_type() == i64_ty {
+            bytes
+        } else {
+            built(
+                self.builder
+                    .build_int_s_extend(bytes, i64_ty, "ptrdiff.extend"),
+            )?
+        };
+        if stride == 1 {
+            return Ok(Some(bytes.into()));
+        }
+        let divisor = i64_ty.const_int(stride as u64, false);
+        let elements = built(self.builder.build_int_signed_div(
+            bytes,
+            divisor,
+            "ptrdiff.elements",
+        ))?;
+        Ok(Some(elements.into()))
     }
 
     /// Widens an LLVM `i1` to the byte a Jairs `bool` occupies.

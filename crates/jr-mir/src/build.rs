@@ -3068,11 +3068,24 @@ impl Lower<'_> {
         ty: PoolId,
         span: MirSpan,
     ) -> Operand {
+        // Pointer difference has an integer result, so it cannot be recognised by the pointer-result
+        // test used for offsets below. Sema permits it only for one identical pointer type and records
+        // `s64`; re-derive that shape from the operand types rather than carrying a side table
+        // (ADR-0237 §2).
+        if op == jr_hir::BinOp::Sub
+            && self.ty(lhs) == self.ty(rhs)
+            && self.pointee(self.ty(lhs)).is_some()
+        {
+            let lhs = self.expr(lhs);
+            let rhs = self.expr(rhs);
+            return self.define(ty, Rvalue::PointerDifference { lhs, rhs }, span);
+        }
+
         // **Pointer offset, before the numeric path** (ADR-0064). `p + n`, `n + p` and `p - n` lower
         // to the address of the pointer's pointee indexed by `n` — the back ends scale the index by
         // the element stride, so no size is needed here (ADR-0017 §5). Recognised by the *result*
-        // type being a pointer, which sema set only for these forms; `p - q` is deferred and refused
-        // in sema, so a pointer result with `Sub` is always `p - n`.
+        // type being a pointer, which sema set only for these forms; pointer difference was handled
+        // above and has an `s64` result, so a pointer result with `Sub` is always `p - n`.
         if matches!(op, jr_hir::BinOp::Add | jr_hir::BinOp::Sub)
             && self.pointee(ty).is_some()
             && let Some(result) = self.pointer_offset(op, lhs, rhs, ty, span)

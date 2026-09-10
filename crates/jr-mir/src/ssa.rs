@@ -607,7 +607,7 @@ fn replace_in_rvalue(rvalue: &mut Rvalue, old: Operand, new: Operand) {
             }
         }
         Rvalue::Use(operand) => replace_operand(operand, old, new),
-        Rvalue::Binary { op: _, lhs, rhs } => {
+        Rvalue::Binary { op: _, lhs, rhs } | Rvalue::PointerDifference { lhs, rhs } => {
             replace_operand(lhs, old, new);
             replace_operand(rhs, old, new);
         }
