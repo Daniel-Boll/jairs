@@ -1,0 +1,74 @@
+// Raw-pointer indexing and compound offsets (ADR-0238).
+//
+// A raw `*T` has no bound: `p[i]` is the unchecked place `(p + i).*`, while pointer-to-array
+// auto-dereference keeps its older checked-container meaning. `+=` and `-=` use the same
+// element-scaled offset rather than ordinary numeric MIR.
+#import "Basic";
+
+identity :: (p: *s64) -> *s64 {
+  return p;
+}
+
+main :: () {
+  values: [4]s64;
+  values[0] = 10;
+  values[1] = 20;
+  values[2] = 30;
+  values[3] = 40;
+
+  base := *values[0];
+  mask := 0;
+
+  // Reads and writes through `*s64` prove the index is scaled by the pointee stride.
+  if base[0] == 10 && base[2] == 30 {
+    mask += 1;
+  }
+  base[1] = 22;
+  if values[1] == 22 {
+    mask += 2;
+  }
+
+  // An indexed pointee is a place: its address can be taken and written through.
+  second := *base[1];
+  second.* = 24;
+  if base[1] == 24 {
+    mask += 4;
+  }
+
+  // Pointer compound assignment uses the same element scaling, in both directions.
+  cursor := base;
+  cursor += 2;
+  cursor -= 1;
+  if cursor[0] == 24 && cursor[-1] == 10 {
+    mask += 8;
+  }
+
+  // A temporary pointer value can be indexed because the pointee, not the pointer word, is the
+  // location being named.
+  if identity(base)[3] == 40 {
+    mask += 16;
+  }
+
+  // Preserve the established pointer-to-array auto-dereference meaning.
+  whole := *values;
+  if whole[2] == 30 {
+    mask += 32;
+  }
+
+  // The motivating counted-string shape: advance the data field and read its first byte directly.
+  text: string = " abc";
+  text.data += 1;
+  text.count -= 1;
+  if text.data[0] == #char "a" && text.count == 3 {
+    text.data -= 1;
+    text.count += 1;
+    if text.data[0] == #char " " && text.count == 4 {
+      mask += 64;
+    }
+  }
+
+  if mask == 127 {
+    exit(0);
+  }
+  exit(1);
+}

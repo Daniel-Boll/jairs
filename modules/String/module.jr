@@ -17,12 +17,11 @@
 //! allocations return an empty/null result rather than trapping; invalid strict operations such as `slice`
 //! are program errors and assert.
 //!
-//! # Why `byte_at` exists at all
+//! # Why `byte_at` remains useful
 //!
-//! `s.data[i]` **does not compile**: `data` is a `*u8` and a pointer is not indexable (E0234). Reading a byte
-//! therefore takes `(s.data + i).*` plus a cast to `s64`, which is pointer arithmetic in the middle of
-//! otherwise ordinary code. `byte_at` is that expression with a name, and it is honest about being a
-//! workaround: when pointer indexing arrives, this becomes a one-line wrapper rather than the only way.
+//! ADR-0238 makes `s.data[i]` a legal unchecked raw-pointer read. `byte_at` remains the bounds-policy
+//! wrapper: it rejects a negative or past-end index with `-1`, then performs the one-line read. Callers that
+//! already proved their own bound may index `.data` directly.
 //!
 //! # Compatibility evidence
 //!
@@ -47,8 +46,7 @@ byte_at :: (s: string, index: s64) -> s64 {
   if index >= s.count {
     return -1;
   }
-  p := s.data + index;
-  return cast(s64, p.*);
+  return cast(s64, s.data[index]);
 }
 
 /// Whether `s` has no bytes.

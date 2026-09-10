@@ -31,7 +31,7 @@ yet have — see [What a game cannot do yet](/games/not-implemented/) in Book IV
   (`[2 + 2]u8`).
 - **Iterating by reference** (`for *x`), a range as a first-class value, and `for` over a
   user-defined type.
-- **Raw-pointer index sugar** (`p[n]`) and pointer ordering.
+- **Pointer ordering** (`<`, `>`).
 - **A recursive `variant`.**
 - **Overloading** unary operators, `[]`, `()`, and compound assignment.
 

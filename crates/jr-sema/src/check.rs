@@ -1062,6 +1062,34 @@ impl<'a> Ctx<'a> {
             | AssignOp::ShrAssign => true,
         };
 
+        // Pointer `+=`/`-=` is the assignment spelling of ADR-0064's existing pointer offset.
+        // Type the two operands independently through the same helper as `p + n`/`p - n`: giving
+        // the right operand the pointer target as an expectation is what used to produce the
+        // contradictory pair "compound assignment is unsupported" + "expected *T, found integer".
+        if self.pointee(target).is_some()
+            && let Some(pointer_op) = match op {
+                AssignOp::AddAssign => Some(BinOp::Add),
+                AssignOp::SubAssign => Some(BinOp::Sub),
+                _ => None,
+            }
+        {
+            let result = self.check_pointer_arithmetic(scope, pointer_op, lhs, rhs, span);
+            // `p - q` is valid pointer *difference*, but `p -= q` would try to assign that `s64`
+            // distance back into `p`. Compound pointer assignment only admits the offset forms
+            // whose result is the original pointer type.
+            if result.is_some_and(|result| result != target && result != PoolId::ERROR) {
+                self.diags.push(
+                    Diagnostic::error(
+                        span,
+                        "pointer compound assignment requires an integer offset",
+                    )
+                    .with_code(E0223)
+                    .with_note("use `distance := left - right` to compute a pointer difference"),
+                );
+            }
+            return;
+        }
+
         if compound && target != PoolId::ERROR && self.int_info(target).is_none() {
             let text = self.describe(target);
             self.diags.push(
@@ -1071,6 +1099,9 @@ impl<'a> Ctx<'a> {
                 )
                 .with_code(E0223),
             );
+            // Record the right operand's own type without inventing a second pointer mismatch.
+            self.check_expr(scope, rhs, None);
+            return;
         }
 
         self.check_expr(scope, rhs, Some(target));
@@ -7022,9 +7053,11 @@ impl<'a> Ctx<'a> {
         index_span: Span,
         span: Span,
     ) -> PoolId {
-        let mut base_ty = self.check_expr(scope, base, None);
+        let original_ty = self.check_expr(scope, base, None);
+        let mut base_ty = original_ty;
         // Auto-deref, exactly as field access does: `p: *[4]u8` indexes through the
-        // pointer. Same loop, so the two cannot disagree about how many levels.
+        // pointer. This established bounded-container meaning keeps precedence over ADR-0238's
+        // raw-pointer fallback, so existing pointer-to-array/view programs do not change meaning.
         while let Some(inner) = self.pointee(base_ty) {
             base_ty = inner;
         }
@@ -7040,7 +7073,10 @@ impl<'a> Ctx<'a> {
         // and the literal-index check below is skipped. That is not a weaker check: a view's
         // length is unknown at compile time by definition, and `Statement::BoundsCheck` still
         // guards every access at run time (ADR-0044 §4).
-        let Some((elem, len)) = self.indexable_parts(base_ty) else {
+        let indexed = self
+            .indexable_parts(base_ty)
+            .or_else(|| self.pointee(original_ty).map(|elem| (elem, None)));
+        let Some((elem, len)) = indexed else {
             // **An `#soa` struct indexed anywhere but as a field receiver** (ADR-0147 §2). It
             // reaches here because `check_soa_field` is the only path that accepts one, so
             // everything else lands in the general "not indexable" arm — where E0234's "only
@@ -7069,8 +7105,12 @@ impl<'a> Ctx<'a> {
                 self.diags.push(
                     Diagnostic::error(span, format!("cannot index a value of type `{text}`"))
                         .with_code(E0234)
-                        .with_note("only a fixed-size array `[N]T` and a view `[]T` can be indexed")
-                        .with_help("dynamic arrays `[..]T` arrive in a later wave"),
+                        .with_note(
+                            "only a fixed-size array `[N]T`, vector, view `[]T`, or raw pointer `*T` can be indexed",
+                        )
+                        .with_help(
+                            "index a dynamic array `[..]T` through its `.data` pointer",
+                        ),
                 );
             }
             return PoolId::ERROR;
@@ -7499,11 +7539,17 @@ impl<'a> Ctx<'a> {
                     .is_some_and(|ty| self.pointee(ty).is_some());
                 through_pointer || self.is_place(scope, receiver)
             }
-            // Indexing names a location whenever the thing indexed does. `a[i] = x` is
-            // legal for a local array; a hypothetical array-valued *constant* is not
-            // assignable, and this defers to the base for exactly that reason rather than
-            // answering `true` outright the way `Deref` can.
-            Expr::Index { base, .. } => self.is_place(scope, base),
+            // A pointer value names pointee storage whether or not the pointer itself came from a
+            // place, so `make_ptr()[i] = x` is assignable just like `make_ptr().* = x`. Arrays
+            // still defer to their base: an array-valued temporary has no source storage a caller
+            // can observe after the assignment.
+            Expr::Index { base, .. } => {
+                let through_pointer = self
+                    .types
+                    .expr_type(scope, base)
+                    .is_some_and(|ty| self.pointee(ty).is_some());
+                through_pointer || self.is_place(scope, base)
+            }
             // A view *is* a pointer to storage, so indexing one always names a location —
             // there is nothing to defer to the base about. But `xs[]` itself produces a
             // two-word value, so slicing is not a place (ADR-0044 §4).

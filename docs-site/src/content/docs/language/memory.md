@@ -99,16 +99,20 @@ q := p + 3;        // advance by 3 elements (3 * size_of(T) bytes)
 r := 3 + p;        // same, either operand order
 s := q - 1;        // back up one element
 d := q - p;        // signed distance: 3 elements
+p[2] = value;      // unchecked access to the third element
+p += 2;            // advance the pointer itself by two elements
 ```
 
 `p + n`, `n + p`, `p - n` and same-type `p - q` on a `*T` all use element units. A difference
 returns signed `s64`, so `*u8 - *u8` measures bytes while `*s64 - *s64` measures `s64` elements.
 The pointers must have one identical type and a non-zero-sized pointee.
 
-`p[n]` index sugar and pointer ordering (`<`, `>`) remain
-<span class="jairs-status absent">absent</span>. Arithmetic is unchecked — running past an
-allocation, subtracting unrelated pointers, or producing a non-element-aligned/unrepresentable
-difference is undefined behaviour.
+Raw-pointer indexing `p[n]` is the place `(p + n).*`; it has no bounds check because `*T`
+stores no length. `p += n` and `p -= n` use the same element-scaled offset. Pointer ordering
+(`<`, `>`) remains <span class="jairs-status absent">absent</span>. Arithmetic and raw indexing
+are unchecked — running past an allocation, reading or writing an invalid place, subtracting
+unrelated pointers, or producing a non-element-aligned/unrepresentable difference is undefined
+behaviour.
 
 ## Typed allocation
 

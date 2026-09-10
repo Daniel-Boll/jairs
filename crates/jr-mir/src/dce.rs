@@ -43,7 +43,7 @@
 //! body, and unlike a slot a value is named by block parameters too; it is worth
 //! doing when a register budget is a measured problem rather than a suspected one.
 
-use jr_pool::Pool;
+use jr_pool::{Item, Pool, PoolId};
 use rustc_hash::FxHashSet;
 
 use crate::mir::{
@@ -92,7 +92,7 @@ pub fn is_pure(rvalue: &Rvalue) -> bool {
 pub fn dce(body: &mut MirBody, pool: &Pool) -> bool {
     let mut changed = drop_unreachable_blocks(body);
     changed |= drop_dead_assignments(body);
-    changed |= drop_dead_stores(body);
+    changed |= drop_dead_stores(body, pool);
     changed |= drop_nops(body);
     changed |= drop_unused_slots(body);
     if changed {
@@ -296,14 +296,19 @@ fn note_rvalue(rvalue: &Rvalue, used: &mut FxHashSet<ValueId>) {
 /// that fills it, so "remove slots nothing mentions" removes nothing.
 ///
 /// Sound because the address was never taken. Nothing can alias the slot, so nothing
-/// can observe the write. A store through a [`PlaceBase::Deref`] is never dropped,
-/// because what it aliases is unknown — that is the whole difference between a slot
-/// and a pointer here.
+/// can observe the write. A store through a [`PlaceBase::Deref`] or through an
+/// [`Projection::Index`] whose receiver is a pointer is never dropped, because what it
+/// aliases is unknown — the pointer-typed slot is only where the address word was
+/// spilled, not the storage the statement writes (ADR-0238 §3).
 ///
 /// The stored *operand* may be a value this makes dead;
 /// [`drop_dead_assignments`] is not re-run inside this function, because
 /// [`crate::optimize`]'s bounded loop will call `dce` again and pick it up.
-fn drop_dead_stores(body: &mut MirBody) -> bool {
+fn drop_dead_stores(body: &mut MirBody, pool: &Pool) -> bool {
+    let slot_types: Vec<PoolId> = (0..body.slot_count())
+        .map(|index| body.slot(SlotId::from_usize(index)).ty)
+        .collect();
+
     // A slot is observable if a pointer to it exists — the shared predicate, so that
     // this pass and `forward.rs` cannot disagree about what escaping means — or if
     // something loads from it.
@@ -331,6 +336,15 @@ fn drop_dead_stores(body: &mut MirBody) -> bool {
                 // trapped with `tag=0`. The stores vanished silently and only the trap showed it,
                 // which is the "well-typed placeholder" failure mode reached through a dead-code pass.
                 Statement::TagCheck { place, .. } => note_place_slots(place, &mut observed),
+                // An indirect indexed store *reads* its root pointer slot to obtain the address.
+                // Mark that spill observed so the direct store which filled it is not deleted.
+                Statement::Store { place, .. } | Statement::Zero { place, .. }
+                    if place_accesses_indirectly(place, &slot_types, pool) =>
+                {
+                    if let PlaceBase::Slot(slot) = place.base {
+                        observed.insert(slot);
+                    }
+                }
                 Statement::Store { .. }
                 | Statement::Zero { .. }
                 | Statement::BoundsCheck { .. }
@@ -350,6 +364,9 @@ fn drop_dead_stores(body: &mut MirBody) -> bool {
             let (Statement::Store { place, .. } | Statement::Zero { place, .. }) = stmt else {
                 continue;
             };
+            if place_accesses_indirectly(place, &slot_types, pool) {
+                continue;
+            }
             let PlaceBase::Slot(slot) = place.base else {
                 continue;
             };
@@ -361,6 +378,80 @@ fn drop_dead_stores(body: &mut MirBody) -> bool {
         }
     }
     changed
+}
+
+/// Whether a slot-rooted place crosses a pointer before reaching the bytes it names.
+///
+/// A raw pointer index is represented as `slot_of_*T[index]` so the engines can load and scale the
+/// address with target layout. Treating that as a direct write to `slot_of_*T` deletes observable
+/// pointee stores. Track the projection's type just far enough to distinguish array/vector indexing
+/// (direct bytes in the slot) from pointer indexing (memory somewhere else).
+fn place_accesses_indirectly(place: &Place, slot_types: &[PoolId], pool: &Pool) -> bool {
+    let PlaceBase::Slot(slot) = place.base else {
+        return true;
+    };
+    let Some(mut ty) = slot_types.get(slot.index()).copied() else {
+        return true;
+    };
+    let mut pointer = is_pointer_type(ty, pool);
+
+    for step in &place.projection {
+        match step {
+            Projection::Deref => return true,
+            Projection::Index(_) if pointer => return true,
+            Projection::Index(_) => {
+                ty = match pool.item(ty) {
+                    Item::ArrayType { elem, .. } | Item::VectorType { elem, .. } => *elem,
+                    _ => return true,
+                };
+                pointer = is_pointer_type(ty, pool);
+            }
+            Projection::Field(index) => {
+                let Some(field) = pool
+                    .fields_of(ty)
+                    .and_then(|fields| fields.get(*index as usize))
+                else {
+                    return true;
+                };
+                ty = field.ty;
+                pointer = is_pointer_type(ty, pool);
+            }
+            Projection::StringData => {
+                ty = PoolId::U8;
+                pointer = true;
+            }
+            Projection::ViewData => {
+                let Item::ViewType { elem } = pool.item(ty) else {
+                    return true;
+                };
+                ty = *elem;
+                pointer = true;
+            }
+            Projection::DynamicArrayData => {
+                let Item::DynamicArrayType { elem } = pool.item(ty) else {
+                    return true;
+                };
+                ty = *elem;
+                pointer = true;
+            }
+            Projection::StringCount
+            | Projection::ViewCount
+            | Projection::DynamicArrayCount
+            | Projection::DynamicArrayCapacity => {
+                ty = PoolId::S64;
+                pointer = false;
+            }
+            Projection::VariantTag => {
+                ty = PoolId::U8;
+                pointer = false;
+            }
+        }
+    }
+    false
+}
+
+fn is_pointer_type(ty: PoolId, pool: &Pool) -> bool {
+    ty.index() < pool.len() && matches!(pool.item(ty), Item::PointerType(_))
 }
 
 // ---------------------------------------------------------------------------

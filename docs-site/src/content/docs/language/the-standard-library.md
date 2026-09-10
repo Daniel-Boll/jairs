@@ -58,7 +58,8 @@ slice(s, start, count) -> string         // borrowed, strict bounds
 ```
 
 `equal` is what `==`-on-strings points you to (recall strings don't compare with `==`).
-`byte_at` exists because `s.data[i]` doesn't compile — reading a byte from a `*u8` needs help.
+`byte_at` adds counted-string bounds policy around the unchecked raw read `s.data[i]`, returning
+`-1` for a negative or past-end index.
 `slice` preserves pointer identity into its source and traps on a negative or out-of-range extent.
 Trims, split pieces and parse remainders are borrowed for the same reason.
 

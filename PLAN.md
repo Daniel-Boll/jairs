@@ -421,7 +421,17 @@ Status of each slice component, so this is answerable without reading the tree.
 > | `jr-mir` | `Rvalue::PointerDifference` keeps layout out of MIR. Verification requires identical pointer operands and an `s64` destination; every optimizer explicitly walks or classifies the new node. |
 > | `jr-vm` / `jr-codegen-clif` / `jr-codegen-llvm` | Each engine subtracts at pointer width without ADR-0002 overflow trapping, interprets the byte difference as signed, and divides by the shared pointee stride. VM bytecode records that stride at lowering. |
 > | `tests/corpus` | `valid/168` executes forward, reverse, one-past, byte and wider-pointee differences; `type-errors/058` now pins mismatched and zero-sized pointees. The MIR snapshot exposes every `ptrdiff` node. |
-> | Documentation | Pointer difference moved from the absent lists into the memory guide and compatibility matrix; raw-pointer indexing and ordering remain absent. |
+> | Documentation | At ADR-0237, pointer difference moved from the absent lists into the memory guide and compatibility matrix; ADR-0238 below closes raw-pointer indexing while ordering remains absent. |
+
+> **ADR-0238 component delta.**
+>
+> | Component | Current delta |
+> |---|---|
+> | `jr-sema` | `p[i]` on an ordinary `*T` yields an unchecked `T` place, while the established bounded pointer-to-array/vector/view interpretation keeps precedence. Pointer `+=`/`-=` accept only integer offsets; `p -= q` remains E0223 rather than assigning an `s64` difference back into a pointer. |
+> | `jr-mir` | Raw indexing and pointer compound offsets reuse one element-scaled pointer-index place. Existing container indexing still emits bounds checks; ordinary pointer indexing does not. |
+> | Optimisation | Dead-store elimination now distinguishes an indirect `pointer[index]` write from a direct store to the spill slot holding the pointer, preserving both the observable pointee write and the pointer value feeding it at `-O1`. |
+> | `tests/corpus` | `valid/169` executes raw loads, stores, address-taking, positive/negative indexing, temporary pointer results, pointer compounds and the motivating `string.data` scanner shape. `type-errors/097` pins non-integer indices, unsupported compounds and pointer-difference assignment. |
+> | Documentation / `String` | The memory guide and compatibility matrix now document unchecked indexing and offsets. `String.byte_at` becomes the checked policy wrapper around a direct `s.data[index]` read. |
 
 | Component | Status | Notes |
 |---|---|---|
@@ -757,25 +767,26 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 ## 7. Immediate next actions
 
 > [!IMPORTANT]
-> **ADR-0237 adds element-scaled pointer difference.**
-> `end - start` now yields a signed `s64` when both operands have the same `*T` type. The byte
-> difference is divided by `size_of(T)`, so `*u8` naturally reports bytes without making byte
-> arithmetic the rule for every pointee.
+> **ADR-0238 adds raw-pointer indexing and compound offsets.**
+> `p[i]` now denotes the unchecked, element-scaled place `(p + i).*`, and `p += n` / `p -= n`
+> reuse the same pointer-offset lowering. Existing pointer-to-array/vector/view indexing retains
+> its bounded-container meaning.
 
-**1415 workspace tests (1428 under gate 7), 317 corpus files outside fixture modules, 237 ADRs and
-26 modules.** The Rust test count holds while `valid/168` adds one corpus file; `type-errors/058`
-was repurposed from the deferred pointer-difference refusal. All six ordinary gates and gate 7 are
-green.
+**1417 workspace tests (1430 under gate 7), 319 corpus files outside fixture modules, 238 ADRs and
+26 modules.** Two MIR optimiser regressions and `valid/169`/`type-errors/097` supply the new
+coverage. All six ordinary gates and gate 7 are green.
 
-Sema rejects mixed pointer types and zero-sized pointees with E0223. MIR carries a dedicated pure
-`PointerDifference` rvalue rather than encoding layout in an ordinary integer subtraction; the VM
-records the stride in bytecode while Cranelift and LLVM derive it from the shared pool layout.
-All three engines subtract at pointer width, interpret the result as signed and divide by the
-pointee stride. The original `ora_to_atlas_test/src/main.jr` probe checks with zero errors.
+The motivating `trim_whitespaces` shape now checks: `s.data[0]` is a `u8` place and
+`s.data += 1` advances by one byte. Raw indices may be negative and may name a place returned by a
+temporary pointer expression; no bounds check is invented because `*T` carries no length.
+`p *= n`, pointer-plus-pointer and `p -= q` remain E0223.
 
-The operation follows the existing raw-pointer contract: both pointers must describe one
-allocation, the byte distance must be an exact multiple of the pointee size, and the element
-distance must fit `s64`. These conditions are not dynamically checked. **E0300** is the first free
+The first optimized probe exposed a real pre-existing DCE bug: it classified
+`pointer_slot[index] = value` as a dead direct store to `pointer_slot` and deleted the observable
+pointee write. DCE now preserves both an indirect pointer-index store and the pointer spill that
+feeds it; the corpus program agrees at `-O0` and `-O1` in the VM, Cranelift and LLVM. The external
+`ora_to_atlas_test/src/main.jr` no longer reports the three pointer diagnostics; its next remaining
+error is an unrelated procedure that does not return on every path. **E0300** is the first free
 global diagnostic code; **E0136** is the first free parser code.
 
 ### Next wave: declaration-ordered evidence for comptime templates
