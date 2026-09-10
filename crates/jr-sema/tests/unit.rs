@@ -9,6 +9,7 @@ mod harness;
 use harness::Program;
 use jr_hir::{BodyId, ExprId, ExprScope, LocalId};
 use jr_pool::{Item, PoolId};
+use jr_sema::ArgSlot;
 
 // ---------------------------------------------------------------------------
 // ADR-0016 §1 — context-typed integer literals
@@ -581,11 +582,91 @@ fn inferred_parameter_defaults_are_still_literal_only() {
 }
 
 #[test]
-fn inferred_defaults_are_refused_on_template_procedures() {
+fn pure_type_templates_align_named_arguments_and_fill_fixed_defaults() {
     let mut program = Program::new();
     let analysis = program.analyse(
-        "typed :: (value: $T, amount := 9) -> T { return value; }\n\
-         valued :: ($N := 9) -> s64 { return N; }\n",
+        "choose :: (value: $T, scale: s64 = 2, label := \"item\") -> T {\n\
+             return value;\n\
+         }\n\
+         main :: () {\n\
+             first := choose(7);\n\
+             second := choose(scale = 4, value = 8);\n\
+             third := choose(value = 9, label = \"named\");\n\
+         }\n",
+    );
+    analysis.assert_silent();
+    assert_eq!(analysis.instantiations.len(), 3);
+    assert_eq!(analysis.filled_calls.len(), 3);
+
+    let mut shapes: Vec<Vec<char>> = analysis
+        .filled_calls
+        .values()
+        .map(|slots| {
+            slots
+                .iter()
+                .map(|slot| match slot {
+                    ArgSlot::Given(_) => 'G',
+                    ArgSlot::Default(_) => 'D',
+                })
+                .collect()
+        })
+        .collect();
+    shapes.sort();
+    assert_eq!(
+        shapes,
+        vec![
+            vec!['G', 'D', 'D'],
+            vec!['G', 'D', 'G'],
+            vec!['G', 'G', 'D'],
+        ]
+    );
+}
+
+#[test]
+fn a_polymorphic_parameter_cannot_supply_its_own_default() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "bad_direct :: (value: $T = 3) -> T {\n\
+             return value;\n\
+         }\n\
+         bad_use :: (seed: $T, value: T = 3) -> T {\n\
+             return value;\n\
+         }\n",
+    );
+    assert_eq!(analysis.codes(), vec!["E0252", "E0252"]);
+}
+
+#[test]
+fn defaults_remain_deferred_on_comptime_and_mixed_templates() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "typed :: ($N: s64, scale: s64 = 2) -> s64 {\n\
+             return N * scale;\n\
+         }\n\
+         inferred :: ($N := 9) -> s64 {\n\
+             return N;\n\
+         }\n\
+         mixed :: (value: $T, $N: s64, label := \"item\") -> T {\n\
+             return value;\n\
+         }\n",
+    );
+    assert_eq!(analysis.codes(), vec!["E0252", "E0252", "E0252"]);
+}
+
+#[test]
+fn named_arguments_remain_deferred_on_comptime_and_mixed_templates() {
+    let mut program = Program::new();
+    let analysis = program.analyse(
+        "valued :: ($N: s64) -> s64 {\n\
+             return N;\n\
+         }\n\
+         mixed :: (value: $T, $N: s64) -> T {\n\
+             return value;\n\
+         }\n\
+         main :: () {\n\
+             a := valued(N = 3);\n\
+             b := mixed(N = 4, value = 8);\n\
+         }\n",
     );
     assert_eq!(analysis.codes(), vec!["E0252", "E0252"]);
 }

@@ -80,10 +80,24 @@ strings infer `string`. A supplied argument is checked against that fixed type r
 changing it. `null` has no natural pointer type, so write an explicit default such as
 `next: *Node = null`; bare `next := null` reports E0257.
 
-Both forms work for ordinary local and imported procedures and for `#run` calls. Defaults must
-still be literals. Inferred defaults on `$T`, `$N`, or `$$T` template/comptime procedures report
-E0252 because template call binding does not yet use the ordinary filled-argument/default binder.
-Procedure-pointer types also carry no parameter-name or default metadata.
+For non-template procedures, both forms work locally, across imports, and in `#run` calls. An
+ordinary call to a pure `$T` procedure may also default a parameter whose type is already fixed
+(ADR-0236):
+
+```jr
+pick :: (value: $T, scale: s64 = 2, label := "item") -> T {
+    return value;
+}
+
+a := pick(8);                       // T is inferred from 8
+b := pick(label = "x", value = 9); // named arguments are reordered
+```
+
+Defaults never infer `$T`: caller-supplied arguments must pin every type variable, and a default
+whose own type contains `$T` reports E0252. Defaults must still be literals. Any default on a
+`$N` or mixed `$T`+`$N` procedure, and named calls to those local comptime templates, report
+E0252; imported `$N` calls remain E0268. Procedure-pointer types also carry no parameter-name or
+default metadata. Calling a pure template inside `#run` remains a lowering gap.
 
 ## Aggregate returns
 

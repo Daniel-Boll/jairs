@@ -14,7 +14,9 @@ use jr_base::{FileId, Interner};
 use jr_diag::Diagnostics;
 use jr_hir::{FileHir, ItemScope, ResolveMap};
 use jr_pool::{Pool, PoolId};
-use jr_sema::{FileSignatures, ImportedFile, ImportedTemplateContext, TemplateRef, TypeMap};
+use jr_sema::{
+    ArgSlot, FileSignatures, ImportedFile, ImportedTemplateContext, TemplateRef, TypeMap,
+};
 use rustc_hash::FxHashMap;
 
 /// One analysed file: everything a test might want to assert about.
@@ -37,6 +39,8 @@ pub struct Analysis {
     pub type_name_imports: Vec<String>,
     /// Polymorphic demands, including the declaration file of each template.
     pub instantiations: FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), (TemplateRef, Vec<PoolId>)>,
+    /// Calls whose named/default arguments were aligned to declaration order.
+    pub filled_calls: FxHashMap<(jr_hir::ExprScope, jr_hir::ExprId), Vec<ArgSlot>>,
 }
 
 impl Analysis {
@@ -203,6 +207,7 @@ impl Program {
             assertions: checked.assertions,
             type_name_imports: checked.type_name_imports,
             instantiations: checked.instantiations,
+            filled_calls: checked.filled_calls,
         }
     }
 

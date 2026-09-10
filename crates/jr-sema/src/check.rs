@@ -3634,6 +3634,7 @@ impl<'a> Ctx<'a> {
                         sig.as_ref(),
                         Some(owner),
                         args,
+                        arg_names,
                         span,
                     );
                 }
@@ -3695,8 +3696,9 @@ impl<'a> Ctx<'a> {
             // and the predicate's clone is evaluated in `file_mir` — a `false` there refuses this
             // instantiation with E0275. ADR-0093 §3's E0274 refusal is lifted, exactly as E0268 was for
             // `$T` and E0271's first meaning for `$N`: each such refusal named the sub-wave that removes it.
-            return self
-                .check_polymorphic_call(scope, id, callee, template, &sig, None, args, span);
+            return self.check_polymorphic_call(
+                scope, id, callee, template, &sig, None, args, arg_names, span,
+            );
         }
 
         // **A call to a comptime-value-parameterised procedure is instantiated** (ADR-0088 §1): its `$N`
@@ -3705,7 +3707,7 @@ impl<'a> Ctx<'a> {
         // ordinary call path, whose template signature has concrete `$N` parameter types a direct check
         // would accept while leaving `N` with no value — a placeholder miscompile.
         if let Some((proc, sig)) = self.callee_comptime_template(scope, callee) {
-            return self.check_comptime_call(scope, id, callee, proc, &sig, args, span);
+            return self.check_comptime_call(scope, id, callee, proc, &sig, args, arg_names, span);
         }
 
         // The callee is in **call position**, where a `#foreign` procedure is a legal thing to
@@ -5970,11 +5972,30 @@ impl<'a> Ctx<'a> {
         proc: ProcId,
         sig: &ProcSig,
         args: &[ExprId],
+        arg_names: &[Option<Symbol>],
         span: Span,
     ) -> PoolId {
         // The callee names the template; type it `void` and never lower it, exactly as a `$T` call does —
         // the call is redirected to the instantiation, so MIR never sees the template callee.
         self.types.set_expr(scope, callee, PoolId::VOID);
+
+        if arg_names.iter().any(Option::is_some) {
+            for arg in args {
+                self.check_expr(scope, *arg, None);
+            }
+            self.diags.push(
+                Diagnostic::error(
+                    span,
+                    "named arguments are not yet supported on a compile-time-parameterised procedure",
+                )
+                .with_code(E0252)
+                .with_note(
+                    "the comptime call path still records arguments as source expressions rather than declaration-ordered slots",
+                )
+                .with_help("pass these arguments positionally"),
+            );
+            return PoolId::ERROR;
+        }
 
         if args.len() != sig.params.len() {
             for arg in args {
@@ -6067,8 +6088,10 @@ impl<'a> Ctx<'a> {
     ///
     /// Infers each `$T` from the corresponding argument's type, binds it, re-resolves the signature to
     /// concrete parameter and return types, checks the arguments against those, and records
-    /// `(TemplateRef, bound types)` for the expansion pass. An imported template is inferred and
-    /// concretized in its owner's type environment; caller arguments remain typed in the caller.
+    /// `(TemplateRef, bound types)` for the expansion pass. Named/default arguments on a pure `$T`
+    /// template are first resolved through ADR-0053's ordinary declaration-ordered binder
+    /// (ADR-0236). An imported template is inferred and concretized in its owner's type environment;
+    /// caller arguments remain typed in the caller.
     ///
     /// Refuses — with E0268 — the cases this sub-wave does not instantiate (ADR-0082 §5): more than one
     /// distinct `$T`, or a `$T` that no argument position pins. A refusal here is by design and named, not
@@ -6082,6 +6105,7 @@ impl<'a> Ctx<'a> {
         sig: &ProcSig,
         owner: Option<ImportedTemplateContext<'a>>,
         args: &[ExprId],
+        arg_names: &[Option<Symbol>],
         span: Span,
     ) -> PoolId {
         // The callee names the template, whose type is a `ProcType` with `ERROR` parameters — recording
@@ -6090,42 +6114,86 @@ impl<'a> Ctx<'a> {
         // non-procedure callee: a recorded, harmless type so MIR does not see an untyped hole.
         self.types.set_expr(scope, callee, PoolId::VOID);
 
-        // Arity: the template's parameter count is fixed even though the types are not.
-        if args.len() != sig.params.len() {
+        let has_comptime = sig.comptime_params.iter().any(|&param| param);
+        let has_names = arg_names.iter().any(Option::is_some);
+        let has_defaults = sig.defaults.iter().any(Option::is_some);
+
+        // Mixed `$T`+`$N` templates still carry source expressions to the comptime evaluator.
+        // Interpreting names positionally here is a silent wrong answer, so refuse until that
+        // evidence becomes declaration-ordered slots too (ADR-0236 §3).
+        if has_comptime && has_names {
             for arg in args {
                 self.check_expr(scope, *arg, None);
             }
             self.diags.push(
                 Diagnostic::error(
                     span,
-                    format!(
-                        "this procedure takes {} argument{}, but {} {} supplied",
-                        sig.params.len(),
-                        if sig.params.len() == 1 { "" } else { "s" },
-                        args.len(),
-                        if args.len() == 1 { "was" } else { "were" }
-                    ),
+                    "named arguments are not yet supported on a compile-time-parameterised procedure",
                 )
-                .with_code(E0216),
+                .with_code(E0252)
+                .with_note(
+                    "the comptime call path still records arguments as source expressions rather than declaration-ordered slots",
+                )
+                .with_help("pass these arguments positionally"),
             );
             return PoolId::ERROR;
         }
 
-        // Infer **each** variable from the parameter shapes that expose it, typing every argument on the
-        // way. ADR-0084 added pointer/view peeling; ADR-0229 adds parameterised nominal arguments while
+        let used_filled_binder = !has_comptime && (has_names || has_defaults);
+        let slots = if used_filled_binder {
+            let Some(filled) = self.fill_arguments(scope, callee, args, arg_names, span) else {
+                // The binder reported the source-order mistake. Still type every written argument
+                // so an independent error inside one is not hidden.
+                for arg in args {
+                    self.check_expr(scope, *arg, None);
+                }
+                return PoolId::ERROR;
+            };
+            filled
+        } else {
+            // Fast path: the template's parameter count is fixed even though some types are not.
+            if args.len() != sig.params.len() {
+                for arg in args {
+                    self.check_expr(scope, *arg, None);
+                }
+                self.diags.push(
+                    Diagnostic::error(
+                        span,
+                        format!(
+                            "this procedure takes {} argument{}, but {} {} supplied",
+                            sig.params.len(),
+                            if sig.params.len() == 1 { "" } else { "s" },
+                            args.len(),
+                            if args.len() == 1 { "was" } else { "were" }
+                        ),
+                    )
+                    .with_code(E0216),
+                );
+                return PoolId::ERROR;
+            }
+            args.iter().copied().map(ArgSlot::Given).collect()
+        };
+
+        // Infer **each** variable from the supplied parameter slots that expose it, typing every given
+        // expression on the way. An omitted default is already checked against a fixed type in the
+        // signature and deliberately contributes no `$T` evidence (ADR-0236 §1).
+        // ADR-0084 added pointer/view peeling; ADR-0229 adds parameterised nominal arguments while
         // preserving declaration identity.
         let hir_params = owner.as_ref().map_or_else(
             || self.hir.proc(template.proc).params.clone(),
             |owner| owner.hir.proc(template.proc).params.clone(),
         );
-        let arg_types: Vec<PoolId> = args
+        let arg_types: Vec<Option<PoolId>> = slots
             .iter()
-            .map(|arg| self.check_expr(scope, *arg, None))
+            .map(|slot| match slot {
+                ArgSlot::Given(arg) => Some(self.check_expr(scope, *arg, None)),
+                ArgSlot::Default(_) => None,
+            })
             .collect();
         let mut bindings: Vec<(Symbol, PoolId)> = Vec::new();
         let mut infer = |ctx: &mut Self| {
             for (index, param) in hir_params.iter().enumerate() {
-                let Some(&arg_ty) = arg_types.get(index) else {
+                let Some(Some(arg_ty)) = arg_types.get(index).copied() else {
                     continue;
                 };
                 if arg_ty == PoolId::ERROR {
@@ -6270,8 +6338,11 @@ impl<'a> Ctx<'a> {
             }
             (params, ret)
         };
-        for ((arg, want), param) in args.iter().zip(concrete_params).zip(hir_params.iter()) {
-            if (param.ty.is_some() || param.inferred) && want != PoolId::ERROR {
+        for ((slot, want), param) in slots.iter().zip(concrete_params).zip(hir_params.iter()) {
+            if let ArgSlot::Given(arg) = slot
+                && (param.ty.is_some() || param.inferred)
+                && want != PoolId::ERROR
+            {
                 self.check_expr(scope, *arg, Some(want));
             };
         }
@@ -6291,6 +6362,10 @@ impl<'a> Ctx<'a> {
             .collect();
         self.instantiations.insert((scope, id), (template, key));
 
+        if used_filled_binder {
+            self.filled_calls.insert((scope, id), slots.clone());
+        }
+
         // For a **mixed** `$$T` template (ADR-0137), also record the comptime arguments so the
         // pre-pass evaluates them and the instantiation clone bakes their values. A pure `$T`
         // template has no comptime params and this list is empty; a mixed one records the
@@ -6302,7 +6377,10 @@ impl<'a> Ctx<'a> {
                 .enumerate()
                 .filter_map(|(index, &is_comptime)| {
                     if is_comptime {
-                        args.get(index).copied()
+                        slots.get(index).and_then(|slot| match slot {
+                            ArgSlot::Given(arg) => Some(*arg),
+                            ArgSlot::Default(_) => None,
+                        })
                     } else {
                         None
                     }

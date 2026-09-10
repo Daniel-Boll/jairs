@@ -594,6 +594,49 @@ impl Ctx<'_> {
         vars
     }
 
+    /// Whether one parameter type depends on a polymorphic variable introduced by the signature.
+    ///
+    /// [`Self::collect_poly_vars`] finds the introducing `$T`; this also recognises a later bare `T`
+    /// that *uses* the same variable. The distinction matters for defaults: both `value: $T = 3` and
+    /// `other: T = 3` would need an omitted value to determine a type that only the caller may infer.
+    fn type_mentions_poly_variable(
+        &self,
+        scope: ExprScope,
+        id: jr_hir::TypeRefId,
+        variables: &[jr_base::Symbol],
+    ) -> bool {
+        match self.type_ref(scope, id) {
+            TypeRef::Poly { .. } => true,
+            TypeRef::Name(name) => variables.contains(&name),
+            TypeRef::Pointer(inner) => self.type_mentions_poly_variable(scope, inner, variables),
+            TypeRef::Array { elem, .. }
+            | TypeRef::Vector { elem, .. }
+            | TypeRef::View { elem }
+            | TypeRef::DynamicArray { elem } => {
+                self.type_mentions_poly_variable(scope, elem, variables)
+            }
+            TypeRef::Results(results) => results
+                .iter()
+                .any(|result| self.type_mentions_poly_variable(scope, *result, variables)),
+            TypeRef::Proc { params, ret, .. } => {
+                params
+                    .iter()
+                    .any(|param| self.type_mentions_poly_variable(scope, *param, variables))
+                    || ret
+                        .is_some_and(|ret| self.type_mentions_poly_variable(scope, ret, variables))
+            }
+            TypeRef::Apply { args, .. } => args
+                .iter()
+                .any(|arg| self.type_mentions_poly_variable(scope, *arg, variables)),
+            TypeRef::Qualified { .. }
+            | TypeRef::Struct(_)
+            | TypeRef::Union(_)
+            | TypeRef::Variant(_)
+            | TypeRef::Enum(_)
+            | TypeRef::Error => false,
+        }
+    }
+
     /// Adds the `$T` variables reachable from one `TypeRef` to `vars`, de-duplicated, in first-seen order.
     fn collect_poly_in_type(
         &self,
@@ -818,8 +861,9 @@ impl Ctx<'_> {
         // — a `$T` proc with no binding — keeps its variables here.
         let is_instantiation = self.hir.proc_bindings.iter().any(|(p, _, _)| *p == proc);
         let source_poly_vars = self.collect_poly_vars(&declaration.params);
-        let source_is_template =
-            !source_poly_vars.is_empty() || declaration.params.iter().any(|param| param.comptime);
+        let source_poly_names: Vec<jr_base::Symbol> =
+            source_poly_vars.iter().map(|var| var.name).collect();
+        let source_has_comptime = declaration.params.iter().any(|param| param.comptime);
         let mut resolved_poly_vars = Vec::with_capacity(source_poly_vars.len());
         if !is_instantiation {
             for var in &source_poly_vars {
@@ -933,20 +977,39 @@ impl Ctx<'_> {
         let mut comptime_params = Vec::with_capacity(declaration.params.len());
         let mut variadic_params = Vec::with_capacity(declaration.params.len());
         for param in &declaration.params {
-            if param.inferred && source_is_template && !is_instantiation {
-                self.diags.push(
-                    Diagnostic::error(
-                        param.name_span,
-                        "an inferred default is not yet supported on a polymorphic procedure",
-                    )
-                    .with_code(E0252)
-                    .with_note(
-                        "template calls bind their type or compile-time arguments before the ordinary default-argument binder runs",
-                    )
-                    .with_help(
-                        "write an explicit parameter type and pass this argument at every template call",
-                    ),
-                );
+            let param_has_poly_type = param.ty.is_some_and(|ty| {
+                self.type_mentions_poly_variable(ExprScope::TopLevel, ty, &source_poly_names)
+            });
+            if param.default.is_some() && !is_instantiation && !foreign {
+                if source_has_comptime {
+                    self.diags.push(
+                        Diagnostic::error(
+                            param.name_span,
+                            "a compile-time-parameterised procedure cannot yet declare defaults",
+                        )
+                        .with_code(E0252)
+                        .with_note(
+                            "the comptime call path records source expressions, while an omitted default is already an interned value",
+                        )
+                        .with_help(
+                            "pass every argument explicitly; defaulted `$N`/`$$T` calls need a separate value-plumbing wave",
+                        ),
+                    );
+                } else if param_has_poly_type {
+                    self.diags.push(
+                        Diagnostic::error(
+                            param.name_span,
+                            "a parameter whose type contains `$T` cannot have a default",
+                        )
+                        .with_code(E0252)
+                        .with_note(
+                            "type variables are inferred from caller-supplied arguments, not from omitted defaults",
+                        )
+                        .with_help(
+                            "move the default to a fixed-type parameter, or require this argument at every call",
+                        ),
+                    );
+                }
             }
             let explicit_ty = match param.ty {
                 // Parameter types live in `FileHir::type_refs`, not in

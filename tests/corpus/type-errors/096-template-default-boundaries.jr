@@ -1,0 +1,27 @@
+// EXPECT: E0252 E0252 E0252 E0252 — template-default boundaries remain explicit (ADR-0236)
+//
+// A pure `$T` procedure may default only a parameter whose type is already
+// fixed. A default cannot infer `T`, and any procedure carrying a `$N`
+// compile-time parameter remains outside the filled-value plumbing.
+
+/// The default's own type contains `T`, so omitting it would have to invent
+/// the type-variable binding from the default.
+bad_type_default :: (value: $T = 3) -> T {
+  return value;
+}
+
+/// A bare `T` later in the same signature is the same variable dependency.
+bad_type_use_default :: (seed: $T, value: T = 3) -> T {
+  return value;
+}
+
+/// Any default on a `$N` procedure is refused, even when the defaulted
+/// parameter itself has a fixed ordinary type.
+bad_comptime_default :: ($N: s64, scale: s64 = 2) -> s64 {
+  return N * scale;
+}
+
+/// Mixed `$T` + `$N` procedures have the same comptime-value boundary.
+bad_mixed_default :: (value: $T, $N: s64, label := "item") -> T {
+  return value;
+}
