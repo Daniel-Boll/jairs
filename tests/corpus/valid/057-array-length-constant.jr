@@ -19,7 +19,7 @@
 //   * `.count` on such an array is the same constant it would be for a literal length (ADR-0039 §5).
 //
 // What is **not** here is a length needing a value — arithmetic, a `#run`, or a constant naming another
-// constant — all still E0233 (`type-errors/023`), because sema runs before the evaluator. That line, not
+// constant — now handled by ADR-0245. Procedure calls remain E0233 (`type-errors/023`). That line, not
 // "is it a literal", is what ADR-0070 §2 draws.
 #import "Basic";
 

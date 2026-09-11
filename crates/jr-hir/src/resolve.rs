@@ -83,7 +83,7 @@ use rustc_hash::FxHashMap;
 
 use crate::hir::{
     BodyId, ConstValue, Expr, ExprId, FileHir, ForIterable, ItemId, ItemKind, ItemScope, Res, Stmt,
-    StmtId, StructLitEntry,
+    StmtId, StructLitEntry, TypeRef, TypeRefId,
 };
 
 // ---------------------------------------------------------------------------
@@ -1334,6 +1334,9 @@ impl<'a> ResolveCtx<'a> {
             }
             Stmt::Local(local_id, _) => {
                 let local = self.hir.bodies[body_id.index()].locals[local_id.index()].clone();
+                if let Some(ty) = local.ty {
+                    self.resolve_body_type_ref_exprs(body_id, ty);
+                }
                 if let Some(init) = local.init {
                     self.resolve_body_expr(body_id, init);
                 }
@@ -1455,6 +1458,69 @@ impl<'a> ResolveCtx<'a> {
                 }
             }
             Stmt::Break(_, _) | Stmt::Continue(_, _) | Stmt::Todo { .. } | Stmt::Error(_) => {}
+        }
+    }
+
+    /// Resolves value expressions embedded in a body-local type reference (ADR-0245).
+    ///
+    /// Type *names* remain sema's responsibility. This walk reaches only the array/vector count
+    /// expressions that lowering now retains in the body's ordinary expression arena. Without it,
+    /// `[WIDTH * HEIGHT]T` in a local annotation was typed but its names stayed `Res::Error`, so the
+    /// provisional VM could not read constants that resolve perfectly well in the surrounding body.
+    fn resolve_body_type_ref_exprs(&mut self, body_id: BodyId, id: TypeRefId) {
+        let Some(ty) = self.hir.body(body_id).type_refs.get(id.index()).cloned() else {
+            return;
+        };
+        match ty {
+            TypeRef::Poly { interface, .. } => {
+                if let Some(interface) = interface {
+                    self.resolve_body_type_ref_exprs(body_id, interface);
+                }
+            }
+            TypeRef::Pointer(inner)
+            | TypeRef::View { elem: inner }
+            | TypeRef::DynamicArray { elem: inner } => {
+                self.resolve_body_type_ref_exprs(body_id, inner);
+            }
+            TypeRef::Array { elem, len_expr, .. } => {
+                if let Some(expr) = len_expr {
+                    self.resolve_body_expr(body_id, expr);
+                }
+                self.resolve_body_type_ref_exprs(body_id, elem);
+            }
+            TypeRef::Vector {
+                elem, lanes_expr, ..
+            } => {
+                if let Some(expr) = lanes_expr {
+                    self.resolve_body_expr(body_id, expr);
+                }
+                self.resolve_body_type_ref_exprs(body_id, elem);
+            }
+            TypeRef::Results(elements) => {
+                for element in elements {
+                    self.resolve_body_type_ref_exprs(body_id, element);
+                }
+            }
+            TypeRef::Proc { params, ret, .. } => {
+                for param in params {
+                    self.resolve_body_type_ref_exprs(body_id, param);
+                }
+                if let Some(ret) = ret {
+                    self.resolve_body_type_ref_exprs(body_id, ret);
+                }
+            }
+            TypeRef::Apply { args, .. } => {
+                for arg in args {
+                    self.resolve_body_type_ref_exprs(body_id, arg);
+                }
+            }
+            TypeRef::Error
+            | TypeRef::Name(_)
+            | TypeRef::Qualified { .. }
+            | TypeRef::Struct(_)
+            | TypeRef::Union(_)
+            | TypeRef::Variant(_)
+            | TypeRef::Enum(_) => {}
         }
     }
 

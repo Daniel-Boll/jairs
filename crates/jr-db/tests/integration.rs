@@ -1402,19 +1402,20 @@ fn editing_module_invalidates_importers_not_unrelated() {
 // Invalidation actually propagating through the module graph
 // ---------------------------------------------------------------------------
 
-/// Builds a database counting `WillExecute` events whose key mentions `needle`.
-fn db_counting(
-    needle: &'static str,
-    modules: InMemoryModules,
-) -> (JairsDatabase, Arc<AtomicUsize>) {
+/// Builds a database counting `WillExecute` events for one exact query name.
+fn db_counting(query: &'static str, modules: InMemoryModules) -> (JairsDatabase, Arc<AtomicUsize>) {
     let counter = Arc::new(AtomicUsize::new(0));
     let counter_clone = counter.clone();
     let db = JairsDatabase::with_event_callback_and_modules(
         move |event| {
-            if let salsa::EventKind::WillExecute { database_key } = event.kind
-                && format!("{database_key:?}").contains(needle)
-            {
-                counter_clone.fetch_add(1, Ordering::SeqCst);
+            if let salsa::EventKind::WillExecute { database_key } = event.kind {
+                let name = format!("{database_key:?}");
+                if name
+                    .split_once('(')
+                    .is_some_and(|(executed, _)| executed == query)
+                {
+                    counter_clone.fetch_add(1, Ordering::SeqCst);
+                }
             }
         },
         modules,

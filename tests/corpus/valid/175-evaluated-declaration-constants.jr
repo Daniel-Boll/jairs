@@ -1,0 +1,57 @@
+// ADR-0245: declaration-shaping integer expressions run through MIR and the compile-time VM.
+// REQUIRES-DB-PREPASS: declaration values
+//
+// This file deliberately uses both direct arithmetic and a local constant chain. The six consumers
+// below used to share one refusal: only a literal or a name whose initializer was immediately a
+// literal worked. A single declaration-value seam now feeds all of them.
+#import "Basic";
+
+WIDTH :: 3;
+HEIGHT :: 2;
+AREA :: WIDTH * HEIGHT;
+PADDED :: AREA + 2;
+
+Computed :: enum {
+  VALUE :: WIDTH * 10 + HEIGHT;
+  NEXT;
+}
+
+Aligned :: struct {
+  tag: u8;
+  value: s64 #align 2 * 8;
+}
+
+Placed :: struct {
+  tag: u8;
+  value: s64 #place 1 + 2;
+}
+
+Columns :: struct #soa(2 * 2) {
+  x: s64;
+  y: u8;
+}
+
+double_lanes :: (v: #simd [2 * 2]s32) -> #simd [2 * 2]s32 {
+  return v +% v;
+}
+
+main :: () {
+  grid: [WIDTH * HEIGHT]u8;
+  alias_sized: [PADDED]u8;
+  columns: Columns;
+  lanes: #simd [2 * 2]s32;
+  lanes[0] = 1;
+  lanes[1] = 2;
+  lanes[2] = 3;
+  lanes[3] = 4;
+  doubled := double_lanes(lanes);
+
+  n := grid.count + alias_sized.count;
+  n = n + cast(s64, Computed.VALUE) + cast(s64, Computed.NEXT);
+  n = n + size_of(Aligned) + size_of(Placed);
+  n = n + columns.x.count + columns.y.count;
+  n = n + cast(s64, doubled[3]);
+
+  // 6 + 8 + 32 + 33 + 32 + 16 + 4 + 4 + 8 = 143.
+  exit(n);
+}

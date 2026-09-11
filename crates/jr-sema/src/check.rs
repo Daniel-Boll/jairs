@@ -465,6 +465,61 @@ pub fn check_file(
     pool: &mut Pool,
     interner: &Interner,
 ) -> CheckOutput {
+    check_file_impl(
+        hir,
+        file,
+        resolve,
+        signatures,
+        imports,
+        imported_hirs,
+        imported_templates,
+        pool,
+        interner,
+        &crate::DeclarationValues::default(),
+    )
+}
+
+/// Type-checks a file with VM-evaluated declaration integers available to local annotations.
+#[allow(clippy::too_many_arguments)]
+pub fn check_file_with_values(
+    hir: &FileHir,
+    file: jr_base::FileId,
+    resolve: &ResolveMap,
+    signatures: &FileSignatures,
+    imports: &[(&str, &FileSignatures)],
+    imported_hirs: &[(jr_base::FileId, &FileHir)],
+    imported_templates: &[ImportedTemplateContext<'_>],
+    pool: &mut Pool,
+    interner: &Interner,
+    declaration_values: &crate::DeclarationValues,
+) -> CheckOutput {
+    check_file_impl(
+        hir,
+        file,
+        resolve,
+        signatures,
+        imports,
+        imported_hirs,
+        imported_templates,
+        pool,
+        interner,
+        declaration_values,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_file_impl(
+    hir: &FileHir,
+    file: jr_base::FileId,
+    resolve: &ResolveMap,
+    signatures: &FileSignatures,
+    imports: &[(&str, &FileSignatures)],
+    imported_hirs: &[(jr_base::FileId, &FileHir)],
+    imported_templates: &[ImportedTemplateContext<'_>],
+    pool: &mut Pool,
+    interner: &Interner,
+    declaration_values: &crate::DeclarationValues,
+) -> CheckOutput {
     // Struct field lists live in the pool, keyed by declaration. Recording them
     // explicitly — rather than trusting that some earlier phase interned them —
     // is what keeps this function callable on its own in a test.
@@ -483,6 +538,7 @@ pub fn check_file(
         imported_hirs.to_vec(),
         imported_templates.to_vec(),
         Mode::Check,
+        declaration_values.clone(),
     );
     ctx.sigs = signatures.clone();
     ctx.sigs.set_file(file);

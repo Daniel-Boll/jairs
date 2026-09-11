@@ -331,11 +331,13 @@ fn copy_type_ref(hir: &mut FileHir, id: TypeRefId) -> TypeRefId {
             elem,
             len,
             len_name,
+            len_expr,
             len_span,
         } => TypeRef::Array {
             elem: copy_type_ref(hir, elem),
             len,
             len_name,
+            len_expr,
             len_span,
         },
         TypeRef::View { elem } => TypeRef::View {

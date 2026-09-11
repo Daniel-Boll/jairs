@@ -19,8 +19,8 @@
 //   * the **same constant** names an array length *and* an enum member in one file, which is the
 //     evidence that one definition of "readable constant" now serves both callers rather than two.
 //
-// What is **not** here is a value needing evaluation, or a member naming a **sibling** member — both
-// still E0237 (`type-errors/074`), for the reasons ADR-0129 §4 gives.
+// ADR-0245 now covers local arithmetic and alias chains too. What is **not** here is a value that calls
+// a procedure (`type-errors/074`), an imported constant, or a member naming a **sibling** member.
 #import "Basic";
 
 /// The constant, shared by an enum member and an array length below. One place to change a number that

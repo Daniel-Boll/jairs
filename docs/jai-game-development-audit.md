@@ -163,7 +163,7 @@ leverage, not a commitment to implement.
 
 | Gap | Evidence in real code | Why a game wants it | Priority |
 |---|---|---|---|
-| Evaluated array lengths | `infinite-pong` declares dimensions such as `[BOARD_HEIGHT][BOARD_WIDTH]`, where one constant is an expression | Grids, lookup tables and animation frames naturally use products and imported constants; Jairs reports E0233 | **P0** |
+| Imported/call-backed array lengths | `infinite-pong` declares dimensions such as `[BOARD_HEIGHT][BOARD_WIDTH]`, where one constant is an expression | Local products and alias chains work through ADR-0245; grids shared across modules still need imported declaration constants, and call-backed values still report E0233 | **P0** |
 | Pointer iteration, `for *item` | `jaibreak`, `learning-jai`, `jai-simpler` | Mutating particles, enemies and cached resources without manual indexing | **P0** |
 | `ifx` conditional expression | `infinite-pong`, `learning-jai`, raylib examples | Small vector, colour and state expressions without a temporary `var` | **P1** |
 | Inferred array literals, `.[…]` | all surveyed games | Struct `.{…}` is present; vector/array-heavy code still repeats element types | **P1** |

@@ -101,6 +101,7 @@
 mod check;
 mod code;
 mod ctx;
+mod declaration;
 mod map;
 mod signature;
 mod sigs;
@@ -108,8 +109,12 @@ mod suggest;
 
 pub use check::{
     AnyOp, ArgSlot, CheckOutput, FoldedCalls, ImportedTemplateContext, StructLiteralField,
-    TemplateRef, VariadicCall, check_file,
+    TemplateRef, VariadicCall, check_file, check_file_with_values,
 };
+pub use declaration::DeclarationValues;
 pub use map::TypeMap;
-pub use signature::{ImportedFile, SignatureOutput, file_signatures};
+pub use signature::{
+    ImportedFile, SignatureOutput, file_signatures, file_signatures_provisional,
+    file_signatures_with_values,
+};
 pub use sigs::{FileSignatures, ProcSig, SigEntry, SigKind};
