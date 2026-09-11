@@ -878,6 +878,7 @@ dependencies = [
  "jr-manifest",
  "jr-pool",
  "jr-project",
+ "jr-refactor",
  "jr-sema",
  "jr-syntax",
  "lsp-server",
@@ -925,6 +926,17 @@ dependencies = [
  "jr-manifest",
  "jr-stdlib",
  "tempfile",
+]
+
+[[package]]
+name = "jr-refactor"
+version = "0.0.0"
+dependencies = [
+ "jr-base",
+ "jr-db",
+ "jr-hir",
+ "jr-pool",
+ "jr-sema",
 ]
 
 [[package]]

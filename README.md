@@ -58,7 +58,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0245.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0246.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -82,6 +82,15 @@ VM-backed pre-signature pass. Local arithmetic and alias chains work in fixed-ar
 counts, enum values, `#align`, `#place`, and `#soa`; the compiler uses the same MIR/VM integer
 semantics as ordinary compile-time execution rather than a second syntax folder. Imported
 constants and expressions requiring procedure calls remain the next two extensions of that seam.
+
+Editor semantics now match the language more closely. `true` and `false` are boolean values rather
+than keywords, and the explicit type in `Point.{...}`, `string.{...}`, or `Box(T).{...}` is coloured
+as a type. Hover cards put only Jairs source inside a `jairs` fence, so procedure signatures receive
+normal syntax highlighting. Selection code actions can extract a safe expression to a local or
+extract consecutive statements to a nested procedure; the procedure form preserves captured
+storage through pointers, hoists locals used afterward, and translates outward return or loop
+control through caller-side dispatch. Cases whose evaluation order, type spelling, generated
+source identity, or defer lifetime cannot be preserved are deliberately not offered.
 
 Same-type pointers can now be subtracted: `end - start` yields the signed `s64` number of
 pointee elements between them, so `*u8 - *u8` is a byte count while `*T - *T` is scaled by

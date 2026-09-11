@@ -9,8 +9,8 @@
 //! something is wrong stays in the compiler: this module never concludes that a field name
 //! is misspelled, it reads E0218's `help:` line, which `jr-sema` wrote (§1).
 //!
-//! The one action with no diagnostic is `//` → `///`, which is why it is a `refactor`
-//! rather than a `quickfix`: nothing is wrong with an ordinary comment.
+//! The actions with no diagnostic are `//` → `///` and semantic extraction. They are
+//! refactorings rather than quick fixes: nothing is wrong with the source they transform.
 //!
 //! # Why no action reprints existing source
 //!
@@ -50,6 +50,20 @@ pub fn code_actions(
     range: lsp_types::Range,
     diagnostics: &[Diagnostic],
 ) -> Vec<CodeActionOrCommand> {
+    code_actions_filtered(db, file, catalog, encoding, range, diagnostics, None)
+}
+
+/// [`code_actions`] with the request's optional `context.only` filter.
+#[must_use]
+pub fn code_actions_filtered(
+    db: &dyn Db,
+    file: SourceFile,
+    catalog: ModuleCatalog,
+    encoding: Encoding,
+    range: lsp_types::Range,
+    diagnostics: &[Diagnostic],
+    only: Option<&[CodeActionKind]>,
+) -> Vec<CodeActionOrCommand> {
     let text = file.text(db);
     let index = jr_db::line_index(db, file);
     let positions = Positions::new(text.as_ref(), &index, encoding);
@@ -88,7 +102,70 @@ pub fn code_actions(
 
     out.extend(document_comment(db, file, &positions, &uri, &text, range));
 
+    if action_kind_allowed(only, &CodeActionKind::REFACTOR_EXTRACT)
+        && let Some(selection) = positions.strict_range(range)
+    {
+        let config = crate::handlers::formatting_config(Path::new(file.path(db).as_ref()));
+        let indent_unit = match config.indent_style {
+            jr_fmt::IndentStyle::Space => " ".repeat(config.indent_width),
+            jr_fmt::IndentStyle::Tab => String::from("\t"),
+        };
+        let report = jr_refactor::extract(
+            db,
+            file,
+            catalog,
+            jr_refactor::ExtractRequest {
+                selection,
+                kinds: jr_refactor::ExtractKinds::ALL,
+                indent_unit,
+            },
+        );
+        for candidate in report.candidates {
+            let edits = candidate
+                .change
+                .edits
+                .into_iter()
+                .map(|edit| TextEdit {
+                    range: lsp_types::Range {
+                        start: positions.position(edit.range.start()),
+                        end: positions.position(edit.range.end()),
+                    },
+                    new_text: edit.replacement,
+                })
+                .collect();
+            out.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: candidate.title,
+                kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+                edit: Some(one_edit(&uri, edits)),
+                ..CodeAction::default()
+            }));
+        }
+    }
+
+    if let Some(only) = only {
+        out.retain(|action| match action {
+            CodeActionOrCommand::CodeAction(action) => action
+                .kind
+                .as_ref()
+                .is_some_and(|kind| action_kind_allowed(Some(only), kind)),
+            CodeActionOrCommand::Command(_) => false,
+        });
+    }
+
     out
+}
+
+fn action_kind_allowed(only: Option<&[CodeActionKind]>, candidate: &CodeActionKind) -> bool {
+    let Some(only) = only else {
+        return true;
+    };
+    only.iter().any(|requested| {
+        candidate.as_str() == requested.as_str()
+            || candidate
+                .as_str()
+                .strip_prefix(requested.as_str())
+                .is_some_and(|suffix| suffix.starts_with('.'))
+    })
 }
 
 /// One edit to one file, as a `WorkspaceEdit`.

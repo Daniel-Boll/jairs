@@ -1,0 +1,18 @@
+[package]
+name = "jr-refactor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+jr-base.workspace = true
+jr-db.workspace = true
+jr-hir.workspace = true
+jr-pool.workspace = true
+jr-sema.workspace = true

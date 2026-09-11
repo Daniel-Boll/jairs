@@ -1427,19 +1427,19 @@ if config then
     local struct_hover = hover_at(27, 13)
     check(
       "hover on a local names it and its type",
-      struct_hover == "```jr\n024-hello\np: Point\n```",
+      struct_hover == "024-hello\n\n```jairs\np: Point\n```",
       struct_hover
     )
     local proc_hover = hover_at(27, 9)
     check(
       "hover on a call renders the declaration, with parameter names",
-      proc_hover == "```jr\n024-hello\nadd :: (a: s64, b: s64) -> s64\n```",
+      proc_hover == "024-hello\n\n```jairs\nadd :: (a: s64, b: s64) -> s64\n```",
       proc_hover
     )
     local decl_hover = hover_at(27, 2)
     check(
       "hover on a declaration is no longer empty",
-      decl_hover == "```jr\n024-hello\nsum: s64\n```",
+      decl_hover == "024-hello\n\n```jairs\nsum: s64\n```",
       decl_hover
     )
 
@@ -1454,7 +1454,7 @@ if config then
     local imported_hover = hover_at(29, 4)
     check(
       "hover on an imported procedure shows its module and its documentation",
-      imported_hover:sub(1, 12) == "```jr\nBasic\n"
+      imported_hover:sub(1, 16) == "Basic\n\n```jairs\n"
         and imported_hover:find("print :: (fmt: string, args: []Any) -> s64", 1, true) ~= nil
         and imported_hover:find("\n---\n", 1, true) ~= nil
         and imported_hover:find("standard output", 1, true) ~= nil,

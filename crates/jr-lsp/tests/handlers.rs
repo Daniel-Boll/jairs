@@ -114,7 +114,7 @@ fn hovering_a_local_shows_its_type() {
         hover(&db, file, search, Encoding::Utf8, at(source, "n;")).expect("a name has a type");
     // ADR-0028 §4: the name is on the card, not just the type. Which binding the
     // cursor found matters wherever one shadows another, and `s64` alone did not say.
-    assert_eq!(hover_text(&found.contents), "```jr\nmain\nn: s64\n```");
+    assert_eq!(hover_text(&found.contents), "main\n\n```jairs\nn: s64\n```");
 }
 
 #[test]
@@ -125,7 +125,10 @@ fn hovering_an_array_local_shows_the_length_in_the_type() {
     let (db, search, file) = program(source);
     let found = hover(&db, file, search, Encoding::Utf8, at(source, "buf;"))
         .expect("an array local has a type");
-    assert_eq!(hover_text(&found.contents), "```jr\nmain\nbuf: [4]u8\n```");
+    assert_eq!(
+        hover_text(&found.contents),
+        "main\n\n```jairs\nbuf: [4]u8\n```"
+    );
 }
 
 #[test]
@@ -179,7 +182,10 @@ fn hovering_an_enum_typed_local_names_the_enum_not_its_backing_type() {
     let (db, search, file) = program(source);
     let found = hover(&db, file, search, Encoding::Utf8, at(source, "c;"))
         .expect("an enum-typed local has a type");
-    assert_eq!(hover_text(&found.contents), "```jr\nmain\nc: Colour\n```");
+    assert_eq!(
+        hover_text(&found.contents),
+        "main\n\n```jairs\nc: Colour\n```"
+    );
 }
 
 #[test]
@@ -208,7 +214,10 @@ fn hovering_a_pointer_shows_the_pointee() {
     let (db, search, file) = program(source);
     let found = hover(&db, file, search, Encoding::Utf8, at(source, "p;"))
         .expect("a pointer name has a type");
-    assert_eq!(hover_text(&found.contents), "```jr\nmain\np: *s64\n```");
+    assert_eq!(
+        hover_text(&found.contents),
+        "main\n\n```jairs\np: *s64\n```"
+    );
 }
 
 #[test]
@@ -221,7 +230,10 @@ fn hovering_a_struct_shows_its_declared_name() {
     let (db, search, file) = program(source);
     let found = hover(&db, file, search, Encoding::Utf8, at(source, "p;\n}"))
         .expect("a struct name has a type");
-    assert_eq!(hover_text(&found.contents), "```jr\nmain\np: Point\n```");
+    assert_eq!(
+        hover_text(&found.contents),
+        "main\n\n```jairs\np: Point\n```"
+    );
 }
 
 // ---- the card (ADR-0028) ------------------------------------------------------
@@ -238,7 +250,7 @@ fn hovering_a_procedure_shows_container_signature_and_docs() {
         .expect("a procedure name resolves");
     assert_eq!(
         hover_text(&found.contents),
-        "```jr\nmain\nadd :: (a: s64, b: s64) -> s64\n```\n\n---\n\nAdds two numbers."
+        "main\n\n```jairs\nadd :: (a: s64, b: s64) -> s64\n```\n\n---\n\nAdds two numbers."
     );
 }
 
@@ -250,7 +262,7 @@ fn a_procedure_returning_nothing_shows_no_arrow() {
     let found = hover(&db, file, search, Encoding::Utf8, at(source, "f(1)")).expect("resolves");
     assert_eq!(
         hover_text(&found.contents),
-        "```jr\nmain\nf :: (x: s64)\n```"
+        "main\n\n```jairs\nf :: (x: s64)\n```"
     );
 }
 
@@ -268,7 +280,7 @@ fn a_single_named_result_survives_type_normalisation_in_hover() {
     .expect("the procedure call resolves");
     assert_eq!(
         hover_text(&found.contents),
-        "```jr\nmain\nexpect_char :: (s: *string, c: u8) -> (exists: bool)\n```"
+        "main\n\n```jairs\nexpect_char :: (s: *string, c: u8) -> (exists: bool)\n```"
     );
 }
 
@@ -280,7 +292,7 @@ fn hovering_an_undocumented_procedure_omits_the_rule() {
     let found = hover(&db, file, search, Encoding::Utf8, at(source, "add(1")).expect("resolves");
     assert_eq!(
         hover_text(&found.contents),
-        "```jr\nmain\nadd :: (a: s64) -> s64\n```"
+        "main\n\n```jairs\nadd :: (a: s64) -> s64\n```"
     );
 }
 
@@ -294,7 +306,7 @@ fn hovering_a_declaration_name_works() {
         .expect("a recursive call resolves to the declaration");
     assert_eq!(
         hover_text(&found.contents),
-        "```jr\nmain\nadd :: (a: s64) -> s64\n```\n\n---\n\nDocumented."
+        "main\n\n```jairs\nadd :: (a: s64) -> s64\n```\n\n---\n\nDocumented."
     );
 }
 
@@ -312,7 +324,7 @@ fn hovering_a_struct_name_shows_its_fields() {
         .expect("a struct name used as a value resolves");
     assert_eq!(
         hover_text(&found.contents),
-        "```jr\nmain\nPoint :: struct { x: s64; y: s64 }\n```\n\n---\n\nA point in the plane."
+        "main\n\n```jairs\nPoint :: struct { x: s64; y: s64 }\n```\n\n---\n\nA point in the plane."
     );
 }
 
@@ -348,7 +360,7 @@ fn hovering_a_constant_shows_its_type_and_value() {
         .expect("a constant resolves");
     assert_eq!(
         hover_text(&found.contents),
-        "```jr\nmain\nANSWER :: s64 = 42\n```\n\n---\n\nThe answer."
+        "main\n\n```jairs\nANSWER :: s64 = 42\n```\n\n---\n\nThe answer."
     );
 }
 
@@ -360,7 +372,7 @@ fn a_string_constant_renders_its_escaped_value() {
         .expect("a constant resolves");
     assert_eq!(
         hover_text(&found.contents),
-        "```jr\nmain\nMESSAGE :: string = \"hi\\n\"\n```"
+        "main\n\n```jairs\nMESSAGE :: string = \"hi\\n\"\n```"
     );
 }
 
@@ -380,7 +392,7 @@ fn hovering_an_imported_procedure_shows_the_module_as_container() {
     .expect("an imported name resolves");
     let text = hover_text(&found.contents);
     assert!(
-        text.starts_with("```jr\nBasic\nprint :: (fmt: string, args: []Any) -> s64\n```"),
+        text.starts_with("Basic\n\n```jairs\nprint :: (fmt: string, args: []Any) -> s64\n```"),
         "expected the Basic module's card, got:\n{text}"
     );
 }
@@ -392,7 +404,7 @@ fn a_non_name_expression_still_falls_back_to_its_type() {
     let (db, search, file) = program(source);
     let found = hover(&db, file, search, Encoding::Utf8, at(source, "1 + 2"))
         .expect("an expression has a type");
-    assert_eq!(hover_text(&found.contents), "```jr\nmain\ns64\n```");
+    assert_eq!(hover_text(&found.contents), "main\n\n```jairs\ns64\n```");
 }
 
 #[test]
@@ -405,7 +417,7 @@ fn an_ordinary_comment_is_not_documentation() {
     let found = hover(&db, file, search, Encoding::Utf8, at(source, "add(1")).expect("resolves");
     assert_eq!(
         hover_text(&found.contents),
-        "```jr\nmain\nadd :: (a: s64) -> s64\n```"
+        "main\n\n```jairs\nadd :: (a: s64) -> s64\n```"
     );
 }
 
@@ -1047,7 +1059,7 @@ fn hovering_a_declarations_own_name_shows_its_card() {
         .expect("a declaration hovers");
     assert_eq!(
         hover_text(&found.contents),
-        "```jr\nmain\nadd :: (a: s64) -> s64\n```\n\n---\n\nAdds."
+        "main\n\n```jairs\nadd :: (a: s64) -> s64\n```\n\n---\n\nAdds."
     );
 }
 
@@ -1057,7 +1069,10 @@ fn hovering_a_parameter_at_its_declaration_shows_its_type() {
     let (db, search, file) = program(source);
     let found = hover(&db, file, search, Encoding::Utf8, at(source, "count: s64"))
         .expect("a parameter declaration hovers");
-    assert_eq!(hover_text(&found.contents), "```jr\nmain\ncount: s64\n```");
+    assert_eq!(
+        hover_text(&found.contents),
+        "main\n\n```jairs\ncount: s64\n```"
+    );
 }
 
 #[test]
@@ -1066,7 +1081,10 @@ fn hovering_an_inferred_parameter_shows_its_resolved_type() {
     let (db, search, file) = program(source);
     let found = hover(&db, file, search, Encoding::Utf8, at(source, "amount :="))
         .expect("an inferred parameter declaration hovers");
-    assert_eq!(hover_text(&found.contents), "```jr\nmain\namount: s64\n```");
+    assert_eq!(
+        hover_text(&found.contents),
+        "main\n\n```jairs\namount: s64\n```"
+    );
 }
 
 #[test]
@@ -1075,7 +1093,10 @@ fn hovering_a_local_at_its_declaration_shows_its_type() {
     let (db, search, file) = program(source);
     let found = hover(&db, file, search, Encoding::Utf8, at(source, "total :="))
         .expect("a local declaration hovers");
-    assert_eq!(hover_text(&found.contents), "```jr\nmain\ntotal: s64\n```");
+    assert_eq!(
+        hover_text(&found.contents),
+        "main\n\n```jairs\ntotal: s64\n```"
+    );
 }
 
 #[test]
@@ -1582,8 +1603,89 @@ fn actions_at_encoding(
         .collect()
 }
 
+fn actions_for_selection(
+    db: &JairsDatabase,
+    search: ModuleCatalog,
+    file: SourceFile,
+    source: &str,
+    selection: &str,
+    only: Option<&[lsp_types::CodeActionKind]>,
+) -> Vec<lsp_types::CodeAction> {
+    let start = source.find(selection).expect("the selection must appear");
+    let end = start + selection.len();
+    let position_at = |offset: usize| {
+        let line = source[..offset].matches('\n').count();
+        let line_start = source[..offset].rfind('\n').map_or(0, |index| index + 1);
+        lsp_types::Position {
+            line: u32::try_from(line).expect("small test source"),
+            character: u32::try_from(offset - line_start).expect("small test source"),
+        }
+    };
+    jr_lsp::code_actions_filtered(
+        db,
+        file,
+        search,
+        Encoding::Utf8,
+        lsp_types::Range {
+            start: position_at(start),
+            end: position_at(end),
+        },
+        &[],
+        only,
+    )
+    .into_iter()
+    .filter_map(|action| match action {
+        lsp_types::CodeActionOrCommand::CodeAction(action) => Some(action),
+        lsp_types::CodeActionOrCommand::Command(_) => None,
+    })
+    .collect()
+}
+
 fn titles(actions: &[lsp_types::CodeAction]) -> Vec<String> {
     actions.iter().map(|a| a.title.clone()).collect()
+}
+
+#[test]
+fn a_selected_expression_offers_extract_local() {
+    let source = "f :: () -> s64 {\n  return 1 + 2;\n}\n";
+    let (db, search, file) = program(source);
+    let actions = actions_for_selection(&db, search, file, source, "1 + 2", None);
+    let action = actions
+        .iter()
+        .find(|action| action.title == "extract expression to local `extracted`")
+        .unwrap_or_else(|| panic!("expected extract-local, got {:?}", titles(&actions)));
+    assert_eq!(
+        action.kind,
+        Some(lsp_types::CodeActionKind::REFACTOR_EXTRACT)
+    );
+    assert_eq!(
+        apply(source, action),
+        "f :: () -> s64 {\n  extracted := 1 + 2;\n  return extracted;\n}\n"
+    );
+}
+
+#[test]
+fn selected_statements_offer_capture_aware_extract_procedure() {
+    let source = "f :: (n: s64) -> s64 {\n  answer := n + 1;\n  return answer;\n}\n";
+    let (db, search, file) = program(source);
+    let only = [lsp_types::CodeActionKind::REFACTOR_EXTRACT];
+    let actions = actions_for_selection(&db, search, file, source, "answer := n + 1;", Some(&only));
+    assert!(
+        actions
+            .iter()
+            .all(|action| action.kind == Some(lsp_types::CodeActionKind::REFACTOR_EXTRACT)),
+        "{actions:?}"
+    );
+    let action = actions
+        .iter()
+        .find(|action| action.title.starts_with("extract statements"))
+        .unwrap_or_else(|| panic!("expected extract-procedure, got {:?}", titles(&actions)));
+    let transformed = apply(source, action);
+    let (fixed_db, fixed_search, fixed_file) = program(&transformed);
+    assert!(
+        diagnostics(&fixed_db, fixed_file, fixed_search, Encoding::Utf8).is_empty(),
+        "generated source must check:\n{transformed}"
+    );
 }
 
 /// The single edit an action carries, panicking if it carries a different number.

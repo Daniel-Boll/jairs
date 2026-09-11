@@ -114,6 +114,7 @@ pub fn capabilities(encoding: Encoding) -> ServerCapabilities {
                 code_action_kinds: Some(vec![
                     lsp_types::CodeActionKind::QUICKFIX,
                     lsp_types::CodeActionKind::REFACTOR_REWRITE,
+                    lsp_types::CodeActionKind::REFACTOR_EXTRACT,
                     lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
                 ]),
                 // No `codeAction/resolve`: every action here carries its edit already. An
@@ -819,6 +820,8 @@ enum Job {
         /// exactly where the user already sees a problem — and because a client may hold a
         /// diagnostic from a revision this snapshot has moved past (ADR-0031 §4).
         diagnostics: Vec<lsp_types::Diagnostic>,
+        /// The action families the client asked for, when it narrowed the request.
+        only: Option<Vec<lsp_types::CodeActionKind>>,
     },
     SignatureHelp {
         db: Box<JairsDatabase>,
@@ -1065,6 +1068,7 @@ fn dispatch(
                         file,
                         range: params.range,
                         diagnostics: params.context.diagnostics,
+                        only: params.context.only,
                     })
                 })
         }
@@ -1331,10 +1335,19 @@ fn run(out: &Sender<Message>, catalog: ModuleCatalog, encoding: Encoding, job: J
             file,
             range,
             diagnostics,
+            only,
         } => {
             let db = db.as_ref();
             let computed = catch(|| {
-                crate::actions::code_actions(db, file, catalog, encoding, range, &diagnostics)
+                crate::actions::code_actions_filtered(
+                    db,
+                    file,
+                    catalog,
+                    encoding,
+                    range,
+                    &diagnostics,
+                    only.as_deref(),
+                )
             });
             answer(out, id, computed.map(serde_json::to_value));
         }

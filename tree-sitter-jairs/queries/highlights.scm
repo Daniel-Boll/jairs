@@ -90,7 +90,7 @@
   "todo"
 ] @keyword
 
-; Boolean literals are keywords in Jairs
+; Boolean literals are values, not keywords.
 (true) @boolean
 (false) @boolean
 
@@ -221,6 +221,18 @@
 
 ; Return type arrow
 (ret_type "->" @operator)
+
+; Hover markdown presents a procedure signature without a body:
+; `add :: (a: s64) -> s64`. That fragment is intentionally incomplete source, so
+; tree-sitter recovers it as one ERROR containing the declaration name, parameter
+; list and optional return type. Capture only that narrow recovery shape: a broad
+; ERROR capture would colour unrelated malformed identifiers as functions. The
+; ordinary `param` and `name_type` rules still colour parameters and types.
+(ERROR
+  (name (identifier) @function)
+  "::"
+  (param_list)
+  (ret_type)?)
 
 ; ---- Expressions ------------------------------------------------------------
 

@@ -59,7 +59,7 @@ pub mod server;
 pub mod tokens;
 pub mod uri;
 
-pub use actions::code_actions;
+pub use actions::{code_actions, code_actions_filtered};
 pub use completion::{completion, resolve_completion};
 pub use defs::{DefId, Reference, definition_at, references};
 pub use handlers::{diagnostics, formatting, goto_definition, hover};
