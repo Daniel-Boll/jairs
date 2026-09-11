@@ -45,12 +45,13 @@ pub struct Card {
 impl Card {
     /// The card as LSP markdown.
     ///
-    /// Container and signature share one `jr` fence so a client highlights the
-    /// signature; the `---` rule separates code from prose, which is the shape
-    /// ADR-0028 §2 fixed.
+    /// The container is prose outside the fence; the fence language is the canonical
+    /// `jairs` language id and contains only source syntax, so an editor can inject the
+    /// Jairs parser and highlight the signature. The `---` rule separates code from
+    /// documentation, which is the shape ADR-0028 §2 fixed.
     #[must_use]
     pub fn to_markdown(&self) -> String {
-        let mut out = format!("```jr\n{}\n{}\n```", self.container, self.signature);
+        let mut out = format!("{}\n\n```jairs\n{}\n```", self.container, self.signature);
         if let Some(docs) = &self.docs {
             out.push_str("\n\n---\n\n");
             out.push_str(docs);
@@ -619,7 +620,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_card_without_docs_has_no_rule() {
+    fn a_card_puts_only_the_signature_in_a_jairs_fence() {
         let card = Card {
             container: String::from("Basic"),
             signature: String::from("print :: (s: string)"),
@@ -627,12 +628,12 @@ mod tests {
         };
         assert_eq!(
             card.to_markdown(),
-            "```jr\nBasic\nprint :: (s: string)\n```"
+            "Basic\n\n```jairs\nprint :: (s: string)\n```"
         );
     }
 
     #[test]
-    fn a_card_with_docs_separates_them_with_a_rule() {
+    fn a_card_with_docs_keeps_the_container_and_docs_outside_the_fence() {
         let card = Card {
             container: String::from("Basic"),
             signature: String::from("print :: (s: string)"),
@@ -640,7 +641,7 @@ mod tests {
         };
         assert_eq!(
             card.to_markdown(),
-            "```jr\nBasic\nprint :: (s: string)\n```\n\n---\n\nWrite a string to standard output."
+            "Basic\n\n```jairs\nprint :: (s: string)\n```\n\n---\n\nWrite a string to standard output."
         );
     }
 

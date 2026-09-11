@@ -83,6 +83,10 @@ pub const TOKEN_TYPES: &[SemanticTokenType] = &[
     SemanticTokenType::OPERATOR,
     SemanticTokenType::MACRO,
     SemanticTokenType::DECORATOR,
+    // The protocol's standard inventory has no boolean-literal token, but custom token types are
+    // explicitly allowed. Appended rather than inserted: every preceding position is a wire index
+    // clients already consume, so moving one would silently recolour all later kinds.
+    SemanticTokenType::new("boolean"),
 ];
 
 /// The modifiers this server reports.
@@ -133,6 +137,8 @@ pub enum Kind {
     Macro,
     /// An `@note`.
     Decorator,
+    /// A boolean literal, `true` or `false`.
+    Boolean,
 }
 
 impl Kind {
@@ -155,6 +161,7 @@ impl Kind {
             Self::Operator => 13,
             Self::Macro => 14,
             Self::Decorator => 15,
+            Self::Boolean => 16,
         }
     }
 }
@@ -258,9 +265,9 @@ fn simple_kind(kind: SyntaxKind) -> Option<Kind> {
         SyntaxKind::STRING_LITERAL => Some(Kind::String),
         SyntaxKind::INT_LITERAL | SyntaxKind::FLOAT_LITERAL => Some(Kind::Number),
         SyntaxKind::DIRECTIVE => Some(Kind::Macro),
-        // `true`, `false` and `null` are keywords in the grammar and *values* to a reader. Reported as
-        // keywords, because that is what an editor's theme expects of them and what every other language
-        // server does — the alternative would make `true` a different colour from `if`, which surprises.
+        // Values rather than control words. `null` deliberately remains a keyword: it is a pointer
+        // sentinel rather than a boolean, and changing it would conflate two different literal kinds.
+        SyntaxKind::TRUE_KW | SyntaxKind::FALSE_KW => Some(Kind::Boolean),
         _ if kind.is_keyword() => Some(Kind::Keyword),
         _ => None,
     }
@@ -275,6 +282,16 @@ fn classify_ident(token: &SyntaxToken, hir: &FileHir) -> Option<(Kind, u32)> {
     let parent = token.parent()?;
     let grandparent = parent.parent();
     let grandkind = grandparent.as_ref().map(SyntaxNode::kind);
+
+    // `T.{...}` parses `T` as an expression because the parser cannot know that the operand denotes a
+    // type until it sees `.{`. Sema does know, and the semantic-token layer must preserve that context
+    // before ordinary expression resolution turns an unresolved builtin or imported type into a
+    // variable. The structural test excludes every `STRUCT_LITERAL_ENTRY`, so initializer labels and
+    // values remain ordinary expressions. A nested `type_of(value)` is special: the call produces a type,
+    // but `value` is still a runtime operand and must not inherit the surrounding type colour.
+    if is_explicit_struct_literal_type_ident(token) {
+        return Some((Kind::Type, 0));
+    }
 
     match parent.kind() {
         // A declaration's name. Which *kind* of declaration it is comes from the value beside it, so a
@@ -344,6 +361,64 @@ fn classify_ident(token: &SyntaxToken, hir: &FileHir) -> Option<(Kind, u32)> {
         SyntaxKind::NAME_EXPR => resolved_kind(token, hir),
         _ => None,
     }
+}
+
+/// Whether this identifier is part of the explicit type operand in `T.{...}`.
+///
+/// The explicit operand is the only direct expression child of `STRUCT_LITERAL`; every initializer is
+/// nested under `STRUCT_LITERAL_ENTRY`. Walking to that direct child makes the distinction independent of
+/// whether the type is a bare name, qualified (`Types.Point`) or parameterised (`Box(s64)`).
+fn is_explicit_struct_literal_type_ident(token: &SyntaxToken) -> bool {
+    let Some(root) = explicit_struct_literal_type_root(token) else {
+        return false;
+    };
+    if !matches!(
+        root.kind(),
+        SyntaxKind::NAME_EXPR | SyntaxKind::FIELD_EXPR | SyntaxKind::CALL_EXPR
+    ) {
+        return false;
+    }
+
+    // A type constructor's arguments are themselves types, but `type_of` is the deliberate exception:
+    // its argument is a runtime value inspected to obtain a type. Check every enclosing call up to the
+    // explicit operand so `Box(type_of(value)).{}` colours `Box` but neither `type_of` nor `value`.
+    let mut node = token.parent();
+    while let Some(current) = node {
+        if current.kind() == SyntaxKind::CALL_EXPR && call_is_type_of(&current) {
+            return false;
+        }
+        if current == root {
+            break;
+        }
+        node = current.parent();
+    }
+    true
+}
+
+/// The direct expression child of a `STRUCT_LITERAL` containing `token`, unless an entry intervenes.
+fn explicit_struct_literal_type_root(token: &SyntaxToken) -> Option<SyntaxNode> {
+    let mut current = token.parent()?;
+    loop {
+        if current.kind() == SyntaxKind::STRUCT_LITERAL_ENTRY {
+            return None;
+        }
+        let parent = current.parent()?;
+        if parent.kind() == SyntaxKind::STRUCT_LITERAL {
+            return Some(current);
+        }
+        current = parent;
+    }
+}
+
+/// Whether a call's callee is the intrinsic name `type_of`.
+fn call_is_type_of(call: &SyntaxNode) -> bool {
+    let Some(callee) = call.children().next() else {
+        return false;
+    };
+    callee.kind() == SyntaxKind::NAME_EXPR
+        && callee
+            .first_token()
+            .is_some_and(|token| token.kind() == SyntaxKind::IDENT && token.text() == "type_of")
 }
 
 /// Which token kind a `CONST_DECL`'s value implies.
@@ -501,6 +576,95 @@ fn encode(tokens: &[Classified], positions: &Positions<'_>) -> Vec<SemanticToken
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ident(parsed: &jr_syntax::Parse, text: &str) -> SyntaxToken {
+        fn find(node: &SyntaxNode, text: &str) -> Option<SyntaxToken> {
+            for element in node.children_with_tokens() {
+                match element {
+                    jr_syntax::kind::SyntaxElement::Token(token)
+                        if token.kind() == SyntaxKind::IDENT && token.text() == text =>
+                    {
+                        return Some(token);
+                    }
+                    jr_syntax::kind::SyntaxElement::Token(_) => {}
+                    jr_syntax::kind::SyntaxElement::Node(child) => {
+                        if let Some(found) = find(&child, text) {
+                            return Some(found);
+                        }
+                    }
+                }
+            }
+            None
+        }
+
+        find(&parsed.syntax(), text)
+            .unwrap_or_else(|| panic!("no identifier `{text}` in syntax tree"))
+    }
+
+    #[test]
+    fn boolean_is_appended_without_moving_existing_wire_indices() {
+        assert_eq!(TOKEN_TYPES[15], SemanticTokenType::DECORATOR);
+        assert_eq!(TOKEN_TYPES[16].as_str(), "boolean");
+        assert_eq!(Kind::Decorator.index(), 15);
+        assert_eq!(Kind::Boolean.index(), 16);
+    }
+
+    #[test]
+    fn boolean_literals_are_values_and_null_remains_a_keyword() {
+        assert_eq!(simple_kind(SyntaxKind::TRUE_KW), Some(Kind::Boolean));
+        assert_eq!(simple_kind(SyntaxKind::FALSE_KW), Some(Kind::Boolean));
+        assert_eq!(simple_kind(SyntaxKind::NULL_KW), Some(Kind::Keyword));
+    }
+
+    #[test]
+    fn explicit_struct_literal_type_identifiers_exclude_initializers_and_type_of_values() {
+        let source = r"
+main :: () {
+  initializer_value := 1;
+  runtime_operand := 2;
+  a := string.{};
+  b := Point.{field_label = initializer_value};
+  c := Types.Qualified.{};
+  d := Box(s64).{};
+  e := type_of(runtime_operand).{};
+}
+";
+        let parsed = jr_syntax::parse(source, jr_base::FileId::from_usize(0));
+        assert!(
+            parsed.diagnostics().is_empty(),
+            "struct-literal probe must parse: {:?}",
+            parsed.diagnostics()
+        );
+        let (hir, lowering_diagnostics) = jr_hir::lower_file(
+            &parsed,
+            jr_base::FileId::from_usize(0),
+            &jr_base::Interner::new(),
+        );
+        assert!(
+            lowering_diagnostics.is_empty(),
+            "struct-literal probe must lower: {lowering_diagnostics:?}"
+        );
+
+        for name in ["string", "Point", "Types", "Qualified", "Box", "s64"] {
+            assert_eq!(
+                classify_ident(&ident(&parsed, name), &hir),
+                Some((Kind::Type, 0)),
+                "`{name}` must be classified as an explicit struct-literal type"
+            );
+        }
+        for name in [
+            "field_label",
+            "initializer_value",
+            "type_of",
+            "runtime_operand",
+        ] {
+            assert_ne!(
+                classify_ident(&ident(&parsed, name), &hir),
+                Some((Kind::Type, 0)),
+                "`{name}` is a field/runtime expression and must not be recoloured as a type"
+            );
+        }
+    }
 
     #[test]
     fn call_shaped_todos_are_parsed_and_classified() {

@@ -22,7 +22,7 @@
 //! failure, so an out-of-range line or column is clamped to the nearest valid offset.
 //! The alternative — refuse the request — makes a hover flicker into an error toast.
 
-use jr_base::TextSize;
+use jr_base::{TextRange, TextSize};
 use jr_db::LineIndex;
 use lsp_types::{Position, PositionEncodingKind, Range};
 
@@ -102,6 +102,42 @@ impl<'a> Positions<'a> {
             Encoding::Utf16 => utf16_to_byte(line_text, position.character as usize),
         };
         start + TextSize::from(u32::try_from(column).unwrap_or(u32::MAX))
+    }
+
+    /// The exact byte offset a client position names.
+    ///
+    /// Unlike [`Self::offset`], this refuses stale or malformed positions. Read-only requests may
+    /// safely clamp; a refactoring must not edit a nearby byte when the requested position no
+    /// longer exists in this source snapshot.
+    #[must_use]
+    pub fn strict_offset(&self, position: Position) -> Option<TextSize> {
+        let line = usize::try_from(position.line).ok()?;
+        if line >= self.index.line_starts.len() {
+            return None;
+        }
+        let start = self.line_start(line);
+        let line_text = self.line_text(line);
+        let column = match self.encoding {
+            Encoding::Utf8 => {
+                let wanted = usize::try_from(position.character).ok()?;
+                if wanted > line_text.len() || !line_text.is_char_boundary(wanted) {
+                    return None;
+                }
+                wanted
+            }
+            Encoding::Utf16 => {
+                strict_utf16_to_byte(line_text, usize::try_from(position.character).ok()?)?
+            }
+        };
+        Some(start + TextSize::from(u32::try_from(column).ok()?))
+    }
+
+    /// The exact byte range a mutating request names.
+    #[must_use]
+    pub fn strict_range(&self, range: Range) -> Option<TextRange> {
+        let start = self.strict_offset(range.start)?;
+        let end = self.strict_offset(range.end)?;
+        (start <= end).then(|| TextRange::new(start, end))
     }
 
     /// The client position for a byte offset.
@@ -189,6 +225,22 @@ fn utf16_to_byte(line: &str, units: usize) -> usize {
     line.len()
 }
 
+/// The byte offset at exactly `units` UTF-16 code units, refusing a position inside a surrogate
+/// pair or beyond the line.
+fn strict_utf16_to_byte(line: &str, units: usize) -> Option<usize> {
+    let mut seen = 0usize;
+    for (offset, ch) in line.char_indices() {
+        if seen == units {
+            return Some(offset);
+        }
+        seen += ch.len_utf16();
+        if seen > units {
+            return None;
+        }
+    }
+    (seen == units).then_some(line.len())
+}
+
 /// How many UTF-16 code units precede byte offset `byte` in `line`.
 fn byte_to_utf16(line: &str, byte: usize) -> usize {
     let byte = byte.min(line.len());
@@ -233,6 +285,23 @@ mod tests {
                 line: 1,
                 character: 2
             }
+        );
+    }
+
+    #[test]
+    fn strict_ranges_refuse_stale_and_mid_character_positions() {
+        let text = "a😀b\n";
+        let index = index_of(text);
+        let utf8 = Positions::new(text, &index, Encoding::Utf8);
+        assert!(utf8.strict_offset(Position::new(0, 2)).is_none());
+        assert!(utf8.strict_offset(Position::new(0, 99)).is_none());
+        assert!(utf8.strict_offset(Position::new(99, 0)).is_none());
+
+        let utf16 = Positions::new(text, &index, Encoding::Utf16);
+        assert!(utf16.strict_offset(Position::new(0, 2)).is_none());
+        assert_eq!(
+            utf16.strict_offset(Position::new(0, 3)),
+            Some(TextSize::from(5))
         );
     }
 

@@ -38,6 +38,7 @@ jr-link = { path = "crates/jr-link" }
 jr-db = { path = "crates/jr-db" }
 jr-driver = { path = "crates/jr-driver" }
 jr-lsp = { path = "crates/jr-lsp" }
+jr-refactor = { path = "crates/jr-refactor" }
 
 # --- syntax / frontend -----------------------------------------------------
 rowan = "0.16.1"

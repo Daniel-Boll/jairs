@@ -487,7 +487,7 @@ fn the_server_advertises_completion_and_resolves_an_item() {
         .as_str()
         .unwrap_or_default();
     assert_eq!(
-        docs, "```jr\nmain\nadd :: (a: s64, b: s64) -> s64\n```\n\n---\n\nAdds two numbers.",
+        docs, "main\n\n```jairs\nadd :: (a: s64, b: s64) -> s64\n```\n\n---\n\nAdds two numbers.",
         "resolve must render the same card the hover does"
     );
 
