@@ -100,7 +100,7 @@ use crate::{
     Db, SourceFile,
     mir::imported_procs,
     module_loader::{ModuleCatalog, file_hir, frontend_diagnostics, resolved},
-    sema::checked,
+    sema::{checked, provisional_checked},
 };
 
 /// Compile-time evaluation failed.
@@ -125,6 +125,231 @@ const E0271: &str = "E0271";
 /// diagnosable stop instead of a hang. Anything needing more than this is a
 /// dependency chain of constants far longer than a file has.
 const MAX_ROUNDS: usize = 16;
+
+// ---------------------------------------------------------------------------
+// Declaration-time values (ADR-0245)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy)]
+struct DeclarationTarget {
+    scope: ExprScope,
+    expr: ExprId,
+    item: Option<ItemId>,
+}
+
+/// Expressions whose integer values can shape declarations.
+///
+/// Named constants are included because a shape expression may read one, and those constants may
+/// form an alias/arithmetic chain. The remaining roots are the five declaration consumers
+/// ADR-0245 unifies.
+fn declaration_targets(hir: &FileHir) -> Vec<DeclarationTarget> {
+    let mut out = Vec::new();
+    for (index, item) in hir.items.iter().enumerate() {
+        if let ItemKind::Const {
+            value: ConstValue::Expr { expr, .. },
+        } = item.kind
+        {
+            out.push(DeclarationTarget {
+                scope: ExprScope::TopLevel,
+                expr,
+                item: Some(ItemId::from_usize(index)),
+            });
+        }
+    }
+    for ty in &hir.type_refs {
+        match ty {
+            jr_hir::TypeRef::Array {
+                len_expr: Some(expr),
+                ..
+            }
+            | jr_hir::TypeRef::Vector {
+                lanes_expr: Some(expr),
+                ..
+            } => out.push(DeclarationTarget {
+                scope: ExprScope::TopLevel,
+                expr: *expr,
+                item: None,
+            }),
+            _ => {}
+        }
+    }
+    for (body_index, body) in hir.bodies.iter().enumerate() {
+        let scope = ExprScope::Body(jr_hir::BodyId::from_usize(body_index));
+        for ty in &body.type_refs {
+            match ty {
+                jr_hir::TypeRef::Array {
+                    len_expr: Some(expr),
+                    ..
+                }
+                | jr_hir::TypeRef::Vector {
+                    lanes_expr: Some(expr),
+                    ..
+                } => out.push(DeclarationTarget {
+                    scope,
+                    expr: *expr,
+                    item: None,
+                }),
+                _ => {}
+            }
+        }
+    }
+    for aggregate in &hir.structs {
+        if let Some(expr) = aggregate.soa {
+            out.push(DeclarationTarget {
+                scope: ExprScope::TopLevel,
+                expr,
+                item: None,
+            });
+        }
+        for field in &aggregate.fields {
+            for expr in [field.align, field.place].into_iter().flatten() {
+                out.push(DeclarationTarget {
+                    scope: ExprScope::TopLevel,
+                    expr,
+                    item: None,
+                });
+            }
+        }
+    }
+    for enum_def in &hir.enums {
+        for expr in enum_def.members.iter().filter_map(|member| member.value) {
+            out.push(DeclarationTarget {
+                scope: ExprScope::TopLevel,
+                expr,
+                item: None,
+            });
+        }
+    }
+    out
+}
+
+/// Evaluates one expression through the ordinary MIR-to-bytecode path, without procedure routines.
+///
+/// That deliberate absence is this sub-wave's boundary: literals, operators, and known constant
+/// items work; a call remains unknown until the follow-up supplies a provisional routine graph.
+#[allow(clippy::too_many_arguments)]
+fn evaluate_declaration_target(
+    hir: &FileHir,
+    file: jr_base::FileId,
+    target: DeclarationTarget,
+    resolve: &jr_hir::ResolveMap,
+    types: &jr_sema::TypeMap,
+    values: &ConstValues,
+    pool: &mut Pool,
+) -> Result<PoolId, String> {
+    let proc = jr_mir::thunk_ref(hir, file, target.expr.index());
+    let body = jr_mir::lower_const(
+        hir,
+        file,
+        proc,
+        target.expr,
+        target.scope,
+        resolve,
+        types,
+        values,
+        &jr_mir::FilledArgs::new(),
+        &ImportedProcs::new(),
+        pool,
+    )
+    .map_err(|poison| match poison {
+        Poisoned::Here(reason) => reason.to_owned(),
+        Poisoned::Transitive(proc) => format!("proc {} is broken", proc.index()),
+    })?;
+    let ty = types
+        .expr_type(target.scope, target.expr)
+        .ok_or_else(|| "the declaration expression was never typed".to_owned())?;
+    if jr_pool::IntKind::of(pool, ty).is_none() {
+        return Err("the declaration expression is not an integer".to_owned());
+    }
+
+    let mut program = jr_vm::comptime_program();
+    program.insert(Routine::Bytecode(
+        jr_vm::compile(&body, pool, program.target()).map_err(|e: VmError| e.to_string())?,
+    ));
+    let raw = {
+        let mut vm = Vm::new(&program, pool, Mode::Comptime).map_err(|e: VmError| e.to_string())?;
+        let value = vm.call(proc, Vec::new()).map_err(|e| e.to_string())?;
+        reduce(&vm, pool, &value, ty, false).map_err(|e| e.to_string())?
+    };
+    match raw {
+        Raw::Int(bits) => Ok(pool.int_value(ty, bits)),
+        _ => Err("the declaration expression did not produce an integer".to_owned()),
+    }
+}
+
+/// VM-evaluated integers available to the final signature pass (ADR-0245).
+#[salsa::tracked(returns(clone), no_eq)]
+pub(crate) fn declaration_values(
+    db: &dyn Db,
+    file: SourceFile,
+    catalog: ModuleCatalog,
+) -> Arc<jr_sema::DeclarationValues> {
+    let hir = file_hir(db, file);
+    let resolve = resolved(db, file, catalog).map;
+    let provisional_bodies = provisional_checked(db, file, catalog);
+    let file_id = crate::queries::resolve_file_id(db, file);
+    let targets = declaration_targets(hir.as_ref());
+    let mut pool = crate::sema::lock_pool(db);
+    let mut known = ConstValues::new();
+    let mut output = jr_sema::DeclarationValues::default();
+
+    for _ in 0..MAX_ROUNDS {
+        let mut progressed = false;
+        for target in &targets {
+            if target.item.is_some_and(|item| known.item(item).is_some())
+                || output.int(target.scope, target.expr).is_some()
+            {
+                continue;
+            }
+            let Ok(value) = evaluate_declaration_target(
+                hir.as_ref(),
+                file_id,
+                *target,
+                resolve.as_ref(),
+                provisional_bodies.types.as_ref(),
+                &known,
+                &mut pool,
+            ) else {
+                continue;
+            };
+            let Some(value_int) = pool_int_value(&pool, value) else {
+                continue;
+            };
+            if let Some(item) = target.item {
+                known.set_item(item, value);
+            }
+            let Some(span) = declaration_expr_span(hir.as_ref(), target.scope, target.expr) else {
+                continue;
+            };
+            output.insert_int_at(target.scope, target.expr, span, value_int);
+            progressed = true;
+        }
+        if !progressed {
+            break;
+        }
+    }
+
+    Arc::new(output)
+}
+
+fn pool_int_value(pool: &Pool, value: PoolId) -> Option<i128> {
+    let jr_pool::Item::IntValue { ty, bits } = *pool.item(value) else {
+        return None;
+    };
+    jr_pool::IntKind::of(pool, ty).map(|kind| kind.decode(bits))
+}
+
+fn declaration_expr_span(hir: &FileHir, scope: ExprScope, expr: ExprId) -> Option<jr_base::Span> {
+    match scope {
+        ExprScope::TopLevel => hir.expr_spans.get(expr.index()).copied(),
+        ExprScope::Body(body) => hir
+            .bodies
+            .get(body.index())?
+            .expr_spans
+            .get(expr.index())
+            .copied(),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Query output

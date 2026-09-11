@@ -478,8 +478,14 @@ Status of each slice component, so this is answerable without reading the tree.
 > | Context composition | Private pointer/integer unions carry each pool through `context.allocator_data`; backing calls replay the captured context through `push_context` and copy a mutated data word back. Per-allocation free callbacks are deliberately no-ops. |
 > | Tests / boundary | `valid/173` composes `Pool` with `New(Node)`, `Table(string, string)`, direct `[..]*Node` backing, reset/reuse, an oversized request, and idempotent release. `valid/174` covers `Flat_Pool` reserve/exhaustion, no-live-relocation, transactional allocation failure, overwrite/reuse, `New`, and idempotent finalization. `List` remains explicitly `malloc/free`-owned. |
 
+The short ADR-0245 delta rows supersede older literal-only statements retained inside the
+long-running historical crate rows below them.
+
 | Component | Status | Notes |
 |---|---|---|
+| `jr-hir` — ADR-0245 delta | **Done** | Array and SIMD type references retain their count `ExprId` in the correct top-level/body arena; body-local type expressions are resolved. Literal/name fields remain recovery and bare-`$N` fast paths. |
+| `jr-sema` — ADR-0245 delta | **Done** | Final signatures consume a small `DeclarationValues` map without owning an evaluator. Arrays, SIMD, enums, `#align`, `#place`, and `#soa` share it; the private provisional mode marks pending shapes and withholds only value-dependent diagnostics. |
+| `jr-db` — ADR-0245 delta | **Done** | Provisional signatures and body types feed ordinary MIR thunks; a bounded round-robin evaluates local constant graphs in the comptime VM, then final signatures receive only integer results. Calls and imported constants are explicit follow-ups. |
 | `modules/Game` | **Foundation done** | **ADR-0210 decides ADR-0208's six forks and lands the first slice.** A caller owns `App`; `open(width, height, title)` starts SDL, creates the window, selects top-left/y-down Simp coordinates and unwinds every completed step if GL setup fails. `begin_frame` drains once, latches close, and records an unclamped non-negative delta; `end_frame` presents; `close` is idempotent and destroys Simp before the window and SDL. A private guard refuses a second simultaneous App because Simp has one process-global renderer; the lifecycle stays on one thread. Two native integration tests cover a real synthetic-quit/reopen lifecycle and the dummy driver's no-GL unwind. **Not game-ready v1:** held input, primitive helpers, generation-tagged resources, PNG, text and audio are later slices. |
 | `jr-base` | **Done** | `trap_message` takes a `frames: &[&str]` and emits one `  in <name>` line per frame, innermost first (ADR-0066 §2). It stays the **one** place that decides what a trap says, which is what keeps two engines rendering at different *times* — native at compile time, the VM at run time — from drifting in punctuation or order (ADR-0020 §2's argument, now applied to a chain). Spans, `FileId`, `lasso` interning, `newtype_index!`, source map, the one trap-message formatter (ADR-0020 §2) |
 | `jr-diag` | **Done** | Diagnostic model + `annotate-snippets` renderer |
@@ -511,7 +517,7 @@ Status of each slice component, so this is answerable without reading the tree.
 | `editors/nvim` | **Done** | **The checked-in `parser/jairs.so` goes stale and only `verify.lua` can see it.** Gate 6's `query` run uses the *freshly generated* grammar, so a query naming a node the *installed* parser lacks passes gate 6 and fails the real-editor verifier — which is exactly what happened when `vector_type` landed. Run `./editors/nvim/build.sh` after touching `grammar.js`, then re-verify. Runtimepath directory: LSP, tree-sitter parser + symlinked queries, filetype, ftplugin (ADR-0025). Neovim 0.11+. **Verified, not gated** — `editors/nvim/verify.lua` needs an editor CI does not have. The installed parser is a separate artefact from the grammar: `build.sh` had to run before Neovim would load a query naming `c_call_attr`, and until it did the failure read "the highlights query loads" with no hint of why. The verifier asserts tree-sitter node kinds and nesting that ADR-0010's error-count gate cannot see, plus live LSP requests against the real server. |
 | VS Code extension | **Will not be built** | ADR-0036. `jr lsp` is editor-agnostic and another LSP client may launch it; the repository packages integrations for Neovim and Zed. The facts a reversal would need — no builtin LSP host, no tree-sitter API, `vscode-languageclient` is plain CommonJS — are recorded in the ADR |
 
-Accepted ADRs: 0001–**0241**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
+Accepted ADRs: 0001–**0245**. See [`docs/adr/README.md`](docs/adr/README.md). The repeated stale
 counts here are why the ADR index row and this line move in the same commit.
 Spec chapters written: 00 (overview), 01 (lexical), 02 (declarations),
 03 (scoping and resolution). A type-system chapter is owed: ADR-0015 and ADR-0016
@@ -817,33 +823,42 @@ Versions verified 2026-07-25. **Pin exact versions for `cranelift-*` and `salsa`
 > with doctests without changing their union. An eight-shard parity experiment was rejected after
 > making the differential target 90% slower.
 
-**1436 workspace tests (1449 under gate 7), 327 corpus files outside fixture modules, 244 ADRs and
-28 modules.** `valid/173` installs a stable multi-block `Pool`, allocates `New(Node)`, a generic
-`Table(string, string)`, and backing storage for `[..]*Node`, then exercises reset/reuse, a request
-above 64 KiB, captured-owner release, and idempotent cleanup. `valid/174` exercises `Flat_Pool`'s
-lazy slab, reserve/exhaustion, refusal to relocate live results, transactional allocation failure,
-overwrite/reuse, `New`, and idempotent finalization. Both exit 42 in the VM and agree with Cranelift
-through the full differential gate.
+**1436 workspace tests (1449 under gate 7), 328 corpus files outside fixture modules, 245 ADRs and
+28 modules.** `valid/175` proves one local integer graph can shape fixed arrays, local annotations,
+SIMD lanes, enum values and continuation, `#align`, `#place`, and `#soa`; it exits 143 in the VM and
+is part of the ordinary differential corpus.
 
-Both arenas align requests to 16 bytes and bridge their owning pointer through
-`context.allocator_data`. Backing allocation and free run under the captured context via
-`push_context`, including propagation of a mutated backing data word. `Pool` retains ordinary
-64 KiB blocks and adds dedicated oversized blocks without moving earlier results; `Flat_Pool`
-owns one contiguous slab and may grow only while empty. Their individual free callbacks are no-ops,
-because reset/release or reset/fini owns reclamation. `List` remains explicitly `malloc/free`-owned.
+ADR-0245 breaks the signature/const-eval cycle with a private provisional-signature pass, ordinary
+MIR/VM thunks, and a final signature pass receiving only evaluated integers. Local arithmetic and
+alias chains work. Imported constants, procedure calls/`#run`, arithmetic over per-instantiation
+`$N`, and declarations synthesized by computed `#insert` remain explicit boundaries. No MIR node,
+layout representation, pool layout, or back end changed, so gate 7 is not required.
 
-ADR-0244 changes only test orchestration, test-profile debug information, and CI. It changes no
-language behavior, MIR, layout, code generator, or back end,
-so gate 7 is not required. Its measured pre-change baseline was 183.07 seconds warm, with only
-0.59 seconds spent compiling; the differential binary accounted for 76.47 seconds. The next
-performance decision must use `scripts/check measure` rather than another unmeasured cache.
+### Next wave: imported declaration constants
 
-### Next wave: pure-template calls inside `#run`
+Extend ADR-0245's query from one source file to the reachable import component. Use a root-scoped
+fixed point, matching cross-file `$T` specialization: legal module cycles must not become salsa
+query cycles, each declaration value keeps its owner-file identity, and final signatures consume
+one component snapshot rather than recursively requesting one another.
 
-The next specialization/lowering follow-up is making a pure `$T` template callable from `#run`,
-where the compile-time VM currently has no instantiated routine to invoke. Non-literal defaults
-remain later: constants, calls, aggregates, `context` values and caller-location defaults need
-decisions about declaration scope, evaluation timing and side effects.
+The following sub-wave supplies provisional procedure routines so declaration expressions may call
+pure local/imported procedures and `#run`, with readable value-cycle diagnostics and one-time
+effects. Only then is the evaluated-declaration-constant programme complete.
+
+### Planned language waves after declaration constants
+
+1. **Sequence-place ergonomics:** `for *item` first, then slicing fixed/view/dynamic sequences with
+   one place/borrow model and the existing bounds policy.
+2. **Pure templates inside `#run`:** make owner-file `$T` specializations available to the comptime
+   program; keep mixed/imported `$N` as a separate boundary.
+3. **General procedure overloading:** overload sets for ordinary names, one ranking rule, exact
+   ambiguity diagnostics, and completion/signature-help support.
+4. **Cross-file procedure values:** carry owner/ABI identity through imported proc constants and
+   indirect-call lowering without treating a direct import as the value.
+5. **First-class `Code`:** immutable syntax values, inspection, deterministic expansion, hygiene
+   and source mapping before loop-driven generation.
+6. **Multi-result forwarding:** preserve exact arity while allowing a call's result aggregate to
+   flow directly into return/call positions; named/defaulted result semantics remain separate.
 
 **E0301** remains the first free global diagnostic code; **E0137** remains the first free parser code.
 
@@ -944,8 +959,8 @@ The accepted sequence is one ADR and branch per slice:
 
 ### Language and substrate backlog exposed by real games
 
-- **P0:** evaluated array lengths (`GRID_WIDTH * GRID_HEIGHT`, aliases and imported constants) and
-  pointer iteration (`for *item`).
+- **P0:** imported/call-backed declaration constants (local arithmetic and aliases are ADR-0245)
+  and pointer iteration (`for *item`).
 - **P1:** `ifx`, inferred `.{…}` / `.[…]` literals, general procedure overloading, item/block `#if`
   and `#load`.
 - **P2/P3:** `#module_parameters`, `Code` values with for-expansion, defaulted/implicit named-result semantics, inline procedures,

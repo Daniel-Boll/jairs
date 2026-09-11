@@ -39,6 +39,7 @@ use jr_hir::{
 use jr_pool::{ContextKind, DeclId, IntKind, Item, Pool, PoolId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::DeclarationValues;
 use crate::code::{
     E0211, E0212, E0213, E0214, E0233, E0237, E0240, E0269, E0270, E0282, E0283, E0284, E0285,
 };
@@ -59,6 +60,8 @@ const MAX_FIELD_ALIGN: u32 = 4096;
 /// Which phase the context is running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mode {
+    /// Computing signatures before declaration expressions have been evaluated (ADR-0245).
+    ProvisionalSignatures,
     /// Computing this file's signatures. File-level names are typed on demand.
     Signatures,
     /// Checking this file's bodies. File-level names are already typed.
@@ -148,6 +151,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) sigs: FileSignatures,
     /// Which phase this is.
     pub(crate) mode: Mode,
+    /// VM-evaluated integers available to declaration-shaping consumers (ADR-0245).
+    pub(crate) declaration_values: DeclarationValues,
     /// Diagnostics produced so far.
     pub(crate) diags: Diagnostics,
     /// Types learned so far.
@@ -329,6 +334,7 @@ impl<'a> Ctx<'a> {
         imported_hirs: Vec<(FileId, &'a FileHir)>,
         imported_templates: Vec<crate::ImportedTemplateContext<'a>>,
         mode: Mode,
+        declaration_values: DeclarationValues,
     ) -> Self {
         Self {
             call_position: FxHashSet::default(),
@@ -372,6 +378,7 @@ impl<'a> Ctx<'a> {
             resolving_in_module: None,
             sigs: FileSignatures::new(),
             mode,
+            declaration_values,
             diags: Diagnostics::new(),
             types: TypeMap::new(),
             in_progress: Vec::new(),
@@ -518,15 +525,27 @@ impl<'a> Ctx<'a> {
                 elem,
                 len,
                 len_name,
+                len_expr,
                 len_span,
             } => {
                 let element = self.resolve_type(scope, elem, span);
+                if let Some(expr) = len_expr {
+                    let _ = self.check_expr(scope, expr, None);
+                }
                 // A literal length is already known; otherwise the length may still be a **name** that
                 // resolves to a literal-valued constant (ADR-0070 §1), which needs a HIR lookup rather
-                // than an evaluation — so it happens here without inverting ADR-0018 §3's phase order.
+                // than an evaluation. ADR-0245 adds the VM-evaluated expression as the final source.
                 let resolved_len = match len {
                     Some(n) => Some(n),
-                    None => len_name.and_then(|name| self.constant_array_length(name)),
+                    None => len_name
+                        .and_then(|name| self.constant_array_length(name))
+                        .or_else(|| {
+                            len_expr
+                                .and_then(|expr| {
+                                    self.declaration_values.int_at(scope, expr, len_span)
+                                })
+                                .and_then(|value| u64::try_from(value).ok())
+                        }),
                 };
                 let Some(n) = resolved_len else {
                     // **A length naming a `$N` comptime parameter of a template is withheld, not
@@ -542,6 +561,17 @@ impl<'a> Ctx<'a> {
                         let placeholder = self.pool.array_of(element, 0);
                         // Remembered so every *length-dependent* check withholds on it — a literal index
                         // against `[0]s64` would otherwise be a false E0236 about correct code.
+                        self.placeholder_arrays.insert(placeholder);
+                        return placeholder;
+                    }
+                    // The private provisional signature pass needs a type shape so it can type the
+                    // expression graph that will produce this count. It must not emit the final E0233
+                    // or expose the placeholder outside that pass (ADR-0245 §4).
+                    if self.mode == Mode::ProvisionalSignatures && len_expr.is_some() {
+                        if element == PoolId::ERROR {
+                            return PoolId::ERROR;
+                        }
+                        let placeholder = self.pool.array_of(element, 0);
                         self.placeholder_arrays.insert(placeholder);
                         return placeholder;
                     }
@@ -570,12 +600,24 @@ impl<'a> Ctx<'a> {
                 elem,
                 lanes,
                 lanes_name,
+                lanes_expr,
                 lanes_span,
             } => {
                 let element = self.resolve_type(scope, elem, span);
+                if let Some(expr) = lanes_expr {
+                    let _ = self.check_expr(scope, expr, None);
+                }
                 let resolved = match lanes {
                     Some(n) => Some(n),
-                    None => lanes_name.and_then(|name| self.constant_array_length(name)),
+                    None => lanes_name
+                        .and_then(|name| self.constant_array_length(name))
+                        .or_else(|| {
+                            lanes_expr
+                                .and_then(|expr| {
+                                    self.declaration_values.int_at(scope, expr, lanes_span)
+                                })
+                                .and_then(|value| u64::try_from(value).ok())
+                        }),
                 };
                 let Some(n) = resolved else {
                     if lanes_name.is_some_and(|name| self.comptime_param_names.contains(&name)) {
@@ -586,6 +628,14 @@ impl<'a> Ctx<'a> {
                         // types and a template's own type must be the shape it will instantiate to,
                         // or every use inside the template body would be checked against the wrong
                         // operator set.
+                        let placeholder = self.pool.vector_of(element, 0);
+                        self.placeholder_arrays.insert(placeholder);
+                        return placeholder;
+                    }
+                    if self.mode == Mode::ProvisionalSignatures && lanes_expr.is_some() {
+                        if element == PoolId::ERROR {
+                            return PoolId::ERROR;
+                        }
                         let placeholder = self.pool.vector_of(element, 0);
                         self.placeholder_arrays.insert(placeholder);
                         return placeholder;
@@ -1257,10 +1307,13 @@ impl<'a> Ctx<'a> {
                 // array length must be (ADR-0039 §3a): evaluating an arbitrary constant
                 // expression needs the const-evaluator, which ADR-0018 §3 puts in `jr-db`,
                 // downstream of this phase.
-                Some(expr) => match self.enum_member_literal(expr, member.name_span) {
-                    Some(value) => value,
-                    None => next,
-                },
+                Some(expr) => {
+                    let _ = self.check_expr(ExprScope::TopLevel, expr, None);
+                    match self.enum_member_literal(expr, member.name_span) {
+                        Some(value) => value,
+                        None => next,
+                    }
+                }
                 None => next,
             };
             resolved.push(jr_pool::EnumMember::new(member.name, value));
@@ -1280,10 +1333,20 @@ impl<'a> Ctx<'a> {
 
     /// Reads an enum member's explicit value, or reports why it is not usable.
     ///
-    /// Accepts an integer literal, or a name for a constant whose initialiser is one — the same rule
-    /// ADR-0070 gave an array length, generalised here (ADR-0129 §1). The asymmetry between the two was
-    /// never a limit of the evaluator; only one of them had learnt the trick.
+    /// Accepts any integer expression the declaration-value prepass evaluated, with literal and
+    /// literal-valued-name fallbacks for recovery (ADR-0245).
     fn enum_member_literal(&mut self, expr: jr_hir::ExprId, span: Span) -> Option<i64> {
+        if let Some(value) = self
+            .declaration_values
+            .int_at(
+                ExprScope::TopLevel,
+                expr,
+                self.top_expr_span(expr).unwrap_or(span),
+            )
+            .and_then(|value| i64::try_from(value).ok())
+        {
+            return Some(value);
+        }
         // Read straight from the top-level arena: `expr_of` lives on the checking half of
         // this context and a member value is resolved during *signatures*, which runs first.
         match self.hir.exprs.get(expr.index()) {
@@ -1316,6 +1379,7 @@ impl<'a> Ctx<'a> {
                     None => self.enum_member_not_constant(true, span),
                 }
             }
+            _ if self.mode == Mode::ProvisionalSignatures => {}
             _ => self.enum_member_not_constant(false, span),
         }
         None
@@ -1333,28 +1397,22 @@ impl<'a> Ctx<'a> {
             Diagnostic::error(span, "this enum member's value is not a usable constant")
                 .with_code(E0237)
                 .with_note(
-                    "a member's value may be an integer literal, or a name for a constant whose \
-                     value is one — a computed constant, a `#run`, or one from another file needs \
-                     the compile-time evaluator, which sema runs before (ADR-0018 §3)",
+                    "local integer expression graphs are evaluated before final signatures; calls, \
+                     imported constants, cycles, and non-integer results are not usable here yet \
+                     (ADR-0245)",
                 )
-                .with_help("give the constant a literal value, e.g. `NOT_FOUND :: 404;`")
+                .with_help("use a local integer expression, e.g. `NOT_FOUND :: 400 + 4;`")
         } else {
             Diagnostic::error(
                 span,
-                "an enum member's value must be a literal or a named constant",
+                "this enum member value is not a usable compile-time integer",
             )
             .with_code(E0237)
-            // **Not "arrives with full `#run` in wave W4".** W4 is complete and the evaluator
-            // exists, so that note described a capability the compiler has had for waves
-            // (ADR-0127 §2). The real constraint is *ordering*, exactly as E0233 states for an
-            // array length: signatures are typed before const-eval runs (ADR-0018 §3), so no
-            // computed value is available at this point.
             .with_note(
-                "an enum's members are typed with its declaration, before the compile-time \
-                 evaluator runs (ADR-0018 §3), so an arithmetic or `#run` value is not available \
-                 here",
+                "declaration values use the ordinary MIR/VM evaluator; this expression either did \
+                 not produce an integer or needs the later call/import extension (ADR-0245)",
             )
-            .with_help("write the value as a literal, e.g. `NOT_FOUND :: 404;`, or name a constant")
+            .with_help("write an integer expression such as `NOT_FOUND :: 400 + 4;`")
         };
         self.diags.push(diag);
     }
@@ -1397,19 +1455,29 @@ impl<'a> Ctx<'a> {
     /// The integer a layout attribute's operand denotes, or `None` with a diagnostic.
     ///
     /// `is_align` picks the code and the wording only: the *reading* is identical, which is why one
-    /// function does both. A literal or a name that resolves to a literal-valued constant, through
-    /// the same helper an array length uses — arithmetic is refused for ADR-0018 §3's ordering
-    /// reason, since signatures are typed before the compile-time evaluator runs.
+    /// function does both. ADR-0245 supplies an evaluated integer first, with the old literal/name
+    /// path retained as recovery.
     fn layout_attr_value(&mut self, expr: ExprId, span: Span, is_align: bool) -> Option<i128> {
-        let value = match self.hir.exprs.get(expr.index()) {
-            Some(jr_hir::Expr::Literal(jr_hir::Literal::Int { value, .. }, _)) => Some(*value),
-            Some(jr_hir::Expr::Name { name, .. }) => {
-                let name = *name;
-                self.named_constant_int(name)
-            }
-            _ => None,
-        };
+        let _ = self.check_expr(ExprScope::TopLevel, expr, None);
+        let value = self
+            .declaration_values
+            .int_at(
+                ExprScope::TopLevel,
+                expr,
+                self.top_expr_span(expr).unwrap_or(span),
+            )
+            .or_else(|| match self.hir.exprs.get(expr.index()) {
+                Some(jr_hir::Expr::Literal(jr_hir::Literal::Int { value, .. }, _)) => Some(*value),
+                Some(jr_hir::Expr::Name { name, .. }) => {
+                    let name = *name;
+                    self.named_constant_int(name)
+                }
+                _ => None,
+            });
         if value.is_none() {
+            if self.mode == Mode::ProvisionalSignatures {
+                return None;
+            }
             let (code, what) = if is_align {
                 (E0282, "an `#align`")
             } else {
@@ -1422,9 +1490,8 @@ impl<'a> Ctx<'a> {
                 )
                 .with_code(code)
                 .with_note(
-                    "a struct's fields are laid out with its declaration, before the compile-time \
-                     evaluator runs (ADR-0018 §3), so an arithmetic or `#run` value is not \
-                     available here",
+                    "local integer expression graphs are evaluated before layout; calls, imported \
+                     constants, cycles, and non-integer results are not usable here yet (ADR-0245)",
                 ),
             );
         }
@@ -1477,27 +1544,36 @@ impl<'a> Ctx<'a> {
     pub(crate) fn soa_count(&mut self, sid: StructId) -> Option<u64> {
         let expr = self.hir.struct_def(sid).soa?;
         let span = self.hir.struct_def(sid).span;
-        let value = match self.hir.exprs.get(expr.index()) {
-            Some(jr_hir::Expr::Literal(jr_hir::Literal::Int { value, .. }, _)) => Some(*value),
-            Some(jr_hir::Expr::Name { name, .. }) => {
-                let name = *name;
-                self.named_constant_int(name)
-            }
-            _ => None,
-        };
+        let _ = self.check_expr(ExprScope::TopLevel, expr, None);
+        let value = self
+            .declaration_values
+            .int_at(
+                ExprScope::TopLevel,
+                expr,
+                self.top_expr_span(expr).unwrap_or(span),
+            )
+            .or_else(|| match self.hir.exprs.get(expr.index()) {
+                Some(jr_hir::Expr::Literal(jr_hir::Literal::Int { value, .. }, _)) => Some(*value),
+                Some(jr_hir::Expr::Name { name, .. }) => {
+                    let name = *name;
+                    self.named_constant_int(name)
+                }
+                _ => None,
+            });
         match value.and_then(|v| u64::try_from(v).ok()) {
             // Zero is refused rather than accepted as an empty struct: `#soa(0)` is far more
             // likely a mistake than an intent, and a struct of zero-length arrays lays out as
             // nothing while every access is out of range.
             Some(count) if count > 0 => Some(count),
+            _ if self.mode == Mode::ProvisionalSignatures => None,
             _ => {
                 self.diags.push(
                     Diagnostic::error(span, "this `#soa` count is not a usable array length")
                         .with_code(E0284)
                         .with_note(
-                            "a struct's fields are laid out with its declaration, before the \
-                             compile-time evaluator runs (ADR-0018 §3), so an arithmetic or `#run` \
-                             value is not available here",
+                            "local integer expression graphs are evaluated before layout; calls, \
+                             imported constants, cycles, zero, and non-integer results are not \
+                             usable here yet (ADR-0245)",
                         )
                         .with_help(
                             "write a positive integer literal, as in `#soa(64)`, or name a \
@@ -1589,7 +1665,7 @@ impl<'a> Ctx<'a> {
     /// report.
     pub(crate) fn entry_for_item(&mut self, item: ItemId) -> Option<SigEntry> {
         match self.mode {
-            Mode::Signatures => self.item_signature(item),
+            Mode::ProvisionalSignatures | Mode::Signatures => self.item_signature(item),
             Mode::Check => {
                 let name = self.hir.item(item).name?;
                 self.sigs.lookup(name)
@@ -1662,17 +1738,8 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// The integer a name denotes, when it names a constant whose initialiser is an integer literal
-    /// (ADR-0070 §1, generalised by ADR-0129 §1).
-    ///
-    /// **No evaluation happens here**, which is the whole reason this is available a sub-wave before
-    /// `[2 + 2]u8` is: the literal is already in the HIR, and this crate depends on neither `jr-db` nor
-    /// `jr-vm` (ADR-0039 §3a's constraint, still honoured). A value that needs *computing* — arithmetic,
-    /// a `#run`, or a constant in another file — answers `None` here and is refused by the caller.
-    ///
-    /// One level of indirection only: `B :: A` where `A :: 4` answers `None` rather than following the
-    /// chain, because a chain needs a fixpoint and a cycle check, which is the evaluation machinery this
-    /// deliberately avoids (ADR-0070 §4).
+    /// The integer a name denotes, preferring ADR-0245's evaluated initializer and retaining the
+    /// literal fast path for recovery and `$N` instantiations.
     ///
     /// Answers `i128` — the widest thing a `Literal::Int` can hold — and leaves the range check to the
     /// caller, because the two callers disagree about range: an array length is a `u64` and rejects a
@@ -1707,6 +1774,12 @@ impl<'a> Ctx<'a> {
         else {
             return None;
         };
+        if let Some(value) =
+            self.declaration_values
+                .int_at(ExprScope::TopLevel, *expr, self.top_expr_span(*expr)?)
+        {
+            return Some(value);
+        }
         let jr_hir::Expr::Literal(jr_hir::Literal::Int { value, .. }, _) =
             self.hir.exprs.get(expr.index())?
         else {
@@ -1715,8 +1788,7 @@ impl<'a> Ctx<'a> {
         Some(*value)
     }
 
-    /// The length a name denotes, when it names a constant whose initialiser is an integer literal
-    /// (ADR-0070 §1).
+    /// The length a name denotes when its constant initializer has an integer value.
     ///
     /// A negative length, or one past `u64`, fails here exactly as a negative *literal* length does —
     /// the value takes the same path once known, so ADR-0039 §3's checks are unchanged.
@@ -1724,7 +1796,11 @@ impl<'a> Ctx<'a> {
         u64::try_from(self.named_constant_int(name)?).ok()
     }
 
-    /// Reports an array length that is not a usable integer literal (ADR-0039 §3a).
+    fn top_expr_span(&self, expr: ExprId) -> Option<Span> {
+        self.hir.expr_spans.get(expr.index()).copied()
+    }
+
+    /// Reports an array length that did not produce a usable compile-time integer.
     ///
     /// The message does not name the offending text: a `TypeRef` carries no way back to
     /// the source, and the span already points at it. Naming the *reason* is what matters,
@@ -1811,22 +1887,22 @@ impl<'a> Ctx<'a> {
             Diagnostic::error(span, "this array length is not a usable constant")
                 .with_code(E0233)
                 .with_note(
-                    "a length may be an integer literal, or a name for a constant whose value is \
-                     one — a computed constant, a `#run`, or one from another file needs the \
-                     compile-time evaluator, which sema runs before",
+                    "local integer expression graphs and alias chains are evaluated before final \
+                     signatures; calls, imported constants, cycles, and non-integer results are not \
+                     usable here yet (ADR-0245)",
                 )
-                .with_help("give the constant a literal value, e.g. `N :: 20;`")
+                .with_help("give the constant a local integer value, e.g. `N :: 4 * 5;`")
         } else {
             Diagnostic::error(
                 span,
-                "an array length must be a literal or a named constant",
+                "this array length is not a usable compile-time integer",
             )
             .with_code(E0233)
             .with_note(
-                "an arithmetic or `#run` length needs the compile-time evaluator, which sema \
-                     runs before (ADR-0018 §3)",
+                "declaration values use the ordinary MIR/VM evaluator; this expression either did \
+                 not produce an integer or needs the later call/import extension (ADR-0245)",
             )
-            .with_help("write the length as a literal, e.g. `[20]u8`, or name a constant")
+            .with_help("write a local integer expression such as `[WIDTH * HEIGHT]u8`")
         };
         self.diags.push(diag);
     }

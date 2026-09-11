@@ -359,11 +359,23 @@ impl<'a> LowerCtx<'a> {
             // than copying them (ADR-0148 §1). Placed before the array arm so the two read in the
             // order a reader meets them in the grammar.
             TypeExpr::Vector(v) => {
-                let lanes_span = v.lanes().map_or_else(
+                let lanes_ast = v.lanes();
+                let lanes_span = lanes_ast.clone().map_or_else(
                     || self.span_of_node(v.syntax()),
                     |e| self.span_of_node(e.syntax()),
                 );
-                let lanes = lower_array_len(v.lanes(), lanes_span, self.interner, &mut self.diags);
+                let lanes = lower_array_len(
+                    lanes_ast.clone(),
+                    lanes_span,
+                    self.interner,
+                    &mut self.diags,
+                );
+                let lanes_name = lower_array_len_name(lanes_ast.clone(), self.interner);
+                let lanes_expr = if lanes.is_some() || lanes_name.is_some() {
+                    None
+                } else {
+                    lanes_ast.map(|expr| self.lower_top_expr(&expr))
+                };
                 let elem = if let Some(e) = v.elem() {
                     self.lower_type_expr_top(&e)
                 } else {
@@ -372,16 +384,25 @@ impl<'a> LowerCtx<'a> {
                 self.alloc_top_type_ref(TypeRef::Vector {
                     elem,
                     lanes,
-                    lanes_name: lower_array_len_name(v.lanes(), self.interner),
+                    lanes_name,
+                    lanes_expr,
                     lanes_span,
                 })
             }
             TypeExpr::Array(a) => {
-                let len_span = a.len().map_or_else(
+                let len_ast = a.len();
+                let len_span = len_ast.clone().map_or_else(
                     || self.span_of_node(a.syntax()),
                     |e| self.span_of_node(e.syntax()),
                 );
-                let len = lower_array_len(a.len(), len_span, self.interner, &mut self.diags);
+                let len =
+                    lower_array_len(len_ast.clone(), len_span, self.interner, &mut self.diags);
+                let len_name = lower_array_len_name(len_ast.clone(), self.interner);
+                let len_expr = if len.is_some() || len_name.is_some() {
+                    None
+                } else {
+                    len_ast.map(|expr| self.lower_top_expr(&expr))
+                };
                 let elem = if let Some(e) = a.elem() {
                     self.lower_type_expr_top(&e)
                 } else {
@@ -390,7 +411,8 @@ impl<'a> LowerCtx<'a> {
                 self.alloc_top_type_ref(TypeRef::Array {
                     elem,
                     len,
-                    len_name: lower_array_len_name(a.len(), self.interner),
+                    len_name,
+                    len_expr,
                     len_span,
                 })
             }
@@ -2196,11 +2218,23 @@ impl<'a> BodyLowerCtx<'a> {
             // than copying them (ADR-0148 §1). Placed before the array arm so the two read in the
             // order a reader meets them in the grammar.
             TypeExpr::Vector(v) => {
-                let lanes_span = v.lanes().map_or_else(
+                let lanes_ast = v.lanes();
+                let lanes_span = lanes_ast.clone().map_or_else(
                     || self.span_of_node(v.syntax()),
                     |e| self.span_of_node(e.syntax()),
                 );
-                let lanes = lower_array_len(v.lanes(), lanes_span, self.interner, &mut self.diags);
+                let lanes = lower_array_len(
+                    lanes_ast.clone(),
+                    lanes_span,
+                    self.interner,
+                    &mut self.diags,
+                );
+                let lanes_name = lower_array_len_name(lanes_ast.clone(), self.interner);
+                let lanes_expr = if lanes.is_some() || lanes_name.is_some() {
+                    None
+                } else {
+                    lanes_ast.map(|expr| self.lower_expr(&expr))
+                };
                 let elem = if let Some(e) = v.elem() {
                     self.lower_type_expr(&e)
                 } else {
@@ -2209,16 +2243,25 @@ impl<'a> BodyLowerCtx<'a> {
                 self.alloc_type_ref(TypeRef::Vector {
                     elem,
                     lanes,
-                    lanes_name: lower_array_len_name(v.lanes(), self.interner),
+                    lanes_name,
+                    lanes_expr,
                     lanes_span,
                 })
             }
             TypeExpr::Array(a) => {
-                let len_span = a.len().map_or_else(
+                let len_ast = a.len();
+                let len_span = len_ast.clone().map_or_else(
                     || self.span_of_node(a.syntax()),
                     |e| self.span_of_node(e.syntax()),
                 );
-                let len = lower_array_len(a.len(), len_span, self.interner, &mut self.diags);
+                let len =
+                    lower_array_len(len_ast.clone(), len_span, self.interner, &mut self.diags);
+                let len_name = lower_array_len_name(len_ast.clone(), self.interner);
+                let len_expr = if len.is_some() || len_name.is_some() {
+                    None
+                } else {
+                    len_ast.map(|expr| self.lower_expr(&expr))
+                };
                 let elem = if let Some(e) = a.elem() {
                     self.lower_type_expr(&e)
                 } else {
@@ -2227,7 +2270,8 @@ impl<'a> BodyLowerCtx<'a> {
                 self.alloc_type_ref(TypeRef::Array {
                     elem,
                     len,
-                    len_name: lower_array_len_name(a.len(), self.interner),
+                    len_name,
+                    len_expr,
                     len_span,
                 })
             }
@@ -3770,8 +3814,8 @@ fn lower_assign_op(kind: SyntaxKind) -> AssignOp {
 /// drifted once for pointers.
 /// The bare **name** an array length was written as, if it was one (ADR-0070 §1).
 ///
-/// `None` for a literal (which `lower_array_len` reads) and for anything else — `[2 + 2]u8` names nothing
-/// to look up, so sema reports it rather than this guessing.
+/// `None` for a literal (which `lower_array_len` reads) and for any non-name expression. ADR-0245
+/// retains that full expression separately for VM-backed declaration evaluation.
 ///
 /// Lowering only *reads* the name; whether it resolves to a usable constant is a semantic judgement and
 /// therefore sema's, which is the same split ADR-0039 §3a drew for the literal.
@@ -3801,9 +3845,9 @@ fn lower_array_len(
     // yield `None` and sema explains which.
     match lower_literal_impl(&lit, len_span, interner, diags) {
         Literal::Int { value, .. } => u64::try_from(value).ok(),
-        // `[1.5]u8` is not an array length. Sema reports it as E0233 like any other
-        // non-integer-literal length; there is deliberately no float-specific message,
-        // because "an array length must be an integer literal" already says it.
+        // `[1.5]u8` is not an array length. Sema reports it as E0233 like any other expression that
+        // does not produce a usable compile-time integer; there is deliberately no float-specific
+        // lowering diagnostic.
         Literal::Float { .. } | Literal::Bool(_) | Literal::Str(_) | Literal::Null => None,
     }
 }

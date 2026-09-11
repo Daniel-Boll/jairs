@@ -8,6 +8,7 @@ use jr_hir::{
 };
 use jr_pool::{ContextKind, Item, Pool, PoolId};
 
+use crate::DeclarationValues;
 use crate::check::bin_op_text;
 use crate::code::{E0204, E0214, E0226, E0246, E0252, E0255, E0257, E0298, E0299};
 use crate::ctx::{Ctx, Mode};
@@ -111,18 +112,86 @@ pub fn file_signatures(
     pool: &mut Pool,
     interner: &Interner,
 ) -> SignatureOutput {
+    file_signatures_impl(
+        hir,
+        file,
+        resolve,
+        imports,
+        pool,
+        interner,
+        &DeclarationValues::default(),
+        Mode::Signatures,
+    )
+}
+
+/// Computes signatures while declaration-time expressions are still pending (ADR-0245).
+pub fn file_signatures_provisional(
+    hir: &FileHir,
+    file: FileId,
+    resolve: &ResolveMap,
+    imports: &[ImportedFile<'_>],
+    pool: &mut Pool,
+    interner: &Interner,
+) -> SignatureOutput {
+    file_signatures_impl(
+        hir,
+        file,
+        resolve,
+        imports,
+        pool,
+        interner,
+        &DeclarationValues::default(),
+        Mode::ProvisionalSignatures,
+    )
+}
+
+/// Computes final signatures with VM-evaluated declaration integers (ADR-0245).
+pub fn file_signatures_with_values(
+    hir: &FileHir,
+    file: FileId,
+    resolve: &ResolveMap,
+    imports: &[ImportedFile<'_>],
+    pool: &mut Pool,
+    interner: &Interner,
+    values: &DeclarationValues,
+) -> SignatureOutput {
+    file_signatures_impl(
+        hir,
+        file,
+        resolve,
+        imports,
+        pool,
+        interner,
+        values,
+        Mode::Signatures,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn file_signatures_impl(
+    hir: &FileHir,
+    file: FileId,
+    resolve: &ResolveMap,
+    imports: &[ImportedFile<'_>],
+    pool: &mut Pool,
+    interner: &Interner,
+    values: &DeclarationValues,
+    mode: Mode,
+) -> SignatureOutput {
     // Shallow signatures for each import: same algorithm, no imports of their
     // own, diagnostics discarded because they belong to the other file.
     let shallow: Vec<(&str, FileSignatures)> = imports
         .iter()
         .map(|imported| {
-            let output = file_signatures(
+            let output = file_signatures_impl(
                 imported.hir,
                 imported.file,
                 imported.resolve,
                 &[],
                 pool,
                 interner,
+                &DeclarationValues::default(),
+                mode,
             );
             (imported.name, output.signatures)
         })
@@ -144,7 +213,8 @@ pub fn file_signatures(
         import_refs,
         imported_hirs,
         Vec::new(),
-        Mode::Signatures,
+        mode,
+        values.clone(),
     );
     // Recorded so that an *imported* overload can become a `ProcRef` (ADR-0048 §5).
     ctx.sigs.set_file(file);

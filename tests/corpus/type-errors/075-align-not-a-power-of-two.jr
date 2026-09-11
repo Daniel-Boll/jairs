@@ -10,11 +10,8 @@
 //     nothing;
 //   * a value above 4096, one page, because past it a stack slot cannot promise the alignment it was
 //     asked for and a request silently not met is worse than a refusal;
-//   * an operand that needs evaluation (`#align 8 * 2`, or a `#run`), for ADR-0018 §3's ordering
-//     reason: a struct's fields are laid out with its declaration, before the compile-time
-//     evaluator runs. That is the same limit an array length has, and a literal-valued *constant*
-//     is accepted through the same helper (`valid/115`), so the line here is evaluation and not
-//     literalness.
+//   * an operand that calls a procedure or reads an imported constant, which are ADR-0245's two
+//     follow-ups. Local arithmetic such as `#align 8 * 2` is legal now (`valid/175`).
 //
 // **What is deliberately not refused** is a value *below* the type's own alignment. `#align` is a
 // minimum, so `#align 1` on an `s64` is already satisfied. That was decided while building: a

@@ -14,6 +14,12 @@
 //! file. `type-errors/` keeps both contracts intact: its files are well-formed
 //! source that must be *rejected by sema*, so they join the formatter and
 //! tree-sitter gates rather than being excluded from them.
+//!
+//! A valid file may declare `// REQUIRES-DB-PREPASS:` when its semantics are deliberately supplied
+//! by a database query downstream of this crate. The standalone sema harness cannot manufacture
+//! that query's input. Such files are still checked by `jr-db`'s no-gated-file test and by the
+//! end-to-end CLI/differential corpus; the marker prevents this lower-layer test from pretending
+//! it exercised a compiler path it cannot construct.
 
 mod harness;
 
@@ -63,6 +69,11 @@ fn expected_codes(text: &str) -> Vec<String> {
         }
     }
     codes
+}
+
+fn requires_database_prepass(text: &str) -> bool {
+    text.lines()
+        .any(|line| line.trim_start().starts_with("// REQUIRES-DB-PREPASS:"))
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +185,9 @@ fn valid_corpus_files_produce_no_sema_diagnostics() {
     // undeclared constructor is caught there.
     let mut failures = Vec::new();
     for (name, text) in corpus_files("valid") {
+        if requires_database_prepass(&text) {
+            continue;
+        }
         let mut program = Program::new();
         let analysis = program.analyse(&text);
         let real: Vec<&_> = analysis

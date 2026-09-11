@@ -58,7 +58,7 @@ consume the same project catalog (ADR-0213).
 
 ## Status, honestly
 
-**Pre-alpha, current through ADR-0244.** Jairs source runs in a compile-time VM *and* compiles to a
+**Pre-alpha, current through ADR-0245.** Jairs source runs in a compile-time VM *and* compiles to a
 native binary, and the two agree byte for byte — down to the line a trap
 names. The language they agree about is deliberately tiny, but it now covers
 structs, unions, tagged variants, enums, polymorphic procedures and structs,
@@ -76,6 +76,12 @@ disagree, the code is right and the table has a bug.
 Byte-oriented source scanning now has the Jai-shaped pieces it needs: a `for` can walk a
 `string` directly as `u8` bytes with `s64` byte offsets, and `#char "A"` supplies a
 context-typed ASCII byte for comparisons. Unicode decoding remains explicit.
+
+Declaration-shaping integers now cross the old signature/const-eval boundary through one
+VM-backed pre-signature pass. Local arithmetic and alias chains work in fixed-array and SIMD
+counts, enum values, `#align`, `#place`, and `#soa`; the compiler uses the same MIR/VM integer
+semantics as ordinary compile-time execution rather than a second syntax folder. Imported
+constants and expressions requiring procedure calls remain the next two extensions of that seam.
 
 Same-type pointers can now be subtracted: `end - start` yields the signed `s64` number of
 pointee elements between them, so `*u8 - *u8` is a byte count while `*T - *T` is scaled by
@@ -289,7 +295,7 @@ level of a file, which the compiler could parse and could not compile.
 
 - **1436** workspace tests (**1449** under gate 7). ADR-0244 changes test orchestration without
   changing coverage; an eight-shard experiment was measured and rejected.
-- **327** `.jr` corpus files outside the fixture-module directory, **244** accepted ADRs, **28** standard library
+- **328** `.jr` corpus files outside the fixture-module directory, **245** accepted ADRs, **28** standard library
   modules.
 - **Fast test feedback without weakening the gate.** `scripts/check fast` and
   `scripts/check pre-commit` use an isolated nextest cache; `scripts/check measure` writes JUnit

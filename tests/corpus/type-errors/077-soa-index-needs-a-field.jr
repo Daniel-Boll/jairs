@@ -8,8 +8,8 @@
 //
 // **One** refusal here, per this directory's contract. The other shapes E0284 covers:
 //
-//   * a count that is not a usable positive array length — including one needing evaluation, for
-//     ADR-0018 §3's ordering reason (a struct's fields are laid out with its declaration);
+//   * a count that is not a usable positive array length — local arithmetic works since ADR-0245,
+//     while calls, imported constants, zero, and non-integers remain refused;
 //   * a `using` field inside an `#soa` struct, because `using` promotes for *lookup* and under
 //     `#soa` each promoted name would be an array — a second transformation with no spelling for
 //     the index.

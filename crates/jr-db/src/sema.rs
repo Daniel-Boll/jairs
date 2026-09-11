@@ -342,6 +342,117 @@ fn imported_template_inputs(
 // file_signatures — tracked query
 // ---------------------------------------------------------------------------
 
+/// Computes the private signature view used to type declaration-time expressions (ADR-0245).
+///
+/// Missing evaluated lengths and layout operands become marked placeholders rather than final
+/// diagnostics. This query never escapes the declaration-value prepass.
+#[salsa::tracked(returns(clone), no_eq)]
+pub(crate) fn provisional_file_signatures(
+    db: &dyn Db,
+    file: SourceFile,
+    catalog: ModuleCatalog,
+) -> SignatureResult {
+    let hir = file_hir(db, file);
+    let file_id = crate::queries::resolve_file_id(db, file);
+    let own_resolve = resolved(db, file, catalog).map;
+    let interner = db.interner();
+
+    let imported: Vec<ImportedInputs> = imported_module_files(db, file, catalog)
+        .into_iter()
+        .map(|(name, module)| ImportedInputs {
+            name,
+            file: crate::queries::resolve_file_id(db, module),
+            hir: file_hir(db, module),
+            resolve: resolved(db, module, catalog).map,
+        })
+        .collect();
+    let imports: Vec<ImportedFile<'_>> = imported
+        .iter()
+        .map(|input| ImportedFile {
+            name: input.name.as_ref(),
+            file: input.file,
+            hir: input.hir.as_ref(),
+            resolve: input.resolve.as_ref(),
+        })
+        .collect();
+
+    let mut pool = lock_pool(db);
+    let output = jr_sema::file_signatures_provisional(
+        hir.as_ref(),
+        file_id,
+        own_resolve.as_ref(),
+        &imports,
+        &mut pool,
+        interner,
+    );
+    let filled_args = translate_filled_calls(&output.filled_calls);
+    SignatureResult {
+        signatures: Arc::new(output.signatures),
+        types: Arc::new(output.types),
+        diagnostics: Arc::new(output.diagnostics),
+        folded_calls: Arc::new(output.folded_calls),
+        filled_args: Arc::new(filled_args),
+    }
+}
+
+/// Type-checks bodies against provisional signatures so local declaration expressions have types.
+///
+/// Diagnostics are private to ADR-0245's evaluator and are never surfaced. Imported template owner
+/// environments are intentionally absent here: this pass only supplies expression types for
+/// declaration operands, while the final [`checked`] query remains the authority for template calls.
+#[salsa::tracked(returns(clone), no_eq)]
+pub(crate) fn provisional_checked(
+    db: &dyn Db,
+    file: SourceFile,
+    catalog: ModuleCatalog,
+) -> CheckResult {
+    let hir = file_hir(db, file);
+    let file_id = crate::queries::resolve_file_id(db, file);
+    let own_resolve = resolved(db, file, catalog).map;
+    let own = provisional_file_signatures(db, file, catalog);
+    let interner = db.interner();
+
+    let modules = imported_module_files(db, file, catalog);
+    let imported: Vec<(Arc<str>, SignatureResult)> = modules
+        .into_iter()
+        .map(|(name, module)| (name, provisional_file_signatures(db, module, catalog)))
+        .collect();
+    let imports: Vec<(&str, &FileSignatures)> = imported
+        .iter()
+        .map(|(name, sigs)| (name.as_ref(), sigs.signatures.as_ref()))
+        .collect();
+    let imported_module_hirs: Vec<(jr_base::FileId, Arc<jr_hir::FileHir>)> =
+        imported_module_files(db, file, catalog)
+            .into_iter()
+            .map(|(_, module)| {
+                (
+                    crate::queries::resolve_file_id(db, module),
+                    file_hir(db, module),
+                )
+            })
+            .collect();
+    let imported_hirs: Vec<(jr_base::FileId, &jr_hir::FileHir)> = imported_module_hirs
+        .iter()
+        .map(|(id, hir)| (*id, hir.as_ref()))
+        .collect();
+
+    let mut pool = lock_pool(db);
+    let output = jr_sema::check_file(
+        hir.as_ref(),
+        file_id,
+        own_resolve.as_ref(),
+        own.signatures.as_ref(),
+        &imports,
+        &imported_hirs,
+        &[],
+        &mut pool,
+        interner,
+    );
+    drop(pool);
+
+    translate_check_output(output, own.types.as_ref(), own.filled_args.as_ref())
+}
+
 /// Computes a file's signatures: the types of everything it declares.
 ///
 /// Depends on the imported files' HIR and resolution, never on their signatures
@@ -353,6 +464,7 @@ pub fn file_signatures(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) ->
     let hir = file_hir(db, file);
     let file_id = crate::queries::resolve_file_id(db, file);
     let own_resolve = resolved(db, file, catalog).map;
+    let declaration_values = crate::consts::declaration_values(db, file, catalog);
     let interner = db.interner();
 
     // Gather everything from other queries *before* locking the pool.
@@ -376,13 +488,14 @@ pub fn file_signatures(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) ->
         .collect();
 
     let mut pool = lock_pool(db);
-    let output = jr_sema::file_signatures(
+    let output = jr_sema::file_signatures_with_values(
         hir.as_ref(),
         file_id,
         own_resolve.as_ref(),
         &imports,
         &mut pool,
         interner,
+        declaration_values.as_ref(),
     );
 
     let filled_args = translate_filled_calls(&output.filled_calls);
@@ -443,9 +556,10 @@ pub fn checked(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> CheckRe
         .iter()
         .map(ImportedTemplateInputs::borrowed)
         .collect();
+    let declaration_values = crate::consts::declaration_values(db, file, catalog);
 
     let mut pool = lock_pool(db);
-    let output = jr_sema::check_file(
+    let output = jr_sema::check_file_with_values(
         hir.as_ref(),
         file_id,
         own_resolve.as_ref(),
@@ -455,6 +569,7 @@ pub fn checked(db: &dyn Db, file: SourceFile, catalog: ModuleCatalog) -> CheckRe
         &imported_templates,
         &mut pool,
         interner,
+        declaration_values.as_ref(),
     );
     drop(pool);
 
@@ -569,17 +684,19 @@ pub(crate) fn checked_expanded(
             resolve: input.resolve.as_ref(),
         })
         .collect();
+    let declaration_values = crate::consts::declaration_values(db, file, catalog);
 
     let mut pool = lock_pool(db);
-    let sig_output = jr_sema::file_signatures(
+    let sig_output = jr_sema::file_signatures_with_values(
         expanded,
         file_id,
         &resolve_map,
         &sig_imports,
         &mut pool,
         interner,
+        declaration_values.as_ref(),
     );
-    let output = jr_sema::check_file(
+    let output = jr_sema::check_file_with_values(
         expanded,
         file_id,
         &resolve_map,
@@ -589,6 +706,7 @@ pub(crate) fn checked_expanded(
         &imported_templates,
         &mut pool,
         interner,
+        declaration_values.as_ref(),
     );
     drop(pool);
 
@@ -1239,15 +1357,17 @@ pub(crate) fn expand_round(
             resolve: input.resolve.as_ref(),
         })
         .collect();
+    let declaration_values = crate::consts::declaration_values(db, file, catalog);
 
     let mut pool = lock_pool(db);
-    let sig_output = jr_sema::file_signatures(
+    let sig_output = jr_sema::file_signatures_with_values(
         hir.as_ref(),
         file_id,
         resolve_map.as_ref(),
         &sig_imports,
         &mut pool,
         interner,
+        declaration_values.as_ref(),
     );
     let signatures = Arc::new(sig_output.signatures);
 
@@ -1282,7 +1402,7 @@ pub(crate) fn expand_round(
         .iter()
         .map(ImportedTemplateInputs::borrowed)
         .collect();
-    let output = jr_sema::check_file(
+    let output = jr_sema::check_file_with_values(
         hir.as_ref(),
         file_id,
         resolve_map.as_ref(),
@@ -1292,6 +1412,7 @@ pub(crate) fn expand_round(
         &imported_templates,
         &mut pool,
         interner,
+        declaration_values.as_ref(),
     );
     drop(pool);
 

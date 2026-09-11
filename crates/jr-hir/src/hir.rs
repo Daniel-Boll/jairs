@@ -137,28 +137,34 @@ pub enum TypeRef {
         elem: TypeRefId,
         /// The literal length, when the length was written as one.
         ///
-        /// `None` for `[COUNT]u8` and for any other non-literal — the length is *read*
-        /// during lowering because that is where the literal token is, but it is
-        /// **`jr-sema` that reports a bad one** (E0233). Lowering stays quiet.
+        /// `None` for `[COUNT]u8` and for any other non-literal — the literal fast path is *read*
+        /// during lowering because that is where the token is, but it is **`jr-sema` that resolves
+        /// the retained expression or reports a bad one** (E0233). Lowering stays quiet.
         ///
-        /// That split is not arbitrary. `jr-sema` has no constant evaluator (ADR-0018 §3
-        /// puts const-eval in `jr-db` over the bytecode VM, downstream of type
-        /// resolution), so sema cannot *compute* `COUNT` — but rejecting a type is a
-        /// semantic judgement, and putting it in lowering made a well-formed program
-        /// report a lowering error, which `tests/corpus/type-errors/` explicitly forbids
-        /// its files from doing (ADR-0039 §3a).
+        /// That split is not arbitrary. `jr-sema` has no constant evaluator (ADR-0018 §3 puts
+        /// const-eval in `jr-db` over the bytecode VM), so it consumes values from ADR-0245's
+        /// pre-signature query rather than computing them itself. Rejecting a type remains a
+        /// semantic judgement; putting it in lowering made a well-formed program report a
+        /// lowering error, which `tests/corpus/type-errors/` explicitly forbids its files from
+        /// doing (ADR-0039 §3a).
         len: Option<u64>,
         /// The **name** the length was written as, when it was a bare name rather than a literal
         /// (ADR-0070 §1).
         ///
-        /// Carried so that `jr-sema` can resolve it to a constant and read that constant's literal — a
-        /// lookup needing no evaluation and therefore no dependency on `jr-db` or `jr-vm`, which is what
-        /// makes `[N]s64` resolvable a sub-wave before `[2 + 2]s64` (ADR-0039 §3a is amended here rather
-        /// than reversed).
+        /// Carried for the literal-name fast path and for `$N` instantiations, whose values arrive
+        /// after the ordinary declaration prepass (ADR-0070, ADR-0089, ADR-0245).
         ///
-        /// `None` when the length was a literal (then `len` is `Some`) or an expression that is neither —
-        /// `[2 + 2]u8` names nothing to look up, and sema reports it.
+        /// `None` when the length was a literal (then `len` is `Some`) or not a bare name.
         len_name: Option<Symbol>,
+        /// The lowered non-literal, non-name length expression retained for declaration-time
+        /// evaluation (ADR-0245).
+        ///
+        /// It indexes the same expression arena as this type reference:
+        /// [`ExprScope::TopLevel`](crate::ExprScope::TopLevel) for file signatures and
+        /// [`ExprScope::Body`](crate::ExprScope::Body) for a local annotation. Keeping the full
+        /// expression is what lets `[WIDTH * HEIGHT]T` reach the MIR/VM evaluator instead of being
+        /// reduced to “neither a literal nor a name” during lowering.
+        len_expr: Option<ExprId>,
         /// Span of the length expression, for the diagnostic sema raises.
         ///
         /// Carried because a `TypeRef` has no span of its own (ADR-0013), so without this
@@ -182,6 +188,9 @@ pub enum TypeRef {
         lanes: Option<u64>,
         /// The **name** the lane count was written as, when it was a bare name (ADR-0070 §1).
         lanes_name: Option<Symbol>,
+        /// The lowered non-literal, non-name lane-count expression retained for declaration-time
+        /// evaluation (ADR-0245).
+        lanes_expr: Option<ExprId>,
         /// Span of the lane-count expression, for the diagnostic sema raises (E0285).
         lanes_span: Span,
     },
